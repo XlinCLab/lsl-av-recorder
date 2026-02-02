@@ -24,7 +24,6 @@ class RunController:
 
         self.paths: Optional[dict] = None
         self._running = False
-        breakpoint()
 
     def log(self, msg: str):
         if self.status_cb:
