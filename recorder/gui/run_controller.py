@@ -157,6 +157,7 @@ class RunController:
         self._running = False
         self.log("Run stopped")
 
+    @staticmethod
     def _resolve_xdf_path(
         root: str,
         template: str,
@@ -181,15 +182,15 @@ class RunController:
     def _get_xdf_path(self):
         root = os.path.abspath(self.cfg.Output.StudyRoot)
         template = self.cfg.Output.PathTemplate
-        session = self.cfg.Session
+        prompts = self.cfg.Prompts
         xdf_path = self._resolve_xdf_path(
             root=root,
             template=template,
-            participant=session.Subject,
-            session=session.Session,
-            task=session.Block,
-            run=session.Run,
-            acq=session.Acquisition,
+            participant=prompts.Subject,
+            session=prompts.Session,
+            task=prompts.Block,
+            run=prompts.Run,
+            acq=prompts.Acquisition,
         )
         # Create containing directory for xdf file
         outdir = os.path.dirname(xdf_path)
