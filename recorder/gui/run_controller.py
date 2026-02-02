@@ -6,7 +6,8 @@ from typing import Optional, Callable, Dict, List
 
 from ..config import AppConfig
 from ..naming import build_paths
-#from ..audio.lsl_audio import AudioLSLStreamer, AudioLSLSettings
+#from ..audio.lsl_audio import AudioLSLStreamer
+from ..audio.lsl_audio import AudioStreamSettings
 #from ..video.video_recorder import VideoRecorder  # TODO
 from ..xdf.xdf_writer import XDFWriter
 
@@ -62,24 +63,15 @@ class RunController:
         self.log(f"XDF writer started: {xdf_path}")
 
         # # Audio stream
-        # if self.cfg.Audio.Enabled:
-        #     aset = AudioLSLSettings(
-        #         device=None,
-        #         samplerate=self.cfg.Audio.SampleRate,
-        #         channels=self.cfg.Audio.Channels,
-        #         bitdepth=self.cfg.Audio.BitDepth,
-        #         stream_name=self.cfg.Audio.StreamName or "Audio",
-        #         stream_type="Audio",
-        #         source_id=f"audio:{self.cfg.Audio.Device or 'default'}",
-        #     )
-
-        #     self.audio_sid = self.xdf.add_audio_stream(
-        #         name=aset.stream_name,
-        #         samplerate=aset.samplerate,
-        #         channels=aset.channels,
-        #         fmt="float32" if aset.bitdepth == 32 else "int16",
-        #         source_id=aset.source_id,
-        #     )
+        if self.cfg.Audio.Enabled:
+            aset = self._get_audio_stream_settings()
+            self.audio_sid = self.xdf.add_audio_stream(
+                name=aset.stream_name,
+                samplerate=aset.samplerate,
+                channels=aset.channels,
+                fmt="float32" if aset.bitdepth == 32 else "int16",
+                source_id=aset.source_id,
+            )
 
         #     self.audio = AudioLSLStreamer(
         #         aset,
@@ -178,7 +170,7 @@ class RunController:
 
         return os.path.join(root, path)
 
-    def _get_xdf_path(self):
+    def _get_xdf_path(self) -> str:
         root = os.path.abspath(self.cfg.Output.StudyRoot)
         template = self.cfg.Output.PathTemplate
         prompts = self.cfg.Prompts
@@ -195,6 +187,23 @@ class RunController:
         outdir = os.path.dirname(xdf_path)
         os.makedirs(outdir, exist_ok=True)
         return xdf_path
+
+    def _get_audio_stream_settings(self) -> AudioStreamSettings:
+        aset = AudioStreamSettings(
+            device=None,
+            samplerate=self.cfg.Audio.SampleRate,
+            channels=self.cfg.Audio.Channels,
+            bitdepth=self.cfg.Audio.BitDepth,
+            stream_name=self.cfg.Audio.StreamName or "Audio",
+            stream_type="Audio",
+            source_id=f"audio:{self.cfg.Audio.Device or 'default'}",
+        )
+        if self.cfg.Audio.Device is not None:
+            try:
+                aset.device = int(self.cfg.Audio.Device)
+            except ValueError:
+                aset.device = self.cfg.Audio.Device
+        return aset
 
     # -------------------------
     # Callbacks from recorders

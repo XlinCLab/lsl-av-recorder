@@ -7,7 +7,7 @@ import sounddevice as sd
 from pylsl import StreamInfo, StreamOutlet, local_clock
 
 @dataclass
-class AudioLSLSettings:
+class AudioStreamSettings:
     device: Optional[Union[int, str]] = None
     samplerate: int = 48000
     channels: int = 1
@@ -26,7 +26,7 @@ def _lsl_format(bitdepth: int) -> str:
     raise ValueError("bitdepth must be 16, 32, or 64")
 
 class AudioLSLStreamer:
-    def __init__(self, s: AudioLSLSettings, status_cb: Optional[Callable[[str], None]] = None):
+    def __init__(self, s: AudioStreamSettings, status_cb: Optional[Callable[[str], None]] = None):
         self.s = s
         self.status_cb = status_cb
         self.outlet: Optional[StreamOutlet] = None
