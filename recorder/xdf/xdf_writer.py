@@ -9,11 +9,13 @@ import numpy as np
 
 
 # XDF chunk tags
-TAG_FILE_HEADER = 1
 TAG_STREAM_HEADER = 2
 TAG_SAMPLES = 3
 TAG_CLOCK_OFFSET = 4
 TAG_STREAM_FOOTER = 6
+
+# XDF header bytes
+XDF_MAGIC_BYTES = b"XDF:1.0"
 
 
 class XDFWriter:
@@ -40,7 +42,8 @@ class XDFWriter:
         self.f.write(payload)
 
     def _write_file_header(self):
-        self._write_chunk(TAG_FILE_HEADER, b"XDF:1.0")
+        # Write the magic bytes for XDF to the start of the file
+        self.f.write(XDF_MAGIC_BYTES)
 
     def _make_stream_header_xml(
         self,
