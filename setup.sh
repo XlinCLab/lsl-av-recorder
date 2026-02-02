@@ -1,6 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
+# Install Linux dependencies
+sudo apt install v4l-utils
+
 # Create Python3 virtual environment and install dependencies
 python3 -m venv .venv
 source .venv/bin/activate

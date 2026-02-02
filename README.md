@@ -6,7 +6,7 @@
 - **XDF**: written by **LabRecorder** controlled via **RCS**
 
 ## Requirements
-- `sudo apt install v4l-utils`
+- `sudo apt install v4l-utils` (installed as part of `setup.sh` script)
 - LabRecorder running with RCS enabled (port 22345)
 - Python 3.10+
 
