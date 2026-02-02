@@ -1,7 +1,7 @@
 from __future__ import annotations
 import struct
 import threading
-import time
+import datetime
 import xml.etree.ElementTree as ET
 from typing import BinaryIO, Dict, Optional
 
@@ -9,6 +9,7 @@ import numpy as np
 
 
 # XDF chunk tags
+TAG_FILE_HEADER = 1
 TAG_STREAM_HEADER = 2
 TAG_SAMPLES = 3
 TAG_CLOCK_OFFSET = 4
@@ -33,9 +34,9 @@ class XDFWriter:
         self.streams: Dict[str, int] = {}
         self._started = False
 
-    # -------------------------
-    # Low-level helpers
-    # -------------------------
+    # -------------------------------------------------
+    # Low-level binary helpers
+    # -------------------------------------------------
 
     def _write_varlen_int(self, value: int):
         """
@@ -43,27 +44,67 @@ class XDFWriter:
         The first byte is the number of bytes that follow: 1, 4, or 8.
         """
         if value < 128:
-            # 1-byte payload
-            self.f.write(bytes([1]))            # nbytes
-            self.f.write(value.to_bytes(1, "little"))  # actual value
+            self.f.write(b"\x01")
+            self.f.write(value.to_bytes(1, "little"))
         elif value < 2**32:
-            self.f.write(bytes([4]))
+            self.f.write(b"\x04")
             self.f.write(value.to_bytes(4, "little"))
         else:
-            self.f.write(bytes([8]))
+            self.f.write(b"\x08")
             self.f.write(value.to_bytes(8, "little"))
 
-    def _write_chunk(self, tag: int, payload: bytes):
-        # write tag as 2-byte little-endian
-        self.f.write(struct.pack("<H", tag))
-        # write length as variable-length int
-        self._write_varlen_int(len(payload))
-        # write payload
+    def _write_chunk_header(
+        self,
+        tag: int,
+        payload_len: int,
+        stream_id: int | None = None,
+    ):
+        """
+        Write an XDF chunk header:
+        [VarLenLength][Tag][Optional StreamID]
+        payload_len: length of content only
+        """
+        # total length includes tag + optional stream id
+        total_len = payload_len + 2  # 2 bytes for tag
+        if stream_id is not None:
+            total_len += 4  # 4 bytes for stream id
+
+        # write length as variable-length integer
+        self._write_varlen_int(total_len)
+        # write tag
+        self.f.write(tag.to_bytes(2, "little"))
+        # optional stream id
+        if stream_id is not None:
+            self.f.write(stream_id.to_bytes(4, "little"))
+
+    def _write_chunk(
+        self,
+        tag: int,
+        payload: bytes,
+        stream_id: int | None = None,
+    ):
+        """
+        Write a full XDF chunk: header + payload
+        """
+        self._write_chunk_header(tag, len(payload), stream_id)
         self.f.write(payload)
 
+    # -------------------------------------------------
+    # File + stream headers
+    # -------------------------------------------------
+
     def _write_file_header(self):
-        # Write the magic bytes for XDF to the start of the file
-        self.f.write(XDF_MAGIC_BYTES)
+        self.f.write(XDF_MAGIC_BYTES)  # magic bytes
+
+        # create XML header
+        now = datetime.datetime.now()
+        header_xml = f"""<?xml version="1.0"?>
+<info>
+  <version>1.0</version>
+  <datetime>{now.strftime('%Y-%m-%dT%H:%M:%S')}</datetime>
+</info>""".encode("utf-8")
+
+        self._write_chunk(TAG_FILE_HEADER, header_xml)
 
     def _make_stream_header_xml(
         self,
@@ -91,16 +132,37 @@ class XDFWriter:
         return ET.tostring(root, encoding="utf-8")
 
     def _write_stream_header(self, stream_id: int, xml: bytes):
-        payload = struct.pack("<I", stream_id) + xml
-        self._write_chunk(TAG_STREAM_HEADER, payload)
+        self._write_chunk(tag=TAG_STREAM_HEADER, payload=xml, stream_id=stream_id)
 
     def _write_stream_footer(self, stream_id: int):
-        payload = struct.pack("<I", stream_id)
-        self._write_chunk(TAG_STREAM_FOOTER, payload)
+        self._write_chunk(tag=TAG_STREAM_FOOTER, payload=b"", stream_id=stream_id)
 
-    # -------------------------
+    # -------------------------------------------------
+    # Samples
+    # -------------------------------------------------
+
+    def _write_samples(
+        self,
+        stream_id: int,
+        timestamps: np.ndarray,
+        values: np.ndarray,
+    ):
+        timestamps = np.asarray(timestamps, dtype=np.float64)
+        values = np.asarray(values)
+
+        n = len(timestamps)
+
+        payload = (
+            n.to_bytes(4, "little")
+            + timestamps.tobytes(order="C")
+            + values.tobytes(order="C")
+        )
+
+        self._write_chunk(TAG_SAMPLES, payload, stream_id)
+
+    # -------------------------------------------------
     # Public API
-    # -------------------------
+    # -------------------------------------------------
 
     def start(self):
         if self._started:
@@ -183,7 +245,6 @@ class XDFWriter:
         """
         samples shape: (n_samples, n_channels)
         """
-        timestamps = np.asarray(timestamps, dtype=np.float64)
         samples = np.asarray(samples, dtype=np.float32)
 
         n = len(timestamps)
@@ -192,7 +253,7 @@ class XDFWriter:
         payload += samples.tobytes(order="C")
 
         with self._lock:
-            self._write_chunk(TAG_SAMPLES, payload)
+            self._write_samples(stream_id, timestamps, samples)
 
     def write_video_frames(
         self,
@@ -200,16 +261,9 @@ class XDFWriter:
         timestamps: np.ndarray,
         frame_indices: np.ndarray,
     ):
-        timestamps = np.asarray(timestamps, dtype=np.float64)
         frame_indices = np.asarray(frame_indices, dtype=np.int64)
-
-        n = len(timestamps)
-        payload = struct.pack("<I", n)
-        payload += timestamps.tobytes()
-        payload += frame_indices.tobytes()
-
         with self._lock:
-            self._write_chunk(TAG_SAMPLES, payload)
+            self._write_samples(stream_id, timestamps, frame_indices)
 
     def stop(self):
         if not self._started:
