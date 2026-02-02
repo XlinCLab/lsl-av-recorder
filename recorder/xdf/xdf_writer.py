@@ -15,7 +15,7 @@ TAG_CLOCK_OFFSET = 4
 TAG_STREAM_FOOTER = 6
 
 # XDF header bytes
-XDF_MAGIC_BYTES = b"XDF:1.0"
+XDF_MAGIC_BYTES = b"XDF:"
 
 
 class XDFWriter:
