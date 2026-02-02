@@ -37,8 +37,28 @@ class XDFWriter:
     # Low-level helpers
     # -------------------------
 
+    def _write_varlen_int(self, value: int):
+        """
+        Write an XDF variable-length integer.
+        The first byte is the number of bytes that follow: 1, 4, or 8.
+        """
+        if value < 128:
+            # 1-byte payload
+            self.f.write(bytes([1]))            # nbytes
+            self.f.write(value.to_bytes(1, "little"))  # actual value
+        elif value < 2**32:
+            self.f.write(bytes([4]))
+            self.f.write(value.to_bytes(4, "little"))
+        else:
+            self.f.write(bytes([8]))
+            self.f.write(value.to_bytes(8, "little"))
+
     def _write_chunk(self, tag: int, payload: bytes):
-        self.f.write(struct.pack("<HI", tag, len(payload)))
+        # write tag as 2-byte little-endian
+        self.f.write(struct.pack("<H", tag))
+        # write length as variable-length int
+        self._write_varlen_int(len(payload))
+        # write payload
         self.f.write(payload)
 
     def _write_file_header(self):
