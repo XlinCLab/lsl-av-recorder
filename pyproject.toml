@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lsl-av-recorder"
+version = "0.3.2"
+description = "Linux-first LSL + Multi-USB-Video recorder with LabRecorder XDF output (RCS) and Qt previews; audio streamed via LSL (no WAV)."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "pylsl>=1.16.2",
+  "numpy>=1.24",
+  "opencv-python>=4.8",
+  "sounddevice>=0.4.6",
+  "PyQt6>=6.5",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["recorder*"]

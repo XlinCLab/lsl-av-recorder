@@ -1,0 +1,89 @@
+from __future__ import annotations
+from dataclasses import dataclass
+from typing import Optional, Callable, Union
+
+import numpy as np
+import sounddevice as sd
+from pylsl import StreamInfo, StreamOutlet, local_clock
+
+@dataclass
+class AudioLSLSettings:
+    device: Optional[Union[int, str]] = None
+    samplerate: int = 48000
+    channels: int = 1
+    bitdepth: int = 32  # 16/32/64
+    stream_name: str = "Audio"
+    stream_type: str = "Audio"
+    source_id: str = "audio"
+
+def _lsl_format(bitdepth: int) -> str:
+    if bitdepth == 16:
+        return "int16"
+    if bitdepth == 32:
+        return "float32"
+    if bitdepth == 64:
+        return "double64"
+    raise ValueError("bitdepth must be 16, 32, or 64")
+
+class AudioLSLStreamer:
+    def __init__(self, s: AudioLSLSettings, status_cb: Optional[Callable[[str], None]] = None):
+        self.s = s
+        self.status_cb = status_cb
+        self.outlet: Optional[StreamOutlet] = None
+        self.stream: Optional[sd.InputStream] = None
+
+    def log(self, msg: str):
+        if self.status_cb:
+            self.status_cb(msg)
+
+    def start(self):
+        chfmt = _lsl_format(self.s.bitdepth)
+        info = StreamInfo(
+            name=self.s.stream_name,
+            type=self.s.stream_type,
+            channel_count=self.s.channels,
+            nominal_srate=float(self.s.samplerate),
+            channel_format=chfmt,
+            source_id=self.s.source_id,
+        )
+        self.outlet = StreamOutlet(info, chunk_size=0, max_buffered=360)
+
+        dtype = "int16" if self.s.bitdepth == 16 else "float32"
+
+        def callback(indata, frames, time_info, status):
+            if status:
+                self.log(f"Audio status: {status}")
+
+            # PortAudio time -> LSL time; timestamp refers to first sample in chunk
+            offset = local_clock() - time_info.currentTime
+            ts0 = time_info.inputBufferAdcTime + offset
+
+            x = indata.copy()
+            if self.s.bitdepth == 64:
+                x = x.astype(np.float64, copy=False)
+            elif self.s.bitdepth == 32:
+                x = x.astype(np.float32, copy=False)
+
+            if self.outlet:
+                self.outlet.push_chunk(x.tolist(), timestamp=ts0)
+
+        self.stream = sd.InputStream(
+            device=self.s.device,
+            samplerate=self.s.samplerate,
+            channels=self.s.channels,
+            dtype=dtype,
+            callback=callback,
+            blocksize=0,
+        )
+        self.stream.start()
+        self.log(f"AudioLSL: streaming '{self.s.stream_name}' sr={self.s.samplerate} ch={self.s.channels} fmt={chfmt}")
+
+    def stop(self):
+        if self.stream:
+            try:
+                self.stream.stop()
+                self.stream.close()
+            finally:
+                self.stream = None
+        self.outlet = None
+        self.log("AudioLSL: stopped.")
