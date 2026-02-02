@@ -1,0 +1,5 @@
+pylsl>=1.16.2
+numpy>=1.24
+opencv-python>=4.8
+sounddevice>=0.4.6
+PyQt6>=6.5

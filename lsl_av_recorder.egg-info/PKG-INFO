@@ -1,3 +1,15 @@
+Metadata-Version: 2.4
+Name: lsl-av-recorder
+Version: 0.3.2
+Summary: Linux-first LSL + Multi-USB-Video recorder with LabRecorder XDF output (RCS) and Qt previews; audio streamed via LSL (no WAV).
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: pylsl>=1.16.2
+Requires-Dist: numpy>=1.24
+Requires-Dist: opencv-python>=4.8
+Requires-Dist: sounddevice>=0.4.6
+Requires-Dist: PyQt6>=6.5
+
 # lsl-av-recorder v0.3.2 (Linux Mint / Ubuntu)
 
 - **Video**: up to 4 USB cameras, always-on preview wall (2×2) in the main window
