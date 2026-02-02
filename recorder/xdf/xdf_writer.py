@@ -13,6 +13,7 @@ TAG_FILE_HEADER = 1
 TAG_STREAM_HEADER = 2
 TAG_SAMPLES = 3
 TAG_CLOCK_OFFSET = 4
+TAG_BOUNDARY = 5
 TAG_STREAM_FOOTER = 6
 
 # XDF header bytes
@@ -136,6 +137,42 @@ class XDFWriter:
 
     def _write_stream_footer(self, stream_id: int):
         self._write_chunk(tag=TAG_STREAM_FOOTER, payload=b"", stream_id=stream_id)
+
+    def _write_stream_offset(self, stream_id: int, now: float, offset: float):
+        """
+        Write a clock offset chunk (TAG_CLOCK_OFFSET).
+        now: current time (float64)
+        offset: offset to apply (float64)
+        """
+        payload = struct.pack(
+            "<dd",
+            now - offset,  # collection time
+            offset,        # offset value
+        )
+
+        with self._lock:
+            self._write_chunk(
+                tag=TAG_CLOCK_OFFSET,
+                payload=payload,
+                stream_id=stream_id,
+            )
+
+    def _write_boundary_chunk(self):
+        """
+        Write a boundary chunk (used for resync / recovery).
+        """
+        boundary_uuid = bytes([
+            0x43, 0xA5, 0x46, 0xDC, 0xCB, 0xF5, 0x41, 0x0F,
+            0xB3, 0x0E, 0xD5, 0x46, 0x73, 0x83, 0xCB, 0xE4,
+        ])
+
+        with self._lock:
+            self._write_chunk(
+                tag=TAG_BOUNDARY,
+                payload=boundary_uuid,
+                stream_id=None,
+            )
+
 
     # -------------------------------------------------
     # Samples
