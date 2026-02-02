@@ -6,8 +6,7 @@ from typing import Optional, Callable, Dict, List
 
 from ..config import AppConfig
 from ..naming import build_paths
-#from ..audio.lsl_audio import AudioLSLStreamer
-from ..audio.lsl_audio import AudioStreamSettings
+from ..audio.lsl_audio import AudioLSLStreamer, AudioStreamSettings, _dtype_format
 #from ..video.video_recorder import VideoRecorder  # TODO
 from ..xdf.xdf_writer import XDFWriter
 
@@ -16,8 +15,8 @@ class RunController:
     def __init__(self, cfg: AppConfig, status_cb: Optional[Callable[[str], None]] = None):
         self.cfg = cfg
         self.status_cb = status_cb
-        # self.audio: Optional[AudioLSLStreamer] = None     # TODO
-        # self.videos: List[VideoRecorder] = []
+        self.audio: Optional[AudioLSLStreamer] = None
+        self.videos = [] # TODO : List[VideoRecorder] = [] 
 
         self.xdf: Optional[XDFWriter] = None
         self.audio_sid: Optional[int] = None
@@ -69,18 +68,17 @@ class RunController:
                 name=aset.stream_name,
                 samplerate=aset.samplerate,
                 channels=aset.channels,
-                fmt="float32" if aset.bitdepth == 32 else "int16",
+                fmt=_dtype_format(aset.bitdepth),
                 source_id=aset.source_id,
             )
 
-        #     self.audio = AudioLSLStreamer(
-        #         aset,
-        #         status_cb=self.log,
-        #         # IMPORTANT: this callback must be supported by your audio code
-        #         sample_cb=self._on_audio_samples,
-        #     )
-        #     self.audio.start()
-        #     self.log("Audio capture started")
+            self.audio = AudioLSLStreamer(
+                aset,
+                status_cb=self.log,
+                sample_cb=self._on_audio_samples,
+            )
+            self.audio.start()
+            self.log("Audio capture started")
 
         # # Video streams
         # if self.cfg.Video.Enabled:
