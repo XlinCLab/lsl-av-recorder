@@ -34,6 +34,7 @@ class XDFWriter:
         self._next_stream_id = 1
         self.streams: Dict[str, int] = {}
         self._started = False
+        self._last_timestamp: Dict[int, float] = {}
 
     # -------------------------------------------------
     # Low-level binary helpers
@@ -185,12 +186,28 @@ class XDFWriter:
         values: np.ndarray,
     ):
         timestamps = np.asarray(timestamps, dtype=np.float64)
-        values = np.asarray(values)
+        values = np.asarray(values, dtype=np.float32)  # must match stream header
+        if values.ndim == 1:
+            values = values.reshape(-1, 1)
+        n = timestamps.shape[0]
+        assert values.shape[0] == n, "values/timestamps length mismatch"
 
-        n = len(timestamps)
+        # Enforce strictly increasing timestamps across chunks
+        last = self._last_timestamp.get(stream_id)
+        if last is not None and timestamps[0] <= last:
+            dt = timestamps[1] - timestamps[0]
+            timestamps = last + dt * (1 + np.arange(n))
+        assert np.all(np.diff(timestamps) > 0), "timestamps not strictly increasing"
+        self._last_timestamp[stream_id] = timestamps[-1]
 
+        # --- XDF sample payload ---
+        # uint32: sample count
+        # uint8 : sample format (8 = float32)
+        # float64[n]: timestamps
+        # float32[n, channels]: values (row-major)
         payload = (
             n.to_bytes(4, "little")
+            + b"\x08"
             + timestamps.tobytes(order="C")
             + values.tobytes(order="C")
         )
@@ -279,16 +296,7 @@ class XDFWriter:
         timestamps: np.ndarray,
         samples: np.ndarray,
     ):
-        """
-        samples shape: (n_samples, n_channels)
-        """
-        samples = np.asarray(samples, dtype=np.float32)
-
-        n = len(timestamps)
-        payload = struct.pack("<I", n)
-        payload += timestamps.tobytes(order="C")
-        payload += samples.tobytes(order="C")
-
+        self._write_boundary_chunk()
         with self._lock:
             self._write_samples(stream_id, timestamps, samples)
 
@@ -298,6 +306,7 @@ class XDFWriter:
         timestamps: np.ndarray,
         frame_indices: np.ndarray,
     ):
+        self._write_boundary_chunk()
         frame_indices = np.asarray(frame_indices, dtype=np.int64)
         with self._lock:
             self._write_samples(stream_id, timestamps, frame_indices)

@@ -76,7 +76,7 @@ class AudioLSLStreamer:
             #     self.outlet.push_chunk(x.tolist(), timestamp=ts0)
             # Custom callback function to write to XDF files 
             if self.sample_cb:
-                self.sample_cb(timestamps, indata)
+                self.sample_cb(timestamps, x)
 
         self.stream = sd.InputStream(
             device=self.s.device,
