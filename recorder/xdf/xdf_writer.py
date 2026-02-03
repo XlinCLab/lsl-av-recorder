@@ -255,9 +255,9 @@ class XDFWriter:
         xml = self._make_stream_header_xml(
             name=name,
             stype="Video",
-            channel_count=1,
-            srate=fps or 0.0,
-            fmt="int64",
+            channel_count=1,  # TODO check this
+            srate=fps or 0.0,  # TODO check this
+            fmt="int64",  # TODO check this
             source_id=f"camera:{camera_id}",
             extra={
                 "video_path": video_path,

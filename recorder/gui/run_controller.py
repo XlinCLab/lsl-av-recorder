@@ -7,7 +7,7 @@ from typing import Optional, Callable, Dict, List
 from ..config import AppConfig
 from ..naming import build_paths
 from ..audio.lsl_audio import AudioLSLStreamer, AudioStreamSettings, _dtype_format
-#from ..video.video_recorder import VideoRecorder  # TODO
+from ..video.video_recorder import VideoRecorder
 from ..xdf.xdf_writer import XDFWriter
 
 
@@ -16,7 +16,7 @@ class RunController:
         self.cfg = cfg
         self.status_cb = status_cb
         self.audio: Optional[AudioLSLStreamer] = None
-        self.videos = [] # TODO : List[VideoRecorder] = [] 
+        self.videos: List[VideoRecorder] = [] 
 
         self.xdf: Optional[XDFWriter] = None
         self.audio_sid: Optional[int] = None
@@ -34,11 +34,11 @@ class RunController:
             return
 
         self.paths = build_paths(self.cfg.Output, self.cfg.Prompts)
-        out_dir = self.paths["base_dir"]
+        outdir = self.paths["base_dir"]
         base_name = self.paths["base_name"]
-        os.makedirs(out_dir, exist_ok=True)
+        os.makedirs(outdir, exist_ok=True)
 
-        meta_path = os.path.join(out_dir, f"{base_name}_session.json")
+        meta_path = os.path.join(outdir, f"{base_name}_session.json")
         with open(meta_path, "w", encoding="utf-8") as f:
             json.dump(
                 {
@@ -81,42 +81,41 @@ class RunController:
             self.log("Audio capture started")
 
         # # Video streams
-        # if self.cfg.Video.Enabled:
-        #     for cam in self.cfg.Video.Cams:
-        #         if not cam.Enabled:
-        #             continue
+        if self.cfg.Video.Enabled:
+            for cam in self.cfg.Video.Cams:
+                if not cam.Enabled:
+                    continue
 
-        #         video_path = os.path.join(
-        #             out_dir,
-        #             f"{base_name}_cam-{cam.Label}.{self.cfg.Video.Container}",
-        #         )
+                video_path = os.path.join(
+                    outdir,
+                    f"{base_name}_cam-{cam.Label}.{self.cfg.Video.Container}",
+                )
 
-        #         sid = self.xdf.add_video_stream(
-        #             name=f"Camera-{cam.Label}",
-        #             camera_id=str(cam.DeviceIndex),
-        #             video_path=video_path,
-        #             width=cam.Width,
-        #             height=cam.Height,
-        #             fps=cam.FPS,
-        #         )
-        #         self.video_sids[cam.Label] = sid
+                sid = self.xdf.add_video_stream(
+                    name=f"Camera-{cam.Label}",
+                    camera_id=str(cam.DeviceIndex),
+                    video_path=video_path,
+                    width=cam.Width,
+                    height=cam.Height,
+                    fps=cam.FPS,
+                )
+                self.video_sids[cam.Label] = sid
 
-        #         vr = VideoRecorder(
-        #             cam_cfg=cam,
-        #             output_path=video_path,
-        #             status_cb=self.log,
-        #             # IMPORTANT: this callback must be supported by your video code
-        #             frame_cb=lambda ts, idx, label=cam.Label: self._on_video_frame(
-        #                 label, ts, idx
-        #             ),
-        #         )
-        #         vr.start()
-        #         self.videos.append(vr)
+                vr = VideoRecorder(
+                    cam_cfg=cam,
+                    output_path=video_path,
+                    status_cb=self.log,
+                    frame_cb=lambda ts, idx, label=cam.Label: self._on_video_frame(
+                        label, ts, idx
+                    ),
+                )
+                vr.start()
+                self.videos.append(vr)
 
-        #         self.log(f"Video capture started: {cam.Label}")
+                self.log(f"Video capture started: {cam.Label}")
 
         self._running = True
-        self.log(f"Run started in {out_dir}")
+        self.log(f"Run started in {outdir}")
 
     def stop(self):
         if not self._running:
