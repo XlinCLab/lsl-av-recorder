@@ -59,6 +59,17 @@ class XDFWriter:
             self.f.write(b"\x08")
             self.f.write(struct.pack("<Q", value))
 
+    def _write_varlen_int_to_buffer(self, buf: bytearray, value: int):
+        if value < 2**8:
+            buf.append(1)
+            buf.append(value)
+        elif value < 2**32:
+            buf.append(4)
+            buf += struct.pack("<I", value)
+        else:
+            buf.append(8)
+            buf += struct.pack("<Q", value)
+
     def _format_timestamp(self, ts: float):
         if ts == 0:
             return b"\x00"  # TimeStampBytes = 0
@@ -214,26 +225,17 @@ class XDFWriter:
             timestamps = last_ts + dt * (1 + np.arange(n_samples))
         self._last_timestamp[stream_id] = timestamps[-1]
 
-        # Determine sample format code
-        if values.dtype == np.float32:
-            sample_fmt = 8  # float32
-        elif values.dtype == np.float64:
-            sample_fmt = 9  # float64
-        elif values.dtype == np.int64:
-            sample_fmt = 7  # int64
-        else:
-            raise ValueError(f"Unsupported dtype {values.dtype} for XDF samples")
-
         # --- XDF sample payload ---
         # uint32: sample count
-        # uint8 : sample format (8 = float32)
         # float64[n]: timestamps
-        # float32[n, channels]: values (row-major)
-        payload = bytearray()
-        payload += n_samples.to_bytes(4, "little")   # NumSamples
-        payload += sample_fmt.to_bytes(1, "little")  # SampleFormat
+        # float32[n, channels] | float64[n, channels]: values (row-major)
 
-        # Write each sample
+        payload = bytearray()
+        buf = bytearray()
+        self._write_varlen_int_to_buffer(buf, n_samples)
+        payload += buf
+
+        # Per-sample data
         for i in range(n_samples):
             payload += self._format_timestamp(timestamps[i])
             payload += values[i].tobytes(order="C")
