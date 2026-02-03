@@ -34,7 +34,17 @@ class XDFWriter:
         self._next_stream_id = 1
         self.streams: Dict[str, int] = {}
         self._started = False
+        self._sample_count: Dict[int, int] = {}
+        self._first_timestamp: Dict[int, float] = {}
         self._last_timestamp: Dict[int, float] = {}
+        self._clock_offsets: Dict[int, list[tuple[float, float]]] = {}
+
+    def _update_timestamps(self, timestamps: np.ndarray, stream_id: int, n_samples: int):
+        if stream_id not in self._first_timestamp:
+            self._first_timestamp[stream_id] = timestamps[timestamps != 0][0]
+
+        self._last_timestamp[stream_id] = timestamps[timestamps != 0][-1]
+        self._sample_count[stream_id] = self._sample_count.get(stream_id, 0) + n_samples
 
     # -------------------------------------------------
     # Low-level binary helpers
@@ -154,29 +164,67 @@ class XDFWriter:
 
         return ET.tostring(root, encoding="utf-8")
 
+    def _make_stream_footer_xml(self, stream_id: int) -> bytes:
+        root = ET.Element("info")
+
+        ET.SubElement(
+            root, "first_timestamp"
+        ).text = str(self._first_timestamp.get(stream_id, 0.0))
+
+        ET.SubElement(
+            root, "last_timestamp"
+        ).text = str(self._last_timestamp.get(stream_id, 0.0))
+
+        ET.SubElement(
+            root, "sample_count"
+        ).text = str(self._sample_count.get(stream_id, 0))
+
+        # Clock offsets, if present
+        offsets = self._clock_offsets.get(stream_id)
+        if offsets:
+            clock_offsets_el = ET.SubElement(root, "clock_offsets")
+
+            for t, v in offsets:
+                offset_el = ET.SubElement(clock_offsets_el, "offset")
+                ET.SubElement(offset_el, "time").text = str(t)
+                ET.SubElement(offset_el, "value").text = str(v)
+
+        return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
     def _write_stream_header(self, stream_id: int, xml: bytes):
         self._write_chunk(tag=TAG_STREAM_HEADER, payload=xml, stream_id=stream_id)
 
     def _write_stream_footer(self, stream_id: int):
-        self._write_chunk(tag=TAG_STREAM_FOOTER, payload=b"", stream_id=stream_id)
+        xml = self._make_stream_footer_xml(stream_id)
+        self._write_chunk(TAG_STREAM_FOOTER, xml, stream_id)
 
-    def _write_stream_offset(self, stream_id: int, now: float, offset: float):
+    def _write_stream_offset(self, stream_id: int, now: float, offset: float):  # TODO not yet used, may be needed for multiple streams
         """
-        Write a clock offset chunk (TAG_CLOCK_OFFSET).
+        Write a clock offset chunk (TAG_CLOCK_OFFSET) and
+        store it for inclusion in the stream footer.
+
         now: current time (float64)
         offset: offset to apply (float64)
         """
+        collection_time = now - offset
+
         payload = struct.pack(
             "<dd",
-            now - offset,  # collection time
-            offset,        # offset value
+            collection_time,  # time when offset was measured
+            offset,           # offset value
         )
 
+        # Write XDF clock offset chunk
         with self._lock:
             self._write_chunk(
                 tag=TAG_CLOCK_OFFSET,
                 payload=payload,
                 stream_id=stream_id,
+            )
+
+            # Store for footer
+            self._clock_offsets.setdefault(stream_id, []).append(
+                (collection_time, offset)
             )
 
     def _write_boundary_chunk(self):
@@ -223,7 +271,8 @@ class XDFWriter:
         if last_ts is not None and timestamps[0] <= last_ts:
             dt = timestamps[1] - timestamps[0] if n_samples > 1 else 1e-3
             timestamps = last_ts + dt * (1 + np.arange(n_samples))
-        self._last_timestamp[stream_id] = timestamps[-1]
+        #self._last_timestamp[stream_id] = timestamps[-1]
+        self._update_timestamps(timestamps, stream_id, n_samples)
 
         # --- XDF sample payload ---
         # uint32: sample count
