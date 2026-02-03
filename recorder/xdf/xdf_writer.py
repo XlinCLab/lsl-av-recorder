@@ -273,7 +273,6 @@ class XDFWriter:
         if last_ts is not None and timestamps[0] <= last_ts:
             dt = timestamps[1] - timestamps[0] if n_samples > 1 else 1e-3
             timestamps = last_ts + dt * (1 + np.arange(n_samples))
-        #self._last_timestamp[stream_id] = timestamps[-1]
         self._update_timestamps(timestamps, stream_id, n_samples)
 
         # --- XDF sample payload ---
@@ -292,12 +291,6 @@ class XDFWriter:
             payload += values[i].tobytes(order="C")
 
         self._write_chunk(TAG_SAMPLES, bytes(payload), stream_id)
-
-        # # DEBUG
-        # if n_samples > 0:
-        #     print("write_samples", stream_id, n)
-        #     print("  payload len:", len(payload))
-        #     print("  first 32 bytes:", payload[:32].hex())
 
     # -------------------------------------------------
     # Public API

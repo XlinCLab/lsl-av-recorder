@@ -22,3 +22,5 @@ recorder/lsl/__init__.py
 recorder/lsl/labrecorder_rcs.py
 recorder/video/__init__.py
 recorder/video/v4l2_controls.py
+recorder/xdf/__init__.py
+recorder/xdf/xdf_writer.py
