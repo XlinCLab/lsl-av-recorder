@@ -93,10 +93,11 @@ class MainWindow(QMainWindow):
         self.preview_panel = PreviewPanel()
         self.preview_wall = [self.preview_panel.labels[i] for i in range(4)]
         self.preview_mgr = PreviewManager(self)
-
-        for panel in self.cam_panels:
-            if panel.enabled.isChecked():
-                self.preview_mgr.start_cam_preview(panel.to_config())
+        # Show camera previews if video is enabled in config
+        if self.cfg.Video.Enabled:
+            for panel in self.cam_panels:
+                if panel.enabled.isChecked():
+                    self.preview_mgr.start_cam_preview(panel.to_config())
 
         self.logbox = QTextEdit()
         self.logbox.setReadOnly(True)
@@ -192,12 +193,14 @@ class MainWindow(QMainWindow):
             from recorder.naming import build_paths as _build_paths
             paths = _build_paths(self.cfg.Output, self.cfg.Prompts)
 
-            self.preview_mgr.start_recording_all(
-                out_dir=paths["base_dir"],
-                base_name=paths["base_name"],
-                video_container=self.cfg.Video.Container,
-                codec=self.cfg.Video.Codec,
-            )
+            # Start video recording (only if video is enabled in config)
+            if self.cfg.Video.Enabled:
+                self.preview_mgr.start_recording_all(
+                    out_dir=paths["base_dir"],
+                    base_name=paths["base_name"],
+                    video_container=self.cfg.Video.Container,
+                    codec=self.cfg.Video.Codec,
+                )
 
             self.btn_start.setEnabled(False)
             self.btn_stop.setEnabled(True)
