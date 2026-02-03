@@ -43,17 +43,27 @@ class XDFWriter:
     def _write_varlen_int(self, value: int):
         """
         Write an XDF variable-length integer.
-        The first byte is the number of bytes that follow: 1, 4, or 8.
+        First byte = number of bytes that follow (1, 4, or 8)
+        Then little-endian bytes of the value.
         """
-        if value < 128:
+        if value < 2**8:
+            # 1 byte follows
             self.f.write(b"\x01")
-            self.f.write(value.to_bytes(1, "little"))
+            self.f.write(struct.pack("<B", value))
         elif value < 2**32:
+            # 4 bytes follow
             self.f.write(b"\x04")
-            self.f.write(value.to_bytes(4, "little"))
+            self.f.write(struct.pack("<I", value))
         else:
+            # 8 bytes follow
             self.f.write(b"\x08")
-            self.f.write(value.to_bytes(8, "little"))
+            self.f.write(struct.pack("<Q", value))
+
+    def _format_timestamp(self, ts: float):
+        if ts == 0:
+            return b"\x00"  # TimeStampBytes = 0
+        else:
+            return b"\x08" + struct.pack("<d", ts)
 
     def _write_chunk_header(
         self,
@@ -185,34 +195,56 @@ class XDFWriter:
         timestamps: np.ndarray,
         values: np.ndarray,
     ):
+        """
+        Write a Samples chunk.
+        Each sample: [TimeStampBytes][TimeStamp][SampleValues]
+        Preceded by [NumSamples (uint32)][SampleFormat (uint8)]
+        """
         timestamps = np.asarray(timestamps, dtype=np.float64)
-        values = np.asarray(values, dtype=np.float32)  # must match stream header
+        values = np.asarray(values)  # type depends on stream (float32 or int64)
         if values.ndim == 1:
             values = values.reshape(-1, 1)
-        n = timestamps.shape[0]
-        assert values.shape[0] == n, "values/timestamps length mismatch"
+        n_samples = timestamps.shape[0]
+        assert values.shape[0] == n_samples, "values/timestamps length mismatch"
 
         # Enforce strictly increasing timestamps across chunks
-        last = self._last_timestamp.get(stream_id)
-        if last is not None and timestamps[0] <= last:
-            dt = timestamps[1] - timestamps[0]
-            timestamps = last + dt * (1 + np.arange(n))
-        assert np.all(np.diff(timestamps) > 0), "timestamps not strictly increasing"
+        last_ts = self._last_timestamp.get(stream_id)
+        if last_ts is not None and timestamps[0] <= last_ts:
+            dt = timestamps[1] - timestamps[0] if n_samples > 1 else 1e-3
+            timestamps = last_ts + dt * (1 + np.arange(n_samples))
         self._last_timestamp[stream_id] = timestamps[-1]
+
+        # Determine sample format code
+        if values.dtype == np.float32:
+            sample_fmt = 8  # float32
+        elif values.dtype == np.float64:
+            sample_fmt = 9  # float64
+        elif values.dtype == np.int64:
+            sample_fmt = 7  # int64
+        else:
+            raise ValueError(f"Unsupported dtype {values.dtype} for XDF samples")
 
         # --- XDF sample payload ---
         # uint32: sample count
         # uint8 : sample format (8 = float32)
         # float64[n]: timestamps
         # float32[n, channels]: values (row-major)
-        payload = (
-            n.to_bytes(4, "little")
-            + b"\x08"
-            + timestamps.tobytes(order="C")
-            + values.tobytes(order="C")
-        )
+        payload = bytearray()
+        payload += n_samples.to_bytes(4, "little")   # NumSamples
+        payload += sample_fmt.to_bytes(1, "little")  # SampleFormat
 
-        self._write_chunk(TAG_SAMPLES, payload, stream_id)
+        # Write each sample
+        for i in range(n_samples):
+            payload += self._format_timestamp(timestamps[i])
+            payload += values[i].tobytes(order="C")
+
+        self._write_chunk(TAG_SAMPLES, bytes(payload), stream_id)
+
+        # # DEBUG
+        # if n_samples > 0:
+        #     print("write_samples", stream_id, n)
+        #     print("  payload len:", len(payload))
+        #     print("  first 32 bytes:", payload[:32].hex())
 
     # -------------------------------------------------
     # Public API
