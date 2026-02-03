@@ -4,7 +4,7 @@ from typing import Optional, Callable, Union
 
 import numpy as np
 import sounddevice as sd
-from pylsl import StreamInfo, StreamOutlet, local_clock
+from pylsl import StreamInfo, local_clock
 
 @dataclass
 class AudioStreamSettings:
@@ -35,7 +35,7 @@ class AudioLSLStreamer:
         self.s = s
         self.sample_cb = sample_cb
         self.status_cb = status_cb
-        self.outlet: Optional[StreamOutlet] = None
+        # self.outlet: Optional[StreamOutlet] = None
         self.stream: Optional[sd.InputStream] = None
 
     def log(self, msg: str):
@@ -52,7 +52,7 @@ class AudioLSLStreamer:
             channel_format=chfmt,
             source_id=self.s.source_id,
         )
-        self.outlet = StreamOutlet(info, chunk_size=0, max_buffered=360)
+        # self.outlet = StreamOutlet(info, chunk_size=0, max_buffered=360)
 
         dtype = _dtype_format(self.s.bitdepth)
 
@@ -72,8 +72,8 @@ class AudioLSLStreamer:
             elif self.s.bitdepth == 32:
                 x = x.astype(np.float32, copy=False)
 
-            # if self.outlet:
-            #     self.outlet.push_chunk(x.tolist(), timestamp=ts0)
+            # # if self.outlet:
+            # #     self.outlet.push_chunk(x.tolist(), timestamp=ts0)
             # Custom callback function to write to XDF files 
             if self.sample_cb:
                 self.sample_cb(timestamps, x)
@@ -96,5 +96,5 @@ class AudioLSLStreamer:
                 self.stream.close()
             finally:
                 self.stream = None
-        self.outlet = None
+        # self.outlet = None
         self.log("AudioLSL: stopped.")
