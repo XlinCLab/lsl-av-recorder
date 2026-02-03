@@ -1,12 +1,14 @@
 from __future__ import annotations
+
 import os
+import sys
 import time
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
 import cv2
-from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
 from pylsl import StreamInfo, StreamOutlet, local_clock
+from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
 
 
 @dataclass
@@ -52,9 +54,18 @@ class CameraWorker(QObject):
         self.outlet = StreamOutlet(info, chunk_size=0, max_buffered=360)
 
     def _open_cap(self):
-        self.cap = cv2.VideoCapture(self.cam_index, cv2.CAP_V4L2)
+        if sys.platform == "darwin":  # MacOS
+            self.cap = cv2.VideoCapture(self.cam_index, cv2.CAP_AVFOUNDATION)
+        elif sys.platform.startswith("linux"):
+            self.cap = cv2.VideoCapture(self.cam_index, cv2.CAP_V4L2)
+        else:  # Windows
+            self.cap = cv2.VideoCapture(self.cam_index)
+
         if not self.cap.isOpened():
-            raise RuntimeError(f"Could not open camera index={self.cam_index} ({self.devnode})")
+            raise RuntimeError(
+                f"Could not open camera index={self.cam_index} ({self.devnode})"
+            )
+
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(self.w))
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, float(self.h))
         self.cap.set(cv2.CAP_PROP_FPS, float(self.fps))
