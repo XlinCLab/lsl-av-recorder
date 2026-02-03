@@ -1,12 +1,13 @@
 from __future__ import annotations
+
+import datetime
 import struct
 import threading
-import datetime
+import uuid
 import xml.etree.ElementTree as ET
 from typing import BinaryIO, Dict, Optional
 
 import numpy as np
-
 
 # XDF chunk tags
 TAG_FILE_HEADER = 1
@@ -156,6 +157,7 @@ class XDFWriter:
         ET.SubElement(root, "nominal_srate").text = str(srate)
         ET.SubElement(root, "channel_format").text = fmt
         ET.SubElement(root, "source_id").text = source_id
+        ET.SubElement(root, "uid").text = str(uuid.uuid4())
 
         if extra:
             desc = ET.SubElement(root, "desc")
