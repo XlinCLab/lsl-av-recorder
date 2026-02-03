@@ -1,6 +1,9 @@
 from __future__ import annotations
-from typing import List, Dict, Any
+
+from typing import Any, Dict, List
+
 import sounddevice as sd
+
 
 def list_input_devices() -> List[Dict[str, Any]]:
     devs = sd.query_devices()

@@ -1,7 +1,11 @@
 from __future__ import annotations
+
 from typing import Dict
-from PyQt6.QtWidgets import QWidget, QLabel, QGridLayout, QGroupBox, QVBoxLayout
+
 from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import (QGridLayout, QGroupBox, QLabel, QVBoxLayout,
+                             QWidget)
+
 
 class PreviewPanel(QWidget):
     def __init__(self, parent=None):

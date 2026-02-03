@@ -1,20 +1,21 @@
 from __future__ import annotations
+
 from typing import Optional
 
-from PyQt6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
-    QLineEdit, QPushButton, QFileDialog, QTabWidget, QTextEdit,
-    QComboBox, QSpinBox, QLabel, QCheckBox, QMessageBox, QSplitter
-)
 from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QFormLayout,
+                             QHBoxLayout, QLabel, QLineEdit, QMainWindow,
+                             QMessageBox, QPushButton, QSpinBox, QSplitter,
+                             QTabWidget, QTextEdit, QVBoxLayout, QWidget)
 
-from ..config import load_cfg, AppConfig, VideoCamConfig
-from ..audio.devices import list_input_devices, default_input_device_index
+from ..audio.devices import default_input_device_index, list_input_devices
+from ..config import AppConfig, VideoCamConfig, load_cfg
 from ..naming import build_paths  # keep global import too
 from .camera_panel import CameraPanel
-from .run_controller import RunController
 from .preview_manager import PreviewManager
 from .preview_panel import PreviewPanel
+from .run_controller import RunController
+
 
 class MainWindow(QMainWindow):
     def __init__(self, cfg_path: Optional[str] = None):

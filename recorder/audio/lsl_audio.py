@@ -1,10 +1,12 @@
 from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Optional, Callable, Union
+from typing import Callable, Optional, Union
 
 import numpy as np
 import sounddevice as sd
 from pylsl import StreamInfo, local_clock
+
 
 @dataclass
 class AudioStreamSettings:

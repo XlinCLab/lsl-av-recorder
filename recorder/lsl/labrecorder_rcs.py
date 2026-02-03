@@ -1,6 +1,8 @@
 from __future__ import annotations
+
 import socket
 from typing import Optional
+
 
 class LabRecorderRCS:
     def __init__(self, host: str = "127.0.0.1", port: int = 22345):

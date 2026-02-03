@@ -1,12 +1,14 @@
 from __future__ import annotations
-import os
-import json
-from dataclasses import asdict
-from typing import Optional, Callable, Dict, List
 
+import json
+import os
+from dataclasses import asdict
+from typing import Callable, Dict, List, Optional
+
+from ..audio.lsl_audio import (AudioLSLStreamer, AudioStreamSettings,
+                               _dtype_format)
 from ..config import AppConfig
 from ..naming import build_paths
-from ..audio.lsl_audio import AudioLSLStreamer, AudioStreamSettings, _dtype_format
 from ..video.video_recorder import VideoRecorder
 from ..xdf.xdf_writer import XDFWriter
 
