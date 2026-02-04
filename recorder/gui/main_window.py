@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Optional
 
 from PyQt6.QtCore import Qt
@@ -126,7 +127,9 @@ class MainWindow(QMainWindow):
         self.btn_start.clicked.connect(self.on_start)
         self.btn_stop.clicked.connect(self.on_stop)
 
-    def log(self, msg: str):
+    def log(self, msg: str, loglevel: str = "INFO"):
+        now = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+        msg = f"{now} {loglevel}: {msg}"
         self.logbox.append(msg)
 
     def _populate_audio_devices(self):

@@ -40,9 +40,18 @@ class RunController:
         self._setup_paths()
         self._write_metadata()
 
-    def log(self, msg: str):
+    def log(self, msg: str, loglevel: str = "INFO"):
         if self.status_cb:
-            self.status_cb(msg)
+            self.status_cb(msg, loglevel)
+    
+    def info(self, msg: str):
+        self.log(msg, loglevel="INFO")
+
+    def warning(self, msg: str):
+        self.log(msg, loglevel="WARNING")
+
+    def error(self, msg: str):
+        self.log(msg, loglevel="ERROR")
     
     def _setup_paths(self):
         os.makedirs(self.outdir, exist_ok=True)
@@ -64,7 +73,7 @@ class RunController:
                 indent=2,
                 ensure_ascii=False,
             )
-        self.log(f"Wrote run metadata to {meta_path}")
+        self.info(f"Wrote run metadata to {meta_path}")
 
     def start(self):
         if self._running:
@@ -79,15 +88,15 @@ class RunController:
         # Start XDF writer and add streams
         xdf_writer = self._initialize_xdf_writer()
         xdf_writer.start()
-        self.log(f"XDF writer started")
+        self.info(f"XDF writer started")
         self._add_streams_to_xdf_writer(xdf_writer)
 
         # Once all streams initialized, started, and added to XDF writer,
         # connect XDF writer to RunController to begin recording stream data to XDF
         self.xdf = xdf_writer
         self._running = True
-        self.log("Started recording streams in XDF")
-        self.log(f"Run started in {self.outdir}")
+        self.info("Started recording streams in XDF")
+        self.info(f"Run started in {self.outdir}")
 
     def stop(self):
         if not self._running:
@@ -105,17 +114,17 @@ class RunController:
             try:
                 vr.stop()
             except Exception as exc:
-                self.log(f"Skipped stopping video {vr} due to exception: {exc}")
+                self.error(f"Skipped stopping video {vr} due to exception: {exc}")
         self.videos.clear()
 
         # XDF
         if self.xdf:
             self.xdf.stop()
             self.xdf = None
-            self.log("XDF writer stopped")
+            self.info("XDF writer stopped")
 
         self._running = False
-        self.log("Run stopped")
+        self.info("Run stopped")
 
     @staticmethod
     def _resolve_xdf_path(
@@ -161,7 +170,7 @@ class RunController:
         if xdf_path is None:
             xdf_path = self._get_xdf_path()
         xdf_writer = XDFWriter(xdf_path)
-        self.log(f"Initialized XDF writer with output file: {xdf_path}")
+        self.info(f"Initialized XDF writer with output file: {xdf_path}")
         return xdf_writer
 
     def _add_streams_to_xdf_writer(self, xdf_writer: XDFWriter):
@@ -177,7 +186,7 @@ class RunController:
                     fps=cam.FPS,
                 )
                 self.video_sids[cam.Label] = sid
-                self.log(f"Initialized video stream from camera <{cam.Label}> in XDF")
+                self.info(f"Initialized video stream from camera <{cam.Label}> in XDF")
         if self.audio_enabled:
             self.audio_sid = xdf_writer.add_audio_stream(
                 name=self.audio_settings.stream_name,
@@ -186,7 +195,7 @@ class RunController:
                 fmt=_dtype_format(self.audio_settings.bitdepth),
                 source_id=self.audio_settings.source_id,
             )
-            self.log(f"Initialized audio stream <{self.audio_settings.stream_name}> in XDF")
+            self.info(f"Initialized audio stream <{self.audio_settings.stream_name}> in XDF")
 
     def _get_audio_stream_settings(self) -> AudioStreamSettings:
         aset = AudioStreamSettings(
@@ -211,11 +220,11 @@ class RunController:
         active_cams = [c for c in self.cfg.Video.Cams if c.Enabled]
         for cam in active_cams:
             if cam.FPS is None or float(cam.FPS) <= 0:
-                self.log(f"Warning: camera {cam.label} sampling rate is {cam.FPS}")
+                self.warning(f"Camera {cam.label} sampling rate is {cam.FPS}")
             if cam.Width is None or float(cam.Width) <= 0:
-                self.log(f"Warning: camera {cam.label} width is {cam.Width}")
+                self.warning(f"Camera {cam.label} width is {cam.Width}")
             if cam.Height is None or float(cam.Height) <= 0:
-                self.log(f"Warning: camera {cam.label} height is {cam.Height}")
+                self.warning(f"Camera {cam.label} height is {cam.Height}")
         return active_cams
 
     def _get_video_output_path(self, cam: VideoCamConfig):
@@ -236,7 +245,7 @@ class RunController:
             ),
         )
         self.videos.append(vr)
-        self.log(f"Initialized video stream for camera {cam.Label}")
+        self.info(f"Initialized video stream for camera {cam.Label}")
 
     def _initialize_streams(self):
         # Initialize audio stream
@@ -247,7 +256,7 @@ class RunController:
                 status_cb=self.log,
                 sample_cb=self._on_audio_samples,
             )
-            self.log("Initialized audio stream")
+            self.info("Initialized audio stream")
 
         # Initialize video streams
         if self.video_enabled:
@@ -259,10 +268,10 @@ class RunController:
         if self.video_enabled:
             for vr in self.videos:
                 vr.start()
-                self.log(f"Video capture started: {vr.cam.Label}")
+                self.info(f"Video capture started: {vr.cam.Label}")
         if self.audio_enabled:
             self.audio.start()
-            self.log("Audio capture started")
+            self.info("Audio capture started")
         # Sleep for N seconds before continuing in order
         # to give the streams a chance to "warm up"
         sleep(sleep_timer)

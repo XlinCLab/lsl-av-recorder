@@ -24,9 +24,18 @@ class VideoRecorder:
         self.thread = None
         self.frame_idx = 0
 
-    def log(self, msg):
+    def log(self, msg: str, loglevel: str = "INFO"):
         if self.status_cb:
-            self.status_cb(msg)
+            self.status_cb(msg, loglevel)
+
+    def info(self, msg: str):
+        self.log(msg, loglevel="INFO")
+
+    def warning(self, msg: str):
+        self.log(msg, loglevel="WARNING")
+
+    def error(self, msg: str):
+        self.log(msg, loglevel="ERROR")
 
     def start(self):
         self.cap = cv2.VideoCapture(self.cam.DeviceIndex)
@@ -46,7 +55,7 @@ class VideoRecorder:
         self.thread = threading.Thread(target=self._loop, daemon=True)
         self.thread.start()
 
-        self.log(f"VideoRecorder started: {self.cam.Label}")
+        self.info(f"VideoRecorder started: {self.cam.Label}")
 
     def _loop(self):
         while self.running:
@@ -73,4 +82,4 @@ class VideoRecorder:
         if self.writer:
             self.writer.release()
 
-        self.log(f"VideoRecorder stopped: {self.cam.Label}")
+        self.info(f"VideoRecorder stopped: {self.cam.Label}")

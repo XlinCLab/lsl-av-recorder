@@ -40,9 +40,18 @@ class AudioLSLStreamer:
         # self.outlet: Optional[StreamOutlet] = None
         self.stream: Optional[sd.InputStream] = None
 
-    def log(self, msg: str):
+    def log(self, msg: str, loglevel: str = "INFO"):
         if self.status_cb:
-            self.status_cb(msg)
+            self.status_cb(msg, loglevel)
+
+    def info(self, msg: str):
+        self.log(msg, loglevel="INFO")
+
+    def warning(self, msg: str):
+        self.log(msg, loglevel="WARNING")
+
+    def error(self, msg: str):
+        self.log(msg, loglevel="ERROR")
 
     def start(self):
         chfmt = _lsl_format(self.s.bitdepth)
@@ -60,7 +69,7 @@ class AudioLSLStreamer:
 
         def callback(indata, frames, time_info, status):
             if status:
-                self.log(f"Audio status: {status}")
+                self.info(f"Audio status: {status}")
 
             # PortAudio time -> LSL time; timestamp refers to first sample in chunk
             offset = local_clock() - time_info.currentTime
@@ -89,7 +98,7 @@ class AudioLSLStreamer:
             blocksize=0,
         )
         self.stream.start()
-        self.log(f"AudioLSL: streaming '{self.s.stream_name}' sr={self.s.samplerate} ch={self.s.channels} fmt={chfmt}")
+        self.info(f"AudioLSL: streaming '{self.s.stream_name}' sr={self.s.samplerate} ch={self.s.channels} fmt={chfmt}")
 
     def stop(self):
         if self.stream:
@@ -99,4 +108,4 @@ class AudioLSLStreamer:
             finally:
                 self.stream = None
         # self.outlet = None
-        self.log("AudioLSL: stopped.")
+        self.info("AudioLSL: stopped.")
