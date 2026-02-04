@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import asdict
+from time import sleep
 from typing import Callable, Dict, List, Optional
 
 from ..audio.lsl_audio import (AudioLSLStreamer, AudioStreamSettings,
@@ -253,7 +254,7 @@ class RunController:
             for cam in self.cams:
                 self._initialize_video_stream(cam)
 
-    def _start_streams(self):
+    def _start_streams(self, sleep_timer: float | int = 3):
         # NB: Start video before audio
         if self.video_enabled:
             for vr in self.videos:
@@ -262,6 +263,10 @@ class RunController:
         if self.audio_enabled:
             self.audio.start()
             self.log("Audio capture started")
+        # Sleep for N seconds before continuing in order
+        # to give the streams a chance to "warm up"
+        sleep(sleep_timer)
+
 
     # -------------------------
     # Callbacks from recorders
