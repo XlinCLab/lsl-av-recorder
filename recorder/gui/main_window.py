@@ -21,7 +21,8 @@ class MainWindow(QMainWindow):
     def __init__(self, cfg_path: Optional[str] = None):
         super().__init__()
         self.setWindowTitle("LSL AV Recorder (Audio via LSL, LabRecorder XDF)")
-
+        self.logbox = QTextEdit()
+        self.logbox.setReadOnly(True)
         self.cfg: AppConfig = load_cfg(cfg_path) if cfg_path else load_cfg("example.cfg")
         self.controller = RunController(self.cfg, status_cb=self.log)
 
@@ -99,9 +100,6 @@ class MainWindow(QMainWindow):
             for panel in self.cam_panels:
                 if panel.enabled.isChecked():
                     self.preview_mgr.start_cam_preview(panel.to_config())
-
-        self.logbox = QTextEdit()
-        self.logbox.setReadOnly(True)
 
         left = QWidget()
         left_layout = QVBoxLayout()
