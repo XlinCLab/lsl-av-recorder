@@ -47,9 +47,7 @@ class RunController:
                     "prompts": asdict(self.cfg.Prompts),
                     "output": asdict(self.cfg.Output),
                     "audio": asdict(self.cfg.Audio),
-                    # original:
-                    # "video": {"Enabled": self.cfg.Video.Enabled, "Cams": [asdict(c) for c in self.cfg.Video.Cams]},
-                    "video": asdict(self.cfg.Video),
+                    "video": {"Enabled": self.cfg.Video.Enabled, "Cams": [asdict(c) for c in self.cfg.Video.Cams]},
                     "xdf_writer": "Python",
                 },
                 f,
@@ -92,7 +90,12 @@ class RunController:
                     outdir,
                     f"{base_name}_cam-{cam.Label}.{self.cfg.Video.Container}",
                 )
-
+                if cam.FPS is None or float(cam.FPS) <= 0:
+                    self.log(f"Warning: camera {cam.label} sampling rate is {cam.FPS}")
+                if cam.Width is None or float(cam.Width) <= 0:
+                    self.log(f"Warning: camera {cam.label} width is {cam.Width}")
+                if cam.Height is None or float(cam.Height) <= 0:
+                    self.log(f"Warning: camera {cam.label} height is {cam.Height}")
                 sid = self.xdf.add_video_stream(
                     name=f"Camera-{cam.Label}",
                     camera_id=str(cam.DeviceIndex),

@@ -40,6 +40,11 @@ class XDFWriter:
         self._last_timestamp: Dict[int, float] = {}
         self._clock_offsets: Dict[int, list[tuple[float, float]]] = {}
 
+    def _get_next_stream_id(self):
+        sid = self._next_stream_id
+        self._next_stream_id += 1
+        return sid
+
     def _update_timestamps(self, timestamps: np.ndarray, stream_id: int, n_samples: int):
         if stream_id not in self._first_timestamp:
             self._first_timestamp[stream_id] = timestamps[timestamps != 0][0]
@@ -314,9 +319,7 @@ class XDFWriter:
         """
         Register an audio stream. Samples must be written via write_audio().
         """
-        sid = self._next_stream_id
-        self._next_stream_id += 1
-
+        sid = self._get_next_stream_id()
         xml = self._make_stream_header_xml(
             name=name,
             stype="Audio",
@@ -344,14 +347,12 @@ class XDFWriter:
         """
         Video stream stores frame index (int64) with timestamps.
         """
-        sid = self._next_stream_id
-        self._next_stream_id += 1
-
+        sid = self._get_next_stream_id()
         xml = self._make_stream_header_xml(
             name=name,
             stype="Video",
-            channel_count=1,  # TODO check this
-            srate=fps or 0.0,  # TODO check this
+            channel_count=1,  # NB: only one channel for video in XDF because only frame index is stored
+            srate=fps or 0.0,  # NB: 0.0 marks the sampling rate as "irregular", expected to be positive otherwise
             fmt="int64",  # TODO check this
             source_id=f"camera:{camera_id}",
             extra={
