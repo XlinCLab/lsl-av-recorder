@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (QCheckBox, QFormLayout, QGroupBox, QHBoxLayout,
                              QVBoxLayout, QWidget)
 
 from ..config import VideoCamConfig
-from ..video.v4l2_controls import apply_controls
+from ..video.camera_settings import apply_controls
 
 
 class CameraPanel(QWidget):
