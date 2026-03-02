@@ -40,7 +40,7 @@ class CameraPanel(QWidget):
         form.addRow("Width", self.width)
         form.addRow("Height", self.height)
 
-        self.btn_apply = QPushButton("Apply (basic)")
+        self.btn_apply = QPushButton("Apply settings")
         self.text = QTextEdit(); self.text.setReadOnly(True)
 
         layout = QVBoxLayout()
@@ -63,7 +63,14 @@ class CameraPanel(QWidget):
         return c
 
     def on_apply(self):
-        # keep minimal here; full control UI was in v0.2; you can re-add later
         dev = self.devnode.text().strip()
-        rep = apply_controls(dev, {})
+
+        # Gather controls from the UI
+        controls = {
+            "width": self.width.value(),
+            "height": self.height.value(),
+            "fps": self.fps.value(),
+        }
+
+        rep = apply_controls(dev, controls)
         self.text.append(f"Apply -> applied={rep['applied']} failed={rep['failed']}")
