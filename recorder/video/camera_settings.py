@@ -11,6 +11,9 @@ IS_LINUX = sys.platform.startswith("linux")
 # Regular expression pattern for video devnodes
 DEVNODE_PATTERN = re.compile(r"/dev/video(\d+)$")
 
+# Camera controls not supported via ffmpeg
+FFMPEG_UNSUPPORTED_CONTROLS = {"auto_exposure", "auto_focus"}
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -73,22 +76,58 @@ def set_frame_rate(devnode: str, fps: float) -> bool:
     return result is not None
 
 
-def set_control(devnode: str, control_settings: str) -> bool:
+def set_control(devnode: str, control_settings: dict) -> bool:
     if IS_LINUX:
         # Linux V4L2 method
+        control_settings = get_control_settings_string(control_settings)
         cmd = ["v4l2-ctl", "-d", devnode, "-c", control_settings]
 
     elif IS_MAC:
+        devnode = reformat_devnode_for_ffmpeg(devnode)
+        width = control_settings.get("width")
+        height = control_settings.get("height")
+
+        # Reject unsupported controls explicitly
+        for parameter in control_settings:
+            if parameter in FFMPEG_UNSUPPORTED_CONTROLS:
+                logger.warning(f"{parameter} not supported on macOS via ffmpeg; skipping.")
+
+        # Build video size argument
+        video_size = None
+        if width and height:
+            video_size = f"{width}x{height}"
+        elif (width and not height) or (height and not width):
+            raise ValueError("Both height and width dimensions are required")
+
+        # Build eq filter string (brightness/hue/saturation)
+        eq_parts = []
+        for key in ["brightness", "saturation", "hue"]:
+            if key in control_settings:
+                eq_parts.append(f"{key}={control_settings[key]}")
+
         cmd = [
             "ffmpeg",
             "-f", "avfoundation",
-            "-framerate", "30",
-            "-video_device_index", str(devnode),
-            "-i", "none",
-            "-vf", f"eq={control_settings}",
-            "-t", "0.1",  # tiny test duration
-            "-f", "null", "-"
         ]
+
+        if video_size:
+            cmd += ["-video_size", video_size]
+
+        cmd += [
+            "-framerate", "30",
+            "-i", f"{devnode}:none",
+        ]
+
+        if eq_parts:
+            vf_arg = "eq=" + ":".join(eq_parts)
+            cmd += ["-vf", vf_arg]
+
+        cmd += [
+            "-t", "0.1",  # tiny test duration
+            "-f", "null",
+            "-"
+        ]
+
     else:
         raise ValueError(f"Unsupported OS: {sys.platform}")
     
@@ -107,8 +146,7 @@ def apply_controls(devnode: str, controls: Dict[str, Any]) -> Dict[str, Any]:
 
     # Handle other camera recording settings
     if controls:
-        control_settings = get_control_settings_string(controls)
-        control_set_result = set_control(devnode, control_settings)
+        control_set_result = set_control(devnode, controls)
         for k, v in controls.items():
             (applied if control_set_result else failed)[k] = v
     
