@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (QCheckBox, QFormLayout, QGroupBox, QHBoxLayout,
                              QVBoxLayout, QWidget)
 
 from ..config import VideoCamConfig
-from ..video.camera_settings import apply_controls
+from ..video.camera_settings import apply_camera_controls
 
 
 class CameraPanel(QWidget):
@@ -72,5 +72,5 @@ class CameraPanel(QWidget):
             "fps": self.fps.value(),
         }
 
-        rep = apply_controls(dev, controls)
+        rep = apply_camera_controls(dev, controls)
         self.text.append(f"Apply -> applied={rep['applied']} failed={rep['failed']}")

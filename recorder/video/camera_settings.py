@@ -76,7 +76,7 @@ def set_frame_rate(devnode: str, fps: float) -> bool:
     return result is not None
 
 
-def set_control(devnode: str, control_settings: dict) -> bool:
+def set_camera_controls(devnode: str, control_settings: dict) -> bool:
     if IS_LINUX:
         # Linux V4L2 method
         control_settings = get_control_settings_string(control_settings)
@@ -135,7 +135,7 @@ def set_control(devnode: str, control_settings: dict) -> bool:
     return result is not None
 
 
-def apply_controls(devnode: str, controls: Dict[str, Any]) -> Dict[str, Any]:
+def apply_camera_controls(devnode: str, controls: Dict[str, Any]) -> Dict[str, Any]:
     applied, failed = {}, {}
 
     # Handle frame rate separately
@@ -146,7 +146,7 @@ def apply_controls(devnode: str, controls: Dict[str, Any]) -> Dict[str, Any]:
 
     # Handle other camera recording settings
     if controls:
-        control_set_result = set_control(devnode, controls)
+        control_set_result = set_camera_controls(devnode, controls)
         for k, v in controls.items():
             (applied if control_set_result else failed)[k] = v
     
