@@ -77,29 +77,51 @@ def set_frame_rate(devnode: str, fps: float) -> bool:
 
 
 def set_camera_controls(devnode: str, control_settings: dict) -> dict:
-    applied_settings = control_settings.copy()
-    if IS_LINUX:
-        # Linux V4L2 method
-        control_settings = get_control_settings_string(control_settings)
-        cmd = ["v4l2-ctl", "-d", devnode, "-c", control_settings]
+    settings_to_apply = control_settings.copy()
+    successful_settings = {}
 
-    elif IS_MAC:
+    # Build video size argument
+    width = control_settings.get("width")
+    height = control_settings.get("height")
+    video_size = None
+    if width and height:
+        video_size = f"{width}x{height}"
+    elif (width and not height) or (height and not width):
+        raise ValueError("Both height and width dimensions are required")
+
+    if IS_LINUX: # Linux V4L2 method
+
+        # Handle width and height separately
+        if width and height:
+            # Remove width/height from settings_to_apply in order not to include them in following command
+            settings_to_apply.pop("width")
+            settings_to_apply.pop("height")
+            fmt_cmd = [
+                "v4l2-ctl",
+                "-d", devnode,
+                f"--set-fmt-video=width={width},height={height}"
+            ]
+            result, _ = capture_cmd_output(fmt_cmd)
+            if result is not None:
+                successful_settings["width"] = width
+                successful_settings["height"] = height
+        
+        # Handle other settings
+        if settings_to_apply:
+            setting_str = get_control_settings_string(settings_to_apply)
+            cmd = ["v4l2-ctl", "-d", devnode, "-c", setting_str]
+            result, _ = capture_cmd_output(fmt_cmd)
+            if result is not None:
+                successful_settings.update(settings_to_apply)
+
+    elif IS_MAC:  # FFMPEG for MaCOS
         devnode = reformat_devnode_for_ffmpeg(devnode)
-        width = control_settings.get("width")
-        height = control_settings.get("height")
 
         # Reject unsupported controls explicitly
         for parameter in control_settings:
             if parameter in FFMPEG_UNSUPPORTED_CONTROLS:
                 logger.warning(f"{parameter} not supported on macOS via ffmpeg; skipping.")
-                applied_settings.pop(parameter)
-
-        # Build video size argument
-        video_size = None
-        if width and height:
-            video_size = f"{width}x{height}"
-        elif (width and not height) or (height and not width):
-            raise ValueError("Both height and width dimensions are required")
+                settings_to_apply.pop(parameter)
 
         # Build eq filter string (brightness/hue/saturation)
         eq_parts = []
@@ -129,14 +151,14 @@ def set_camera_controls(devnode: str, control_settings: dict) -> dict:
             "-f", "null",
             "-"
         ]
+        result, _ = capture_cmd_output(cmd)
+        if result is not None:
+            successful_settings.update(settings_to_apply)
 
     else:
         raise ValueError(f"Unsupported OS: {sys.platform}")
-    
-    result, _ = capture_cmd_output(cmd)
-    if result is not None:
-        return applied_settings
-    return {}
+
+    return successful_settings
 
 
 def apply_camera_controls(devnode: str, controls: Dict[str, Any]) -> Dict[str, Any]:
