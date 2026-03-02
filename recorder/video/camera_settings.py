@@ -76,7 +76,8 @@ def set_frame_rate(devnode: str, fps: float) -> bool:
     return result is not None
 
 
-def set_camera_controls(devnode: str, control_settings: dict) -> bool:
+def set_camera_controls(devnode: str, control_settings: dict) -> dict:
+    applied_settings = control_settings.copy()
     if IS_LINUX:
         # Linux V4L2 method
         control_settings = get_control_settings_string(control_settings)
@@ -91,6 +92,7 @@ def set_camera_controls(devnode: str, control_settings: dict) -> bool:
         for parameter in control_settings:
             if parameter in FFMPEG_UNSUPPORTED_CONTROLS:
                 logger.warning(f"{parameter} not supported on macOS via ffmpeg; skipping.")
+                applied_settings.pop(parameter)
 
         # Build video size argument
         video_size = None
@@ -132,7 +134,9 @@ def set_camera_controls(devnode: str, control_settings: dict) -> bool:
         raise ValueError(f"Unsupported OS: {sys.platform}")
     
     result, _ = capture_cmd_output(cmd)
-    return result is not None
+    if result is not None:
+        return applied_settings
+    return {}
 
 
 def apply_camera_controls(devnode: str, controls: Dict[str, Any]) -> Dict[str, Any]:
@@ -146,9 +150,22 @@ def apply_camera_controls(devnode: str, controls: Dict[str, Any]) -> Dict[str, A
 
     # Handle other camera recording settings
     if controls:
-        control_set_result = set_camera_controls(devnode, controls)
+        settings_results = set_camera_controls(devnode, controls)
         for k, v in controls.items():
-            (applied if control_set_result else failed)[k] = v
+            (applied if k in settings_results else failed)[k] = v
     
     # Return successfully applied and failed settings
     return {"devnode": devnode, "applied": applied, "failed": failed}
+
+
+def summarize_control_application(devnode: str,
+                                  applied: dict,
+                                  failed: dict
+                                  ) -> str:
+    """Generate a summary string of camera setting application results."""
+    summary = [f"devnode: {devnode}"]
+    for k, v in applied.items():
+        summary.append(f"INFO: Successfully set {k}={v}")
+    for k, v in failed.items():
+        summary.append(f"ERROR: Failed to set {k}={v}")
+    return '\n'.join(summary)
