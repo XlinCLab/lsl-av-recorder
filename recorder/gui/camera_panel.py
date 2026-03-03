@@ -13,9 +13,8 @@ from ..video.camera_settings import (apply_camera_controls,
                                      get_camera_capabilities,
                                      summarize_control_application)
 from ..video.constants import (BRIGHTNESS_RANGE, DEFAULT_CAMERA_FPS,
-                               DEFAULT_PIXEL_FORMAT, HEIGHT_RANGE, HUE_RANGE,
-                               PIXEL_FORMAT_OPTIONS, SATURATION_RANGE,
-                               WIDTH_RANGE)
+                               DEFAULT_PIXEL_FORMAT, HUE_RANGE,
+                               PIXEL_FORMAT_OPTIONS, SATURATION_RANGE)
 from ..video.devices import list_video_devices
 
 
@@ -25,6 +24,9 @@ class CameraPanel(QWidget):
 
     def __init__(self, cam_cfg: VideoCamConfig, parent: Optional[QWidget] = None):
         super().__init__(parent)
+
+        self._default_resolution = (int(cam_cfg.Width), int(cam_cfg.Height))
+        self._modes: list[tuple[int, int, set[int]]] = []
 
         self.enabled = QCheckBox("Enabled (starts preview)")
         self.enabled.setChecked(bool(cam_cfg.Enabled))
@@ -38,8 +40,7 @@ class CameraPanel(QWidget):
         self.label = QLineEdit(cam_cfg.Label)
 
         self.fps = self._init_fps(int(cam_cfg.FPS))
-        self.width = self._init_width(int(cam_cfg.Width))
-        self.height = self._init_height(int(cam_cfg.Height))
+        self.resolution = self._init_resolution(self._default_resolution)
         self.brightness = self._init_brightness(int(cam_cfg.Brightness or 0))
         self.hue = self._init_hue(int(cam_cfg.Hue or 0))
         self.saturation = self._init_saturation(int(cam_cfg.Saturation or 100))
@@ -57,8 +58,7 @@ class CameraPanel(QWidget):
         form.addRow("DevNode", self.devnode)
         form.addRow("Label", self.label)
         form.addRow("FPS", self.fps)
-        form.addRow("Width", self.width)
-        form.addRow("Height", self.height)
+        form.addRow("Resolution", self.resolution)
         form.addRow("Brightness", self.brightness)
         form.addRow("Hue", self.hue)
         form.addRow("Saturation", self.saturation)
@@ -90,6 +90,9 @@ class CameraPanel(QWidget):
         self.device_index.valueChanged.connect(self._on_device_fields_changed)
         self.devnode.editingFinished.connect(self._on_device_fields_changed)
         self.enabled.toggled.connect(lambda _: self.previewConfigChanged.emit())
+        self.fps.currentIndexChanged.connect(self._on_fps_changed)
+        self.resolution.currentIndexChanged.connect(lambda _: self.previewConfigChanged.emit())
+
         self.refresh_capabilities()
 
     def _init_fps(self, fps: int) -> QComboBox:
@@ -98,16 +101,10 @@ class CameraPanel(QWidget):
         self._set_fps_choices([fps], fps)
         return widget
 
-    def _init_width(self, value: int) -> QSpinBox:
-        widget = QSpinBox()
-        widget.setRange(*WIDTH_RANGE)
-        widget.setValue(value)
-        return widget
-
-    def _init_height(self, value: int) -> QSpinBox:
-        widget = QSpinBox()
-        widget.setRange(*HEIGHT_RANGE)
-        widget.setValue(value)
+    def _init_resolution(self, resolution: tuple[int, int]) -> QComboBox:
+        widget = QComboBox()
+        self.resolution = widget
+        self._set_resolution_choices([resolution], resolution)
         return widget
 
     def _init_brightness(self, value: int) -> QSpinBox:
@@ -143,11 +140,63 @@ class CameraPanel(QWidget):
         fps_sorted = sorted({int(x) for x in fps_values if int(x) > 0})
         if not fps_sorted:
             fps_sorted = [max(1, int(current_fps))]
+        self.fps.blockSignals(True)
         self.fps.clear()
         for f in fps_sorted:
             self.fps.addItem(str(f), f)
         idx = self.fps.findData(int(current_fps))
         self.fps.setCurrentIndex(idx if idx >= 0 else 0)
+        self.fps.blockSignals(False)
+
+    def _resolution_label(self, resolution: tuple[int, int]) -> str:
+        width, height = resolution
+        return f"{width}x{height}"
+
+    def _sort_resolutions_desc(self, resolutions: list[tuple[int, int]]) -> list[tuple[int, int]]:
+        return sorted(set(resolutions), key=lambda r: (r[0] * r[1], r[0], r[1]), reverse=True)
+
+    def _set_resolution_choices(
+        self,
+        resolutions: list[tuple[int, int]],
+        selected_resolution: tuple[int, int] | None = None,
+    ):
+        ordered = self._sort_resolutions_desc(resolutions)
+        if not ordered:
+            ordered = [self._default_resolution]
+        if selected_resolution not in ordered:
+            selected_resolution = ordered[0]
+
+        self.resolution.blockSignals(True)
+        self.resolution.clear()
+        for r in ordered:
+            self.resolution.addItem(self._resolution_label(r), r)
+        idx = self.resolution.findData(selected_resolution)
+        self.resolution.setCurrentIndex(idx if idx >= 0 else 0)
+        self.resolution.blockSignals(False)
+
+    def _selected_resolution(self) -> tuple[int, int]:
+        data = self.resolution.currentData()
+        if isinstance(data, tuple) and len(data) == 2:
+            width, height = data
+            return (int(width), int(height))
+        return self._default_resolution
+
+    def _update_resolution_choices_for_selected_fps(self, prefer_current: bool):
+        fps = int(self.fps.currentData() or DEFAULT_CAMERA_FPS)
+        compatible = [
+            (w, h)
+            for w, h, fps_values in self._modes
+            if fps in fps_values
+        ]
+
+        if compatible:
+            current = self._selected_resolution() if prefer_current else None
+            self._set_resolution_choices(compatible, selected_resolution=current)
+            self.resolution.setEnabled(True)
+            return
+
+        self._set_resolution_choices([self._default_resolution], selected_resolution=self._default_resolution)
+        self.resolution.setEnabled(False)
 
     def _set_pixel_format_enabled(self, supported_formats: list[str], current_pf: str):
         supported = {s.upper() for s in supported_formats}
@@ -224,6 +273,10 @@ class CameraPanel(QWidget):
         self.refresh_capabilities()
         self.previewConfigChanged.emit()
 
+    def _on_fps_changed(self):
+        self._update_resolution_choices_for_selected_fps(prefer_current=False)
+        self.previewConfigChanged.emit()
+
     def refresh_capabilities(self):
         dev = self.devnode.text().strip()
         idx = int(self.device_index.value())
@@ -231,9 +284,29 @@ class CameraPanel(QWidget):
         current_pf = self.pixel_format.currentText()
         caps = get_camera_capabilities(dev, idx)
 
-        fps_values = caps.get("fps") or [current_fps]
-        self._set_fps_choices(list(fps_values), current_fps)
-        self.fps.setEnabled(bool(caps.get("fps")))
+        raw_modes = caps.get("modes") or []
+        self._modes = []
+        for m in raw_modes:
+            try:
+                width = int(m["width"])
+                height = int(m["height"])
+                fps_values = {int(v) for v in (m.get("fps") or []) if int(v) > 0}
+                if width > 0 and height > 0 and fps_values:
+                    self._modes.append((width, height, fps_values))
+            except Exception:
+                continue
+
+        if self._modes:
+            fps_values = sorted({fps for _, _, fpss in self._modes for fps in fpss})
+            self._set_fps_choices(fps_values, current_fps)
+            self.fps.setEnabled(True)
+            self._update_resolution_choices_for_selected_fps(prefer_current=False)
+        else:
+            fps_values = caps.get("fps") or [current_fps]
+            self._set_fps_choices(list(fps_values), current_fps)
+            self.fps.setEnabled(bool(caps.get("fps")))
+            self._set_resolution_choices([self._default_resolution], selected_resolution=self._default_resolution)
+            self.resolution.setEnabled(False)
 
         pixel_formats = list(caps.get("pixel_formats") or [])
         self.pixel_format.setEnabled(bool(pixel_formats))
@@ -274,8 +347,9 @@ class CameraPanel(QWidget):
         c.DevNode = self.devnode.text().strip()
         c.Label = self.label.text().strip()
         c.FPS = int(self.fps.currentData() or DEFAULT_CAMERA_FPS)
-        c.Width = int(self.width.value())
-        c.Height = int(self.height.value())
+        width, height = self._selected_resolution()
+        c.Width = int(width)
+        c.Height = int(height)
         c.Brightness = int(self.brightness.value()) if self.brightness.isEnabled() else None
         c.Hue = int(self.hue.value()) if self.hue.isEnabled() else None
         c.Saturation = int(self.saturation.value()) if self.saturation.isEnabled() else None
@@ -317,7 +391,7 @@ class CameraPanel(QWidget):
         # Print summary of successfully applied and failed settings
         summary = summarize_control_application(
             dev,
-            rep['applied'],
-            rep['failed'],
+            rep["applied"],
+            rep["failed"],
         )
         self.text.append(summary)
