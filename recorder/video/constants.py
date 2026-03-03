@@ -3,15 +3,18 @@ import re
 # Regular expression pattern for video devnodes
 DEVNODE_PATTERN = re.compile(r"/dev/video(\d+)$")
 
-# Video display ranges
+# Video display ranges and defaults
 WIDTH_RANGE = (1, 7680)
+DEFAULT_WIDTH = 1280
 HEIGHT_RANGE = (1, 4320)
+DEFAULT_HEIGHT = 780
 BRIGHTNESS_RANGE = (-100, 100)
 HUE_RANGE = (-180, 180)
 SATURATION_RANGE = (0, 200)
 
 # Frame rate (frames per second)
 DEFAULT_CAMERA_FPS = 30
+DEFAULT_PREVIEW_FPS = 15
 DEFAULT_FPS_CANDIDATES = (10, 15, 24, 25, 30, 50, 60, 120)
 
 # Pixel format
