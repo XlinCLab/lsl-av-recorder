@@ -5,17 +5,13 @@ from typing import Any, Dict
 
 from ..utils.utils import _extract_range, run_capture_cmd
 from ..video.constants import (DEFAULT_CAMERA_FPS, DEVNODE_PATTERN,
-                               FFMPEG_UNSUPPORTED_CONTROLS,
+                               FFMPEG_UNSUPPORTED_CONTROLS, IS_LINUX, IS_MAC,
                                MAC_PIXEL_FORMAT_MAP, V4L2_CONTROL_MAP)
 from ..video.ffmpeg_utils import (_probe_mac_supported_fps,
                                   _probe_mac_supported_ui_formats)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
-
-# Detect operating system
-IS_MAC = sys.platform == "darwin"
-IS_LINUX = sys.platform.startswith("linux")
 
 
 def _empty_capabilities() -> Dict[str, Any]:
@@ -68,7 +64,7 @@ def get_camera_capabilities(devnode: str,
         return _linux_camera_capabilities(devnode)
     if IS_MAC:
         return _mac_camera_capabilities(devnode, device_index)
-    raise OSError("Unsupported OS")
+    raise OSError(f"Unsupported OS: {sys.platform}")
 
 
 def reformat_devnode_for_ffmpeg(devnode: str) -> str:

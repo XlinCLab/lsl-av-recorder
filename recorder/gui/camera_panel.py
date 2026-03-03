@@ -16,10 +16,12 @@ from ..video.constants import (BRIGHTNESS_RANGE, DEFAULT_CAMERA_FPS,
                                DEFAULT_PIXEL_FORMAT, HEIGHT_RANGE, HUE_RANGE,
                                PIXEL_FORMAT_OPTIONS, SATURATION_RANGE,
                                WIDTH_RANGE)
+from ..video.devices import list_video_devices
 
 
 class CameraPanel(QWidget):
     log = pyqtSignal(str)
+    previewConfigChanged = pyqtSignal()
 
     def __init__(self, cam_cfg: VideoCamConfig, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -27,6 +29,7 @@ class CameraPanel(QWidget):
         self.enabled = QCheckBox("Enabled (starts preview)")
         self.enabled.setChecked(bool(cam_cfg.Enabled))
 
+        self.device_name = QComboBox()
         self.device_index = QSpinBox()
         self.device_index.setRange(0, 32)
         self.device_index.setValue(cam_cfg.DeviceIndex)
@@ -49,6 +52,7 @@ class CameraPanel(QWidget):
 
         form = QFormLayout()
         form.addRow(self.enabled)
+        form.addRow("Device", self.device_name)
         form.addRow("DeviceIndex", self.device_index)
         form.addRow("DevNode", self.devnode)
         form.addRow("Label", self.label)
@@ -62,6 +66,7 @@ class CameraPanel(QWidget):
         form.addRow("Auto-exposure", self.auto_exposure)
         form.addRow("Auto-focus", self.auto_focus)
 
+        self.btn_refresh_devices = QPushButton("Refresh video devices")
         self.btn_refresh_caps = QPushButton("Refresh device capabilities")
         self.btn_apply = QPushButton("Apply settings")
         self.text = QTextEdit()
@@ -69,15 +74,22 @@ class CameraPanel(QWidget):
 
         layout = QVBoxLayout()
         layout.addLayout(form)
+        layout.addWidget(self.btn_refresh_devices)
         layout.addWidget(self.btn_refresh_caps)
         layout.addWidget(self.btn_apply)
         layout.addWidget(self.text)
         self.setLayout(layout)
 
+        self._video_devices: list[dict[str, Any]] = []
+        self._populate_video_devices(cam_cfg.DeviceIndex, cam_cfg.DevNode)
+
+        self.btn_refresh_devices.clicked.connect(self.refresh_video_devices)
         self.btn_refresh_caps.clicked.connect(self.refresh_capabilities)
         self.btn_apply.clicked.connect(self.on_apply)
-        self.device_index.valueChanged.connect(lambda _: self.refresh_capabilities())
-        self.devnode.editingFinished.connect(self.refresh_capabilities)
+        self.device_name.currentIndexChanged.connect(self._on_device_name_selected)
+        self.device_index.valueChanged.connect(self._on_device_fields_changed)
+        self.devnode.editingFinished.connect(self._on_device_fields_changed)
+        self.enabled.toggled.connect(lambda _: self.previewConfigChanged.emit())
         self.refresh_capabilities()
 
     def _init_fps(self, fps: int) -> QComboBox:
@@ -158,6 +170,59 @@ class CameraPanel(QWidget):
                 self.pixel_format.setCurrentIndex(row)
                 return
         self.pixel_format.setEnabled(False)
+
+    def _populate_video_devices(self, preferred_index: int, preferred_devnode: str):
+        self.device_name.clear()
+        self._video_devices = list_video_devices()
+
+        selected_row = -1
+        for row, dev in enumerate(self._video_devices):
+            self.device_name.addItem(
+                f"[{dev['index']}] {dev['name']}",
+                dev,
+            )
+            if selected_row < 0:
+                devnode_matches = preferred_devnode and str(dev.get("devnode")) == str(preferred_devnode)
+                index_matches = int(dev.get("index", -1)) == int(preferred_index)
+                if devnode_matches or index_matches:
+                    selected_row = row
+
+        if self.device_name.count() == 0:
+            self.device_name.addItem(
+                f"[{preferred_index}] Manual device",
+                {"index": int(preferred_index), "devnode": preferred_devnode, "name": "Manual device"},
+            )
+            selected_row = 0
+
+        self.device_name.setCurrentIndex(max(0, selected_row))
+        self._sync_device_fields_from_combo()
+
+    def _sync_device_fields_from_combo(self):
+        dev = self.device_name.currentData()
+        if not isinstance(dev, dict):
+            return
+        idx = int(dev.get("index", self.device_index.value()))
+        devnode = str(dev.get("devnode") or self.devnode.text().strip())
+        self.device_index.blockSignals(True)
+        self.device_index.setValue(idx)
+        self.device_index.blockSignals(False)
+        self.devnode.blockSignals(True)
+        self.devnode.setText(devnode)
+        self.devnode.blockSignals(False)
+
+    def _on_device_name_selected(self):
+        self._sync_device_fields_from_combo()
+        self.refresh_capabilities()
+        self.previewConfigChanged.emit()
+
+    def refresh_video_devices(self):
+        preferred_index = int(self.device_index.value())
+        preferred_devnode = self.devnode.text().strip()
+        self._populate_video_devices(preferred_index, preferred_devnode)
+
+    def _on_device_fields_changed(self):
+        self.refresh_capabilities()
+        self.previewConfigChanged.emit()
 
     def refresh_capabilities(self):
         dev = self.devnode.text().strip()
