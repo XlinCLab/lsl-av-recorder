@@ -7,7 +7,8 @@ from ..utils.utils import _extract_range, run_capture_cmd
 from ..video.constants import (DEFAULT_CAMERA_FPS, DEVNODE_PATTERN,
                                FFMPEG_UNSUPPORTED_CONTROLS, IS_LINUX, IS_MAC,
                                MAC_PIXEL_FORMAT_MAP, V4L2_CONTROL_MAP)
-from ..video.ffmpeg_utils import (_probe_mac_supported_fps,
+from ..video.ffmpeg_utils import (_get_supported_modes,
+                                  _probe_mac_supported_fps,
                                   _probe_mac_supported_ui_formats)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
@@ -18,6 +19,7 @@ def _empty_capabilities() -> Dict[str, Any]:
     return {
         "pixel_formats": [],
         "fps": [],
+        "modes": [],
         "supports_auto_exposure": False,
         "supports_auto_focus": False,
         "brightness_range": None,
@@ -44,16 +46,42 @@ def _linux_camera_capabilities(devnode: str) -> Dict[str, Any]:
     caps["brightness_range"] = _extract_range(ctrl_text, "brightness")
     caps["hue_range"] = _extract_range(ctrl_text, "hue")
     caps["saturation_range"] = _extract_range(ctrl_text, "saturation")
+
+    # Parse V4L2 size/fps mode associations from --list-formats-ext output.
+    mode_fps: dict[tuple[int, int], set[int]] = {}
+    current_mode: tuple[int, int] | None = None
+    for line in fmt_text.splitlines():
+        size_match = re.search(r"Size:\s+Discrete\s+(\d+)x(\d+)", line)
+        if size_match:
+            current_mode = (int(size_match.group(1)), int(size_match.group(2)))
+            mode_fps.setdefault(current_mode, set())
+            continue
+        if current_mode is None:
+            continue
+        fps_match = re.search(r"\(([\d.]+)\s*fps\)", line)
+        if fps_match:
+            fps_value = int(round(float(fps_match.group(1))))
+            if fps_value > 0:
+                mode_fps[current_mode].add(fps_value)
+
+    caps["modes"] = [
+        {"width": w, "height": h, "fps": sorted(list(fps_values))}
+        for (w, h), fps_values in sorted(mode_fps.items())
+        if fps_values
+    ]
     return caps
-
-
 
 
 def _mac_camera_capabilities(devnode: str, device_index: int | None) -> Dict[str, Any]:
     caps = _empty_capabilities()
     device = str(device_index) if device_index is not None else reformat_devnode_for_ffmpeg(devnode)
-    caps["pixel_formats"] = _probe_mac_supported_ui_formats(device)
-    caps["fps"] = _probe_mac_supported_fps(device, caps["pixel_formats"])
+    modes = _get_supported_modes(device)
+    caps["modes"] = [
+        {"width": w, "height": h, "fps": fps_values}
+        for w, h, fps_values in modes
+    ]
+    caps["pixel_formats"] = _probe_mac_supported_ui_formats(device, modes)
+    caps["fps"] = _probe_mac_supported_fps(modes)
     return caps
 
 
