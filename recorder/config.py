@@ -4,6 +4,12 @@ import configparser
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+from .audio.constants import (DEFAULT_BIT_DEPTH, DEFAULT_N_CHANNELS,
+                              DEFAULT_SAMPLING_RATE)
+from .video.constants import (DEFAULT_CAMERA_FPS, DEFAULT_HEIGHT,
+                              DEFAULT_PIXEL_FORMAT, DEFAULT_PREVIEW_FPS,
+                              DEFAULT_WIDTH)
+
 
 @dataclass
 class AppPrompts:
@@ -23,9 +29,9 @@ class OutputConfig:
 class AudioConfig:
     Enabled: bool = False
     Device: Optional[str] = None
-    SampleRate: int = 48000
-    BitDepth: int = 32
-    Channels: int = 1
+    SampleRate: int = DEFAULT_SAMPLING_RATE
+    BitDepth: int = DEFAULT_BIT_DEPTH
+    Channels: int = DEFAULT_N_CHANNELS
     StreamName: str = "Audio"
 
 @dataclass
@@ -34,9 +40,9 @@ class VideoCamConfig:
     DeviceIndex: int = 0
     DevNode: str = "/dev/video0"
     Label: str = "Cam"
-    FPS: int = 30
-    Width: int = 1280
-    Height: int = 720
+    FPS: int = DEFAULT_CAMERA_FPS
+    Width: int = DEFAULT_WIDTH
+    Height: int = DEFAULT_HEIGHT
     AutoExposure: Optional[bool] = False
     Exposure: Optional[int] = None
     AutoFocus: Optional[bool] = False
@@ -46,7 +52,7 @@ class VideoCamConfig:
     Hue: Optional[int] = None
     Saturation: Optional[int] = None
     Zoom: Optional[int] = None
-    PixelFormat: str = "MJPG"
+    PixelFormat: str = DEFAULT_PIXEL_FORMAT
 
 @dataclass
 class VideoConfig:
@@ -54,7 +60,7 @@ class VideoConfig:
     MaxCams: int = 4
     Codec: str = "mp4v"
     Container: str = "mp4"
-    PreviewFPS: int = 15
+    PreviewFPS: int = DEFAULT_PREVIEW_FPS
     Cams: List[VideoCamConfig] = field(default_factory=list)
 
 @dataclass
