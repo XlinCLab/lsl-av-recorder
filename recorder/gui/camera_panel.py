@@ -66,11 +66,18 @@ class CameraPanel(QWidget):
         dev = self.devnode.text().strip()
 
         # Gather controls from the UI
-        controls = {
-            "width": self.width.value(),
-            "height": self.height.value(),
-            "fps": self.fps.value(),
-        }
+        cfg = self.to_config()
+        controls: dict[str, int] = {}
+        if cfg.Width:
+            controls["width"] = cfg.Width
+        if cfg.Height:
+            controls["height"] = cfg.Height
+        if cfg.FPS:
+            controls["fps"] = cfg.FPS
+
+        if not controls:
+            self.text.append("No controls to apply")
+            return
 
         rep = apply_camera_controls(dev, controls)
         # Print summary of successfully applied and failed settings
