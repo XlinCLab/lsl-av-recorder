@@ -1,4 +1,9 @@
 import re
+import sys
+
+# Detect operating system
+IS_MAC = sys.platform == "darwin"
+IS_LINUX = sys.platform.startswith("linux")
 
 # Regular expression pattern for video devnodes
 DEVNODE_PATTERN = re.compile(r"/dev/video(\d+)$")

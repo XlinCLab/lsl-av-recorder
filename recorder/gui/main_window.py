@@ -89,6 +89,7 @@ class MainWindow(QMainWindow):
         for i in range(4):
             cam_cfg = self.cfg.Video.Cams[i] if i < len(self.cfg.Video.Cams) else VideoCamConfig()
             panel = CameraPanel(cam_cfg)
+            panel.previewConfigChanged.connect(self._refresh_previews_from_panels)
             self.cam_panels.append(panel)
             self.tabs.addTab(panel, f"Camera {i+1}")
 
@@ -126,6 +127,20 @@ class MainWindow(QMainWindow):
         self.btn_load.clicked.connect(self.on_load)
         self.btn_start.clicked.connect(self.on_start)
         self.btn_stop.clicked.connect(self.on_stop)
+
+    def _refresh_previews_from_panels(self):
+        # Don't reconfigure preview workers while a run is active/recording.
+        if not self.btn_start.isEnabled():
+            return
+        if not self.cfg.Video.Enabled:
+            self.preview_mgr.stop_all_previews()
+            return
+
+        self.preview_mgr.stop_all_previews()
+        for panel in self.cam_panels:
+            cam_cfg = panel.to_config()
+            if cam_cfg.Enabled:
+                self.preview_mgr.start_cam_preview(cam_cfg)
 
     def log(self, msg: str, loglevel: str = "INFO"):
         now = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')

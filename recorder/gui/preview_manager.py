@@ -54,6 +54,20 @@ class PreviewManager(QObject):
         self._assign_slot(idx)
         thread.start()
 
+    def stop_all_previews(self):
+        for w in self.workers.values():
+            w.stop_preview()
+        for t in self.threads.values():
+            t.quit()
+            t.wait(1000)
+        self.workers.clear()
+        self.threads.clear()
+        self.slot_for_cam.clear()
+
+        for lbl in self.main.preview_wall:
+            lbl.clear()
+            lbl.setText("No signal")
+
     def start_recording_all(self, out_dir: str, base_name: str, video_container: str, codec: str):
         for panel in self.main.cam_panels:
             cam_cfg = panel.to_config()
