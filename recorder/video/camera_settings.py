@@ -1,37 +1,74 @@
 import logging
 import re
-import subprocess
 import sys
 from typing import Any, Dict
+
+from ..utils.utils import _extract_range, run_capture_cmd
+from ..video.constants import (DEFAULT_CAMERA_FPS, DEVNODE_PATTERN,
+                               FFMPEG_UNSUPPORTED_CONTROLS,
+                               MAC_PIXEL_FORMAT_MAP, V4L2_CONTROL_MAP)
+from ..video.ffmpeg_utils import (_probe_mac_supported_fps,
+                                  _probe_mac_supported_ui_formats)
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
+logger = logging.getLogger(__name__)
 
 # Detect operating system
 IS_MAC = sys.platform == "darwin"
 IS_LINUX = sys.platform.startswith("linux")
 
-# Regular expression pattern for video devnodes
-DEVNODE_PATTERN = re.compile(r"/dev/video(\d+)$")
 
-# Camera controls not supported via ffmpeg
-FFMPEG_UNSUPPORTED_CONTROLS = {"auto_exposure", "auto_focus"}
+def _empty_capabilities() -> Dict[str, Any]:
+    return {
+        "pixel_formats": [],
+        "fps": [],
+        "supports_auto_exposure": False,
+        "supports_auto_focus": False,
+        "brightness_range": None,
+        "hue_range": None,
+        "saturation_range": None,
+    }
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
-logger = logging.getLogger(__name__)
 
-def capture_cmd_output(cmd: str) -> tuple[str, str]:
-    """Run a command via subprocess and capture output result and/or error."""
-    try:
-        result = subprocess.run(
-            cmd,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        logger.debug(f"STDERR:\n{result.stderr}")
-        return result.stderr, None
-    except subprocess.CalledProcessError as e:
-        logger.debug(f"Return code: {e.returncode}")
-        logger.debug(f"STDERR:\n{e.stderr}")
-        return None, e
+def _linux_camera_capabilities(devnode: str) -> Dict[str, Any]:
+    caps = _empty_capabilities()
+    fmt_text, _ = run_capture_cmd(["v4l2-ctl", "-d", devnode, "--list-formats-ext"], check=False)
+    ctrl_text, _ = run_capture_cmd(["v4l2-ctl", "-d", devnode, "-L"], check=False)
+
+    caps["pixel_formats"] = sorted(set(re.findall(r"\[\d+\]:\s*'([A-Za-z0-9]{4})'", fmt_text)))
+    caps["fps"] = sorted(
+        {
+            int(round(float(x)))
+            for x in re.findall(r"\(([\d.]+)\s*fps\)", fmt_text)
+            if float(x) > 0
+        }
+    )
+    caps["supports_auto_exposure"] = bool(re.search(r"^\s*exposure_auto\b", ctrl_text, re.MULTILINE))
+    caps["supports_auto_focus"] = bool(re.search(r"^\s*focus_auto\b", ctrl_text, re.MULTILINE))
+    caps["brightness_range"] = _extract_range(ctrl_text, "brightness")
+    caps["hue_range"] = _extract_range(ctrl_text, "hue")
+    caps["saturation_range"] = _extract_range(ctrl_text, "saturation")
+    return caps
+
+
+
+
+def _mac_camera_capabilities(devnode: str, device_index: int | None) -> Dict[str, Any]:
+    caps = _empty_capabilities()
+    device = str(device_index) if device_index is not None else reformat_devnode_for_ffmpeg(devnode)
+    caps["pixel_formats"] = _probe_mac_supported_ui_formats(device)
+    caps["fps"] = _probe_mac_supported_fps(device, caps["pixel_formats"])
+    return caps
+
+
+def get_camera_capabilities(devnode: str,
+                            device_index: int | None = None
+                            ) -> Dict[str, Any]:
+    if IS_LINUX:
+        return _linux_camera_capabilities(devnode)
+    if IS_MAC:
+        return _mac_camera_capabilities(devnode, device_index)
+    raise OSError("Unsupported OS")
 
 
 def reformat_devnode_for_ffmpeg(devnode: str) -> str:
@@ -72,17 +109,18 @@ def set_frame_rate(devnode: str, fps: float) -> bool:
             "-"
         ]
     
-    result, _ = capture_cmd_output(cmd)
-    return result is not None
+    _, error = run_capture_cmd(cmd)
+    return error is None
 
 
 def set_camera_controls(devnode: str, control_settings: dict) -> dict:
-    settings_to_apply = control_settings.copy()
+    settings_to_apply = {k: v for k, v in control_settings.items() if v is not None}
     successful_settings = {}
 
     # Build video size argument
-    width = control_settings.get("width")
-    height = control_settings.get("height")
+    width = settings_to_apply.get("width")
+    height = settings_to_apply.get("height")
+    pixel_format = settings_to_apply.get("pixel_format")
     video_size = None
     if width and height:
         video_size = f"{width}x{height}"
@@ -90,28 +128,39 @@ def set_camera_controls(devnode: str, control_settings: dict) -> dict:
         raise ValueError("Both height and width dimensions are required")
 
     if IS_LINUX: # Linux V4L2 method
-
-        # Handle width and height separately
+        # Handle width, height, and pixel format via V4L2 format API
+        fmt_parts = []
         if width and height:
-            # Remove width/height from settings_to_apply in order not to include them in following command
             settings_to_apply.pop("width")
             settings_to_apply.pop("height")
+            fmt_parts.extend([f"width={width}", f"height={height}"])
+        if pixel_format:
+            settings_to_apply.pop("pixel_format")
+            fmt_parts.append(f"pixelformat={pixel_format}")
+
+        if fmt_parts:
             fmt_cmd = [
                 "v4l2-ctl",
                 "-d", devnode,
-                f"--set-fmt-video=width={width},height={height}"
+                "--set-fmt-video=" + ",".join(fmt_parts),
             ]
-            result, _ = capture_cmd_output(fmt_cmd)
-            if result is not None:
-                successful_settings["width"] = width
-                successful_settings["height"] = height
+            _, error = run_capture_cmd(fmt_cmd)
+            if error is None:
+                if width and height:
+                    successful_settings["width"] = width
+                    successful_settings["height"] = height
+                if pixel_format:
+                    successful_settings["pixel_format"] = pixel_format
         
         # Handle other settings
         if settings_to_apply:
-            setting_str = get_control_settings_string(settings_to_apply)
+            v4l2_settings = {
+                V4L2_CONTROL_MAP.get(k, k): v for k, v in settings_to_apply.items()
+            }
+            setting_str = get_control_settings_string(v4l2_settings)
             cmd = ["v4l2-ctl", "-d", devnode, "-c", setting_str]
-            result, _ = capture_cmd_output(fmt_cmd)
-            if result is not None:
+            _, error = run_capture_cmd(cmd)
+            if error is None:
                 successful_settings.update(settings_to_apply)
 
     elif IS_MAC:  # FFMPEG for MaCOS
@@ -123,11 +172,27 @@ def set_camera_controls(devnode: str, control_settings: dict) -> dict:
                 logger.warning(f"{parameter} not supported on macOS via ffmpeg; skipping.")
                 settings_to_apply.pop(parameter)
 
-        # Build eq filter string (brightness/hue/saturation)
+        mac_pixel_format = None
+        if "pixel_format" in settings_to_apply:
+            mac_pixel_format = MAC_PIXEL_FORMAT_MAP.get(
+                str(settings_to_apply["pixel_format"]).upper(),
+                str(settings_to_apply["pixel_format"]).lower(),
+            )
+
+        # Build ffmpeg filter chain. `eq` supports brightness/saturation;
+        # hue is a dedicated filter.
+        vf_filters = []
         eq_parts = []
-        for key in ["brightness", "saturation", "hue"]:
-            if key in control_settings:
-                eq_parts.append(f"{key}={control_settings[key]}")
+        if "brightness" in settings_to_apply:
+            brightness = float(settings_to_apply["brightness"]) / 100.0
+            eq_parts.append(f"brightness={brightness:.3f}")
+        if "saturation" in settings_to_apply:
+            saturation = float(settings_to_apply["saturation"]) / 100.0
+            eq_parts.append(f"saturation={saturation:.3f}")
+        if eq_parts:
+            vf_filters.append("eq=" + ":".join(eq_parts))
+        if "hue" in settings_to_apply:
+            vf_filters.append(f"hue=h={settings_to_apply['hue']}")
 
         cmd = [
             "ffmpeg",
@@ -136,23 +201,24 @@ def set_camera_controls(devnode: str, control_settings: dict) -> dict:
 
         if video_size:
             cmd += ["-video_size", video_size]
+        if mac_pixel_format:
+            cmd += ["-pixel_format", mac_pixel_format]
 
         cmd += [
-            "-framerate", "30",
+            "-framerate", str(DEFAULT_CAMERA_FPS),
             "-i", f"{devnode}:none",
         ]
 
-        if eq_parts:
-            vf_arg = "eq=" + ":".join(eq_parts)
-            cmd += ["-vf", vf_arg]
+        if vf_filters:
+            cmd += ["-vf", ",".join(vf_filters)]
 
         cmd += [
             "-t", "0.1",  # tiny test duration
             "-f", "null",
             "-"
         ]
-        result, _ = capture_cmd_output(cmd)
-        if result is not None:
+        _, error = run_capture_cmd(cmd)
+        if error is None:
             successful_settings.update(settings_to_apply)
 
     else:
