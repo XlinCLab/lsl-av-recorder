@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox,
 from ..audio.devices import default_input_device_index, list_input_devices
 from ..config import AppConfig, VideoCamConfig, load_cfg
 from ..lsl.labrecorder_rcs import LabRecorderRCS
-from ..naming import build_paths  # keep global import too
+from ..naming import build_paths
 from .camera_panel import CameraPanel
 from .preview_manager import PreviewManager
 from .preview_panel import PreviewPanel
@@ -324,9 +324,7 @@ class MainWindow(QMainWindow):
             self.controller = RunController(self.cfg, status_cb=self.log)
             self.controller.start()
 
-            # Local import is intentional (protects against stale installs / name binding issues)
-            from recorder.naming import build_paths as _build_paths
-            paths = _build_paths(self.cfg.Output, self.cfg.Prompts)
+            paths = build_paths(self.cfg.Output, self.cfg.Prompts)
 
             # Start video recording (only if video is enabled in config)
             if self.cfg.Video.Enabled:
