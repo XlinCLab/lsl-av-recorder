@@ -4,3 +4,4 @@
 **/*.pyc
 recordings/
 notes/
+*.egg-info/
