@@ -120,21 +120,22 @@ def load_cfg(path: str) -> AppConfig:
     cams: List[VideoCamConfig] = []
     for i in range(1, cfg.Video.MaxCams + 1):
         sec = f"VideoCam{i}"
+        if not cp.has_section(sec):
+            continue
         vc = VideoCamConfig()
-        if cp.has_section(sec):
-            vc.Enabled = _get_bool(cp, sec, "Enabled", vc.Enabled)
-            vc.DeviceIndex = cp.getint(sec, "DeviceIndex", fallback=vc.DeviceIndex)
-            vc.DevNode = cp.get(sec, "DevNode", fallback=vc.DevNode)
-            vc.Label = cp.get(sec, "Label", fallback=vc.Label)
-            vc.FPS = cp.getint(sec, "FPS", fallback=vc.FPS)
-            vc.Width = cp.getint(sec, "Width", fallback=vc.Width)
-            vc.Height = cp.getint(sec, "Height", fallback=vc.Height)
-            vc.AutoExposure = _get_bool(cp, sec, "AutoExposure", bool(vc.AutoExposure))
-            vc.AutoFocus = _get_bool(cp, sec, "AutoFocus", bool(vc.AutoFocus))
-            vc.Brightness = cp.getint(sec, "Brightness", fallback=vc.Brightness or 0)
-            vc.Hue = cp.getint(sec, "Hue", fallback=vc.Hue or 0)
-            vc.Saturation = cp.getint(sec, "Saturation", fallback=vc.Saturation or 100)
-            vc.PixelFormat = cp.get(sec, "PixelFormat", fallback=vc.PixelFormat).upper()
+        vc.Enabled = _get_bool(cp, sec, "Enabled", vc.Enabled)
+        vc.DeviceIndex = cp.getint(sec, "DeviceIndex", fallback=vc.DeviceIndex)
+        vc.DevNode = cp.get(sec, "DevNode", fallback=vc.DevNode)
+        vc.Label = cp.get(sec, "Label", fallback=vc.Label)
+        vc.FPS = cp.getint(sec, "FPS", fallback=vc.FPS)
+        vc.Width = cp.getint(sec, "Width", fallback=vc.Width)
+        vc.Height = cp.getint(sec, "Height", fallback=vc.Height)
+        vc.AutoExposure = _get_bool(cp, sec, "AutoExposure", bool(vc.AutoExposure))
+        vc.AutoFocus = _get_bool(cp, sec, "AutoFocus", bool(vc.AutoFocus))
+        vc.Brightness = cp.getint(sec, "Brightness", fallback=vc.Brightness or 0)
+        vc.Hue = cp.getint(sec, "Hue", fallback=vc.Hue or 0)
+        vc.Saturation = cp.getint(sec, "Saturation", fallback=vc.Saturation or 100)
+        vc.PixelFormat = cp.get(sec, "PixelFormat", fallback=vc.PixelFormat).upper()
         if vc.DevNode:
             m = DEVNODE_PATTERN.match(vc.DevNode.strip())
             if m:
