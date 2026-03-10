@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import configparser
+import logging
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -8,7 +9,9 @@ from .audio.constants import (DEFAULT_BIT_DEPTH, DEFAULT_N_CHANNELS,
                               DEFAULT_SAMPLING_RATE)
 from .video.constants import (DEFAULT_CAMERA_FPS, DEFAULT_HEIGHT,
                               DEFAULT_PIXEL_FORMAT, DEFAULT_PREVIEW_FPS,
-                              DEFAULT_WIDTH)
+                              DEFAULT_WIDTH, DEVNODE_PATTERN)
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -132,6 +135,13 @@ def load_cfg(path: str) -> AppConfig:
             vc.Hue = cp.getint(sec, "Hue", fallback=vc.Hue or 0)
             vc.Saturation = cp.getint(sec, "Saturation", fallback=vc.Saturation or 100)
             vc.PixelFormat = cp.get(sec, "PixelFormat", fallback=vc.PixelFormat).upper()
+        if vc.DevNode:
+            m = DEVNODE_PATTERN.match(vc.DevNode.strip())
+            if m:
+                try:
+                    vc.DeviceIndex = int(m.group(1))
+                except Exception as exc:
+                    logger.warning("Failed to derive DeviceIndex from DevNode %s: %s", vc.DevNode, exc)
         cams.append(vc)
     cfg.Video.Cams = cams
     return cfg
