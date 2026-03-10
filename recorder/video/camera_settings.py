@@ -6,7 +6,8 @@ from typing import Any, Dict
 from ..utils.utils import _extract_range, run_capture_cmd
 from ..video.constants import (DEFAULT_CAMERA_FPS, DEVNODE_PATTERN,
                                FFMPEG_UNSUPPORTED_CONTROLS, IS_LINUX, IS_MAC,
-                               MAC_PIXEL_FORMAT_MAP, V4L2_CONTROL_MAP)
+                               MAC_PIXEL_FORMAT_MAP, V4L2_AUTO_EXPOSURE_MODE,
+                               V4L2_CONTROL_MAP, V4L2_MANUAL_EXPOSURE_MODE)
 from ..video.ffmpeg_utils import (_get_supported_modes,
                                   _probe_mac_supported_fps,
                                   _probe_mac_supported_ui_formats)
@@ -46,6 +47,11 @@ def _linux_camera_capabilities(devnode: str) -> Dict[str, Any]:
     caps["brightness_range"] = _extract_range(ctrl_text, "brightness")
     caps["hue_range"] = _extract_range(ctrl_text, "hue")
     caps["saturation_range"] = _extract_range(ctrl_text, "saturation")
+    exposure_menu = _parse_v4l2_menu(ctrl_text, "exposure_auto")
+    if exposure_menu:
+        caps["exposure_auto_menu"] = exposure_menu
+        caps["exposure_auto_auto"] = _pick_v4l2_menu_value(exposure_menu, prefer_auto=True)
+        caps["exposure_auto_manual"] = _pick_v4l2_menu_value(exposure_menu, prefer_auto=False)
 
     # Parse V4L2 size/fps mode associations from --list-formats-ext output.
     mode_fps: dict[tuple[int, int], set[int]] = {}
@@ -70,6 +76,49 @@ def _linux_camera_capabilities(devnode: str) -> Dict[str, Any]:
         if fps_values
     ]
     return caps
+
+
+def _parse_v4l2_menu(text: str, control_name: str) -> dict[str, int]:
+    menu: dict[str, int] = {}
+    in_menu = False
+    header_re = re.compile(rf"^\s*{re.escape(control_name)}\b.*\(\s*menu\s*\)", re.IGNORECASE)
+    item_re = re.compile(r"^\s+(\d+)\s*:\s*(.+)$")
+    for raw_line in text.splitlines():
+        line = raw_line.rstrip()
+        if not in_menu:
+            if header_re.search(line):
+                in_menu = True
+            continue
+        if line.strip() == "":
+            break
+        if line and not line.startswith((" ", "\t")):
+            break
+        m = item_re.match(line)
+        if m:
+            value = int(m.group(1))
+            label = m.group(2).strip()
+            menu[label] = value
+    return menu
+
+
+def _pick_v4l2_menu_value(menu: dict[str, int], prefer_auto: bool) -> int | None:
+    if not menu:
+        return None
+    if prefer_auto:
+        for label, value in menu.items():
+            lname = label.lower()
+            if "manual" in lname:
+                continue
+            if "auto" in lname or "priority" in lname or "aperture" in lname:
+                return value
+    else:
+        for label, value in menu.items():
+            if "manual" in label.lower():
+                return value
+    fallback = V4L2_AUTO_EXPOSURE_MODE if prefer_auto else V4L2_MANUAL_EXPOSURE_MODE
+    if fallback in menu.values():
+        return fallback
+    return next(iter(menu.values()))
 
 
 def _mac_camera_capabilities(devnode: str, device_index: int | None) -> Dict[str, Any]:

@@ -53,6 +53,10 @@ class CameraPanel(QWidget):
         self.auto_exposure.setChecked(bool(cam_cfg.AutoExposure))
         self.auto_focus = QCheckBox("On")
         self.auto_focus.setChecked(bool(cam_cfg.AutoFocus))
+        self._auto_exposure_values = {
+            "auto": V4L2_AUTO_EXPOSURE_MODE,
+            "manual": V4L2_MANUAL_EXPOSURE_MODE,
+        }
 
         form = QFormLayout()
         form.addRow(self.enabled)
@@ -342,6 +346,13 @@ class CameraPanel(QWidget):
             self.auto_exposure.setChecked(False)
         if not auto_focus_ok:
             self.auto_focus.setChecked(False)
+        if auto_exposure_ok:
+            auto_val = caps.get("exposure_auto_auto")
+            manual_val = caps.get("exposure_auto_manual")
+            self._auto_exposure_values = {
+                "auto": auto_val if auto_val is not None else V4L2_AUTO_EXPOSURE_MODE,
+                "manual": manual_val if manual_val is not None else V4L2_MANUAL_EXPOSURE_MODE,
+            }
 
     def to_config(self) -> VideoCamConfig:
         c = VideoCamConfig()
@@ -382,7 +393,11 @@ class CameraPanel(QWidget):
         if self.pixel_format.isEnabled():
             controls["pixel_format"] = cfg.PixelFormat
         if self.auto_exposure.isEnabled():
-            controls["auto_exposure"] = V4L2_AUTO_EXPOSURE_MODE if cfg.AutoExposure else V4L2_MANUAL_EXPOSURE_MODE
+            controls["auto_exposure"] = (
+                self._auto_exposure_values["auto"]
+                if cfg.AutoExposure
+                else self._auto_exposure_values["manual"]
+            )
         if self.auto_focus.isEnabled():
             controls["auto_focus"] = V4L2_AUTO_FOCUS_MODE if cfg.AutoFocus else V4L2_MANUAL_FOCUS_MODE
 
