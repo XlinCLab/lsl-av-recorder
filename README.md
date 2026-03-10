@@ -85,7 +85,7 @@ Fields:
 ### Camera Tabs
 Each camera tab includes:
 - Enable toggle
-- Device selection by name (plus `DeviceIndex` and `DevNode` fields)
+- Device selection by name
 - Label
 - FPS dropdown
 - Resolution dropdown

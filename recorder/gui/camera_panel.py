@@ -38,8 +38,10 @@ class CameraPanel(QWidget):
         self.device_index = QSpinBox()
         self.device_index.setRange(0, 32)
         self.device_index.setValue(cam_cfg.DeviceIndex)
+        self.device_index.setVisible(False)
 
         self.devnode = QLineEdit(cam_cfg.DevNode)
+        self.devnode.setVisible(False)
         self.label = QLineEdit(cam_cfg.Label)
 
         self.fps = self._init_fps(int(cam_cfg.FPS))
@@ -61,8 +63,6 @@ class CameraPanel(QWidget):
         form = QFormLayout()
         form.addRow(self.enabled)
         form.addRow("Device", self.device_name)
-        form.addRow("DeviceIndex", self.device_index)
-        form.addRow("DevNode", self.devnode)
         form.addRow("Label", self.label)
         form.addRow("FPS", self.fps)
         form.addRow("Resolution", self.resolution)
@@ -94,8 +94,6 @@ class CameraPanel(QWidget):
         self.btn_refresh_caps.clicked.connect(self.refresh_capabilities)
         self.btn_apply.clicked.connect(self.on_apply)
         self.device_name.currentIndexChanged.connect(self._on_device_name_selected)
-        self.device_index.valueChanged.connect(self._on_device_fields_changed)
-        self.devnode.editingFinished.connect(self._on_device_fields_changed)
         self.enabled.toggled.connect(lambda _: self.previewConfigChanged.emit())
         self.fps.currentIndexChanged.connect(self._on_fps_changed)
         self.resolution.currentIndexChanged.connect(lambda _: self.previewConfigChanged.emit())
@@ -272,13 +270,14 @@ class CameraPanel(QWidget):
         self.previewConfigChanged.emit()
 
     def refresh_video_devices(self):
-        preferred_index = int(self.device_index.value())
-        preferred_devnode = self.devnode.text().strip()
+        dev = self.device_name.currentData()
+        if isinstance(dev, dict):
+            preferred_index = int(dev.get("index", self.device_index.value()))
+            preferred_devnode = str(dev.get("devnode") or self.devnode.text().strip())
+        else:
+            preferred_index = int(self.device_index.value())
+            preferred_devnode = self.devnode.text().strip()
         self._populate_video_devices(preferred_index, preferred_devnode)
-
-    def _on_device_fields_changed(self):
-        self.refresh_capabilities()
-        self.previewConfigChanged.emit()
 
     def _on_fps_changed(self):
         self._update_resolution_choices_for_selected_fps(prefer_current=False)
