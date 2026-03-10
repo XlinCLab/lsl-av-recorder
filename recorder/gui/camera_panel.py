@@ -24,6 +24,7 @@ from ..video.devices import list_video_devices
 class CameraPanel(QWidget):
     log = pyqtSignal(str)
     previewConfigChanged = pyqtSignal()
+    removeRequested = pyqtSignal(object)
 
     def __init__(self, cam_cfg: VideoCamConfig, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -76,6 +77,7 @@ class CameraPanel(QWidget):
         self.btn_refresh_devices = QPushButton("Refresh video devices")
         self.btn_refresh_caps = QPushButton("Refresh device capabilities")
         self.btn_apply = QPushButton("Apply settings")
+        self.btn_remove = QPushButton("Remove camera")
         self.text = QTextEdit()
         self.text.setReadOnly(True)
 
@@ -85,6 +87,7 @@ class CameraPanel(QWidget):
         layout.addWidget(self.btn_refresh_caps)
         layout.addWidget(self.btn_apply)
         layout.addWidget(self.text)
+        layout.addWidget(self.btn_remove)
         self.setLayout(layout)
 
         self._video_devices: list[dict[str, Any]] = []
@@ -93,6 +96,7 @@ class CameraPanel(QWidget):
         self.btn_refresh_devices.clicked.connect(self.refresh_video_devices)
         self.btn_refresh_caps.clicked.connect(self.refresh_capabilities)
         self.btn_apply.clicked.connect(self.on_apply)
+        self.btn_remove.clicked.connect(lambda: self.removeRequested.emit(self))
         self.device_name.currentIndexChanged.connect(self._on_device_name_selected)
         self.enabled.toggled.connect(lambda _: self.previewConfigChanged.emit())
         self.fps.currentIndexChanged.connect(self._on_fps_changed)
@@ -140,6 +144,9 @@ class CameraPanel(QWidget):
         idx = widget.findText(pf)
         widget.setCurrentIndex(idx if idx >= 0 else 0)
         return widget
+
+    def set_remove_enabled(self, enabled: bool):
+        self.btn_remove.setEnabled(enabled)
 
     def _set_fps_choices(self, fps_values: list[int], current_fps: int):
         fps_sorted = sorted({int(x) for x in fps_values if int(x) > 0})
