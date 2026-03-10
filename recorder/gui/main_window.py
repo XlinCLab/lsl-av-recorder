@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import os
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 
+from pylsl import StreamInfo
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox,
                              QFileDialog, QFormLayout, QHBoxLayout, QLabel,
@@ -16,11 +17,11 @@ from ..audio.devices import default_input_device_index, list_input_devices
 from ..config import AppConfig, VideoCamConfig, load_cfg
 from ..lsl.labrecorder_rcs import LabRecorderRCS
 from ..naming import build_paths
+from ..video.devices import list_video_devices
 from .camera_panel import CameraPanel
 from .preview_manager import PreviewManager
 from .preview_panel import PreviewPanel
 from .run_controller import RunController
-from ..video.devices import list_video_devices
 
 
 class MainWindow(QMainWindow):
@@ -321,7 +322,8 @@ class MainWindow(QMainWindow):
     def on_start(self):
         self.pull_gui_into_cfg()
         try:
-            self.controller = RunController(self.cfg, status_cb=self.log)
+            lsl_streams = self._get_selected_lsl_streams()
+            self.controller = RunController(self.cfg, status_cb=self.log, lsl_streams=lsl_streams)
             self.controller.start()
 
             paths = build_paths(self.cfg.Output, self.cfg.Prompts)
@@ -402,6 +404,7 @@ class MainWindow(QMainWindow):
                 chk = QTableWidgetItem()
                 chk.setCheckState(Qt.CheckState.Unchecked)
                 chk.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
+                chk.setData(Qt.ItemDataRole.UserRole, stream)
                 self.lsl_streams_table.setItem(row, 0, chk)
 
                 values = [
@@ -420,6 +423,18 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.lsl_streams_table.setRowCount(0)
             QMessageBox.critical(self, "LSL stream discovery failed", str(e))
+
+    def _get_selected_lsl_streams(self):
+        selected: List[StreamInfo] = []
+        for row in range(self.lsl_streams_table.rowCount()):
+            item = self.lsl_streams_table.item(row, 0)
+            if not item:
+                continue
+            if item.checkState() == Qt.CheckState.Checked:
+                stream = item.data(Qt.ItemDataRole.UserRole)
+                if stream is not None:
+                    selected.append(stream)
+        return selected
 
     def _update_labrecorder_controls(self):
         enabled = self.labrec_enabled.isChecked()

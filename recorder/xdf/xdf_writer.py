@@ -26,6 +26,7 @@ class XDFWriter:
     Minimal XDF writer for:
       - 1 audio stream (continuous)
       - N video streams (frame index + timestamp)
+      - N generic LSL streams (numeric samples)
     """
 
     def __init__(self, path: str):
@@ -369,6 +370,40 @@ class XDFWriter:
         self.streams[name] = sid
         return sid
 
+    def add_lsl_stream(
+        self,
+        name: str,
+        stype: str,
+        channel_count: int,
+        srate: float,
+        fmt: str,
+        source_id: str,
+        extra: Optional[Dict[str, str]] = None,
+        key: Optional[str] = None,
+    ) -> int:
+        """
+        Register a generic LSL stream (numeric samples). Samples must be written via write_lsl_samples().
+        """
+        sid = self._get_next_stream_id()
+        xml = self._make_stream_header_xml(
+            name=name,
+            stype=stype,
+            channel_count=channel_count,
+            srate=srate,
+            fmt=fmt,
+            source_id=source_id,
+            extra=extra,
+        )
+
+        with self._lock:
+            self._write_stream_header(sid, xml)
+
+        stream_key = key or f"{name}:{source_id}:{sid}"
+        if stream_key in self.streams:
+            stream_key = f"{stream_key}:{uuid.uuid4()}"
+        self.streams[stream_key] = sid
+        return sid
+
     def write_audio(
         self,
         stream_id: int,
@@ -389,6 +424,16 @@ class XDFWriter:
         frame_indices = np.asarray(frame_indices, dtype=np.int64)
         with self._lock:
             self._write_samples(stream_id, timestamps, frame_indices)
+
+    def write_lsl_samples(
+        self,
+        stream_id: int,
+        timestamps: np.ndarray,
+        samples: np.ndarray,
+    ):
+        self._write_boundary_chunk()
+        with self._lock:
+            self._write_samples(stream_id, timestamps, samples)
 
     def stop(self):
         if not self._started:
