@@ -91,6 +91,15 @@ elif [[ "${OS}" == "Darwin" ]]; then
   else
     echo "labrecorder already installed"
   fi
+
+  LABRECORDER_APP_PATH="$(find "$(brew --cellar labrecorder)" -maxdepth 2 -name "LabRecorder.app" -print -quit 2>/dev/null || true)"
+  if [[ -n "${LABRECORDER_APP_PATH}" ]]; then
+    echo "LabRecorder app found. Launch with:"
+    echo "  open \"${LABRECORDER_APP_PATH}\""
+  else
+    echo "LabRecorder app not found. You may need to check the Cellar path:"
+    echo "  brew --cellar labrecorder"
+  fi
 else
   echo "Unsupported OS: ${OS}"
   exit 1
