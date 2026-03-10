@@ -1,6 +1,8 @@
 from __future__ import annotations
+
 import subprocess
 from typing import Any, Dict
+
 
 def set_control(devnode: str, control: str, value: Any) -> bool:
     cmd = ["v4l2-ctl", "-d", devnode, "-c", f"{control}={value}"]

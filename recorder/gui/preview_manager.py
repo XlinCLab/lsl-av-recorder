@@ -1,12 +1,14 @@
 from __future__ import annotations
+
 import os
 from typing import Dict
 
-from PyQt6.QtCore import QObject, QThread, Qt
+from PyQt6.QtCore import QObject, Qt, QThread
 from PyQt6.QtGui import QImage, QPixmap
 
-from .camera_worker import CameraWorker, RecordParams
 from ..naming import video_filename
+from .camera_worker import CameraWorker, RecordParams
+
 
 class PreviewManager(QObject):
     def __init__(self, main_window):

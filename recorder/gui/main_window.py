@@ -1,26 +1,29 @@
 from __future__ import annotations
+
+from datetime import datetime
 from typing import Optional
 
-from PyQt6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
-    QLineEdit, QPushButton, QFileDialog, QTabWidget, QTextEdit,
-    QComboBox, QSpinBox, QLabel, QCheckBox, QMessageBox, QSplitter
-)
 from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QFormLayout,
+                             QHBoxLayout, QLabel, QLineEdit, QMainWindow,
+                             QMessageBox, QPushButton, QSpinBox, QSplitter,
+                             QTabWidget, QTextEdit, QVBoxLayout, QWidget)
 
-from ..config import load_cfg, AppConfig, VideoCamConfig
-from ..audio.devices import list_input_devices, default_input_device_index
+from ..audio.devices import default_input_device_index, list_input_devices
+from ..config import AppConfig, VideoCamConfig, load_cfg
 from ..naming import build_paths  # keep global import too
 from .camera_panel import CameraPanel
-from .run_controller import RunController
 from .preview_manager import PreviewManager
 from .preview_panel import PreviewPanel
+from .run_controller import RunController
+
 
 class MainWindow(QMainWindow):
     def __init__(self, cfg_path: Optional[str] = None):
         super().__init__()
         self.setWindowTitle("LSL AV Recorder (Audio via LSL, LabRecorder XDF)")
-
+        self.logbox = QTextEdit()
+        self.logbox.setReadOnly(True)
         self.cfg: AppConfig = load_cfg(cfg_path) if cfg_path else load_cfg("example.cfg")
         self.controller = RunController(self.cfg, status_cb=self.log)
 
@@ -93,13 +96,11 @@ class MainWindow(QMainWindow):
         self.preview_panel = PreviewPanel()
         self.preview_wall = [self.preview_panel.labels[i] for i in range(4)]
         self.preview_mgr = PreviewManager(self)
-
-        for panel in self.cam_panels:
-            if panel.enabled.isChecked():
-                self.preview_mgr.start_cam_preview(panel.to_config())
-
-        self.logbox = QTextEdit()
-        self.logbox.setReadOnly(True)
+        # Show camera previews if video is enabled in config
+        if self.cfg.Video.Enabled:
+            for panel in self.cam_panels:
+                if panel.enabled.isChecked():
+                    self.preview_mgr.start_cam_preview(panel.to_config())
 
         left = QWidget()
         left_layout = QVBoxLayout()
@@ -126,7 +127,9 @@ class MainWindow(QMainWindow):
         self.btn_start.clicked.connect(self.on_start)
         self.btn_stop.clicked.connect(self.on_stop)
 
-    def log(self, msg: str):
+    def log(self, msg: str, loglevel: str = "INFO"):
+        now = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+        msg = f"{now} {loglevel}: {msg}"
         self.logbox.append(msg)
 
     def _populate_audio_devices(self):
@@ -192,12 +195,14 @@ class MainWindow(QMainWindow):
             from recorder.naming import build_paths as _build_paths
             paths = _build_paths(self.cfg.Output, self.cfg.Prompts)
 
-            self.preview_mgr.start_recording_all(
-                out_dir=paths["base_dir"],
-                base_name=paths["base_name"],
-                video_container=self.cfg.Video.Container,
-                codec=self.cfg.Video.Codec,
-            )
+            # Start video recording (only if video is enabled in config)
+            if self.cfg.Video.Enabled:
+                self.preview_mgr.start_recording_all(
+                    out_dir=paths["base_dir"],
+                    base_name=paths["base_name"],
+                    video_container=self.cfg.Video.Container,
+                    codec=self.cfg.Video.Codec,
+                )
 
             self.btn_start.setEnabled(False)
             self.btn_stop.setEnabled(True)

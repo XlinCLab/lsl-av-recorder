@@ -1,7 +1,10 @@
 from __future__ import annotations
+
 import os
 from dataclasses import asdict
+
 from .config import AppPrompts, OutputConfig
+
 
 def _safe(s: str) -> str:
     return "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in s)

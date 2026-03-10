@@ -6,16 +6,13 @@
 - **XDF**: written by **LabRecorder** controlled via **RCS**
 
 ## Requirements
-- `sudo apt install v4l-utils`
+- `sudo apt install v4l-utils` (installed as part of `setup.sh` script)
 - LabRecorder running with RCS enabled (port 22345)
 - Python 3.10+
 
 ## Install
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -U pip
-pip install -e .
+./setup.sh
 ```
 
 ## Run

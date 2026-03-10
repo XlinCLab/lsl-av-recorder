@@ -1,14 +1,15 @@
 from __future__ import annotations
+
 from typing import Optional
 
-from PyQt6.QtWidgets import (
-    QWidget, QFormLayout, QLineEdit, QSpinBox, QCheckBox, QHBoxLayout,
-    QPushButton, QTextEdit, QGroupBox, QVBoxLayout
-)
 from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtWidgets import (QCheckBox, QFormLayout, QGroupBox, QHBoxLayout,
+                             QLineEdit, QPushButton, QSpinBox, QTextEdit,
+                             QVBoxLayout, QWidget)
 
 from ..config import VideoCamConfig
 from ..video.v4l2_controls import apply_controls
+
 
 class CameraPanel(QWidget):
     log = pyqtSignal(str)
