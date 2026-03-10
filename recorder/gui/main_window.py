@@ -57,6 +57,7 @@ class MainWindow(QMainWindow):
         btn_row.addWidget(self.btn_stop)
 
         self.tabs = QTabWidget()
+        self.btn_remove_camera = QPushButton("Remove camera")
 
         # Audio tab
         audio_widget = QWidget()
@@ -107,6 +108,7 @@ class MainWindow(QMainWindow):
         left_layout.addLayout(form)
         left_layout.addLayout(btn_row)
         left_layout.addWidget(self.tabs)
+        left_layout.addWidget(self._camera_tab_controls())
         left_layout.addWidget(QLabel("Log"))
         left_layout.addWidget(self.logbox)
         left.setLayout(left_layout)
@@ -125,6 +127,7 @@ class MainWindow(QMainWindow):
 
         self.btn_load.clicked.connect(self.on_load)
         self.btn_add_camera.clicked.connect(self._on_add_camera)
+        self.btn_remove_camera.clicked.connect(self._on_remove_camera)
         self.btn_start.clicked.connect(self.on_start)
         self.btn_stop.clicked.connect(self.on_stop)
 
@@ -192,6 +195,17 @@ class MainWindow(QMainWindow):
         self.btn_add_camera.setEnabled(
             (len(self.cam_panels) < self.max_cams) and not self._recording_active
         )
+        self.btn_remove_camera.setEnabled(
+            (len(self.cam_panels) > 1) and not self._recording_active
+        )
+
+    def _camera_tab_controls(self) -> QWidget:
+        row = QHBoxLayout()
+        row.addWidget(self.btn_remove_camera)
+        row.addStretch(1)
+        widget = QWidget()
+        widget.setLayout(row)
+        return widget
 
     def _add_camera_panel(self, cam_cfg: VideoCamConfig | None = None):
         if len(self.cam_panels) >= self.max_cams:
@@ -206,6 +220,25 @@ class MainWindow(QMainWindow):
 
     def _on_add_camera(self):
         self._add_camera_panel()
+        self._refresh_previews_from_panels()
+
+    def _on_remove_camera(self):
+        if self._recording_active or len(self.cam_panels) <= 1:
+            return
+        tab_index = self.tabs.currentIndex()
+        cam_index = tab_index - 1  # tab 0 is Audio
+        if cam_index < 0 or cam_index >= len(self.cam_panels):
+            return
+
+        panel = self.cam_panels.pop(cam_index)
+        self.tabs.removeTab(tab_index)
+        panel.setParent(None)
+        panel.deleteLater()
+
+        for i, cam_panel in enumerate(self.cam_panels):
+            self.tabs.setTabText(i + 1, f"Camera {i + 1}")
+
+        self._update_add_camera_button()
         self._refresh_previews_from_panels()
 
     def pull_gui_into_cfg(self):
