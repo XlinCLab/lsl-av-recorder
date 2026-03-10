@@ -90,6 +90,21 @@ class MainWindow(QMainWindow):
         audio_widget.setLayout(af)
         self.tabs.addTab(audio_widget, "Audio")
 
+        # LabRecorder tab
+        labrec_widget = QWidget()
+        lf = QFormLayout()
+        self.labrec_enabled = QCheckBox("Enable LabRecorder RCS")
+        self.labrec_enabled.setChecked(bool(self.cfg.LabRecorder.Enabled))
+        self.labrec_host = QLineEdit(self.cfg.LabRecorder.Host)
+        self.labrec_port = QSpinBox()
+        self.labrec_port.setRange(1, 65535)
+        self.labrec_port.setValue(int(self.cfg.LabRecorder.Port))
+        lf.addRow(self.labrec_enabled)
+        lf.addRow("RCS host", self.labrec_host)
+        lf.addRow("RCS port", self.labrec_port)
+        labrec_widget.setLayout(lf)
+        self.tabs.addTab(labrec_widget, "LabRecorder")
+
         # Camera tabs
         self.cam_panels = []
         self.max_cams = 4
@@ -252,6 +267,9 @@ class MainWindow(QMainWindow):
         self.cfg.Audio.Channels = int(self.audio_ch.value())
         self.cfg.Audio.StreamName = self.audio_stream_name.text().strip() or "Audio"
 
+        self.cfg.LabRecorder.Enabled = self.labrec_enabled.isChecked()
+        self.cfg.LabRecorder.Host = self.labrec_host.text().strip() or self.cfg.LabRecorder.Host
+        self.cfg.LabRecorder.Port = int(self.labrec_port.value())
         self.cfg.Video.Cams = []
         for panel in self.cam_panels:
             self.cfg.Video.Cams.append(panel.to_config())

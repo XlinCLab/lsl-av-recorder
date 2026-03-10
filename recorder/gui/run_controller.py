@@ -74,6 +74,7 @@ class RunController:
                     "prompts": asdict(self.cfg.Prompts),
                     "output": asdict(self.cfg.Output),
                     "audio": asdict(self.cfg.Audio),
+                    "labrecorder": asdict(self.cfg.LabRecorder),
                     "video": {
                         "Enabled": self.video_enabled,
                         "Cams": [asdict(c) for c in self.cams if c.Enabled] if self.video_enabled else []
@@ -296,5 +297,3 @@ class RunController:
             timestamps=[timestamp],
             frame_indices=[frame_index],
         )
-
-
