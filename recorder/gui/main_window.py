@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QFormLayout,
 
 from ..audio.devices import default_input_device_index, list_input_devices
 from ..config import AppConfig, VideoCamConfig, load_cfg
+from ..lsl.labrecorder_rcs import LabRecorderRCS
 from ..naming import build_paths  # keep global import too
 from .camera_panel import CameraPanel
 from .preview_manager import PreviewManager
@@ -59,6 +60,7 @@ class MainWindow(QMainWindow):
 
         self.tabs = QTabWidget()
         self.btn_remove_camera = QPushButton("Remove camera")
+        self.labrec_rcs: Optional[LabRecorderRCS] = None
 
         # Audio tab
         audio_widget = QWidget()
@@ -99,9 +101,17 @@ class MainWindow(QMainWindow):
         self.labrec_port = QSpinBox()
         self.labrec_port.setRange(1, 65535)
         self.labrec_port.setValue(int(self.cfg.LabRecorder.Port))
+        self.labrec_connect_btn = QPushButton("Connect")
+        self.labrec_disconnect_btn = QPushButton("Disconnect")
+        self.labrec_disconnect_btn.setEnabled(False)
+        self.labrec_status = QLabel("Disconnected")
+        self.labrec_status.setStyleSheet("color: #b00020;")
         lf.addRow(self.labrec_enabled)
         lf.addRow("RCS host", self.labrec_host)
         lf.addRow("RCS port", self.labrec_port)
+        lf.addRow(self.labrec_connect_btn)
+        lf.addRow(self.labrec_disconnect_btn)
+        lf.addRow("Status", self.labrec_status)
         labrec_widget.setLayout(lf)
         self.tabs.addTab(labrec_widget, "LabRecorder")
 
@@ -144,6 +154,10 @@ class MainWindow(QMainWindow):
         self.btn_add_camera.clicked.connect(self._on_add_camera)
         self.btn_start.clicked.connect(self.on_start)
         self.btn_stop.clicked.connect(self.on_stop)
+        self.labrec_connect_btn.clicked.connect(self.on_connect_labrecorder)
+        self.labrec_disconnect_btn.clicked.connect(self.on_disconnect_labrecorder)
+        self.labrec_enabled.stateChanged.connect(self._update_labrecorder_controls)
+        self._update_labrecorder_controls()
 
     def _refresh_previews_from_panels(self):
         # Don't reconfigure preview workers while a run is active/recording.
@@ -331,3 +345,46 @@ class MainWindow(QMainWindow):
             self.btn_stop.setEnabled(False)
             self._recording_active = False
             self._update_add_camera_button()
+
+    def on_connect_labrecorder(self):
+        host = self.labrec_host.text().strip() or self.cfg.LabRecorder.Host
+        port = int(self.labrec_port.value())
+        if self.labrec_rcs and self.labrec_rcs.sock:
+            self.log(f"LabRecorder RCS already connected at {host}:{port}")
+            return
+        rcs = LabRecorderRCS(host=host, port=port)
+        try:
+            rcs.connect()
+            self.labrec_rcs = rcs
+            self._set_labrecorder_status(connected=True, host=host, port=port)
+            self.log(f"LabRecorder RCS connected at {host}:{port}")
+        except Exception as e:
+            self._set_labrecorder_status(connected=False)
+            QMessageBox.critical(self, "LabRecorder RCS connection failed", str(e))
+
+    def on_disconnect_labrecorder(self):
+        if not self.labrec_rcs:
+            return
+        try:
+            self.labrec_rcs.close()
+        finally:
+            self.labrec_rcs = None
+            self._set_labrecorder_status(connected=False)
+            self.log("LabRecorder RCS disconnected")
+
+    def _update_labrecorder_controls(self):
+        enabled = self.labrec_enabled.isChecked()
+        self.labrec_host.setEnabled(enabled)
+        self.labrec_port.setEnabled(enabled)
+        self.labrec_connect_btn.setEnabled(enabled)
+        self.labrec_disconnect_btn.setEnabled(enabled and bool(self.labrec_rcs and self.labrec_rcs.sock))
+
+    def _set_labrecorder_status(self, connected: bool, host: str = "", port: int = 0):
+        if connected:
+            self.labrec_status.setText(f"Connected to {host}:{port}")
+            self.labrec_status.setStyleSheet("color: #0b6a0b;")
+            self.labrec_disconnect_btn.setEnabled(True)
+        else:
+            self.labrec_status.setText("Disconnected")
+            self.labrec_status.setStyleSheet("color: #b00020;")
+            self.labrec_disconnect_btn.setEnabled(False)
