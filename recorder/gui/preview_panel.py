@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict
+from typing import Dict, Iterable, List
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (QGridLayout, QGroupBox, QLabel, QVBoxLayout,
@@ -12,19 +12,46 @@ class PreviewPanel(QWidget):
         super().__init__(parent)
         self.labels: Dict[int, QLabel] = {}
 
-        group = QGroupBox("Live Preview")
-        grid = QGridLayout()
-
-        positions = [(0,0),(0,1),(1,0),(1,1)]
-        for slot, (r,c) in enumerate(positions):
-            lbl = QLabel(f"Slot {slot+1}: inactive")
-            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            lbl.setMinimumSize(360, 220)
-            lbl.setStyleSheet("border: 1px solid #666; background: #111; color: #ddd;")
-            grid.addWidget(lbl, r, c)
-            self.labels[slot] = lbl
-
-        group.setLayout(grid)
+        self.group = QGroupBox("Live Preview")
+        self.grid = QGridLayout()
+        self.group.setLayout(self.grid)
         layout = QVBoxLayout()
-        layout.addWidget(group)
+        layout.addWidget(self.group)
         self.setLayout(layout)
+
+    def _make_label(self, cam_index: int) -> QLabel:
+        lbl = QLabel(f"Camera {cam_index}: inactive")
+        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lbl.setMinimumSize(360, 220)
+        lbl.setStyleSheet("border: 1px solid #666; background: #111; color: #ddd;")
+        return lbl
+
+    def _rebuild_grid(self):
+        while self.grid.count():
+            item = self.grid.takeAt(0)
+            if item and item.widget():
+                item.widget().setParent(None)
+
+        cams: List[int] = sorted(self.labels.keys())
+        cols = 2 if len(cams) > 1 else 1
+        for idx, cam_index in enumerate(cams):
+            r = idx // cols
+            c = idx % cols
+            self.grid.addWidget(self.labels[cam_index], r, c)
+
+    def ensure_label(self, cam_index: int) -> QLabel:
+        if cam_index not in self.labels:
+            self.labels[cam_index] = self._make_label(cam_index)
+            self._rebuild_grid()
+        return self.labels[cam_index]
+
+    def set_active_cameras(self, cam_indices: Iterable[int]):
+        active = set(int(x) for x in cam_indices)
+        removed = [k for k in self.labels if k not in active]
+        for k in removed:
+            lbl = self.labels.pop(k)
+            lbl.setParent(None)
+        for k in active:
+            if k not in self.labels:
+                self.labels[k] = self._make_label(k)
+        self._rebuild_grid()

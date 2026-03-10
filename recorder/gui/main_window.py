@@ -23,6 +23,7 @@ class MainWindow(QMainWindow):
     def __init__(self, cfg_path: Optional[str] = None):
         super().__init__()
         self.setWindowTitle("LSL AV Recorder (Audio via LSL, LabRecorder XDF)")
+        self._recording_active = False
         self.logbox = QTextEdit()
         self.logbox.setReadOnly(True)
         self.cfg: AppConfig = load_cfg(cfg_path) if cfg_path else load_cfg("example.cfg")
@@ -94,7 +95,6 @@ class MainWindow(QMainWindow):
 
         # Preview wall
         self.preview_panel = PreviewPanel()
-        self.preview_wall = [self.preview_panel.labels[i] for i in range(4)]
         self.preview_mgr = PreviewManager(self)
         # Show camera previews if video is enabled in config
         if self.cfg.Video.Enabled:
@@ -189,7 +189,9 @@ class MainWindow(QMainWindow):
         return 1
 
     def _update_add_camera_button(self):
-        self.btn_add_camera.setEnabled(len(self.cam_panels) < self.max_cams)
+        self.btn_add_camera.setEnabled(
+            (len(self.cam_panels) < self.max_cams) and not self._recording_active
+        )
 
     def _add_camera_panel(self, cam_cfg: VideoCamConfig | None = None):
         if len(self.cam_panels) >= self.max_cams:
@@ -259,6 +261,8 @@ class MainWindow(QMainWindow):
 
             self.btn_start.setEnabled(False)
             self.btn_stop.setEnabled(True)
+            self._recording_active = True
+            self._update_add_camera_button()
         except Exception as e:
             QMessageBox.critical(self, "Start failed", str(e))
 
@@ -269,3 +273,5 @@ class MainWindow(QMainWindow):
         finally:
             self.btn_start.setEnabled(True)
             self.btn_stop.setEnabled(False)
+            self._recording_active = False
+            self._update_add_camera_button()
