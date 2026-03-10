@@ -5,10 +5,12 @@ from datetime import datetime
 from typing import Optional
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QFormLayout,
-                             QHBoxLayout, QLabel, QLineEdit, QMainWindow,
-                             QMessageBox, QPushButton, QSpinBox, QSplitter,
-                             QTabWidget, QTextEdit, QVBoxLayout, QWidget)
+from PyQt6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox,
+                             QFileDialog, QFormLayout, QHBoxLayout, QLabel,
+                             QLineEdit, QMainWindow, QMessageBox, QPushButton,
+                             QSpinBox, QSplitter, QTableWidget,
+                             QTableWidgetItem, QTabWidget, QTextEdit,
+                             QVBoxLayout, QWidget)
 
 from ..audio.devices import default_input_device_index, list_input_devices
 from ..config import AppConfig, VideoCamConfig, load_cfg
@@ -118,11 +120,18 @@ class MainWindow(QMainWindow):
 
         self.lsl_discover_btn = QPushButton("Discover streams")
         self.lsl_discover_btn.setEnabled(False)
-        self.lsl_streams_box = QTextEdit()
-        self.lsl_streams_box.setReadOnly(True)
-        self.lsl_streams_box.setEnabled(False)
+        self.lsl_streams_table = QTableWidget()
+        self.lsl_streams_table.setEnabled(False)
+        self.lsl_streams_table.setColumnCount(8)
+        self.lsl_streams_table.setHorizontalHeaderLabels([
+            "Record", "Name", "Type", "Channels", "SRate", "Source ID", "UID", "Host"
+        ])
+        self.lsl_streams_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.lsl_streams_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.lsl_streams_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.lsl_streams_table.horizontalHeader().setStretchLastSection(True)
         lf.addRow(self.lsl_discover_btn)
-        lf.addRow(self.lsl_streams_box)
+        lf.addRow(self.lsl_streams_table)
 
         # Camera tabs
         self.cam_panels = []
@@ -383,27 +392,35 @@ class MainWindow(QMainWindow):
             self.log("LabRecorder RCS disconnected")
 
     def on_discover_lsl_streams(self):
-        self.lsl_streams_box.clear()
+        self.lsl_streams_table.setRowCount(0)
         try:
             from pylsl import resolve_streams
             streams = resolve_streams(wait_time=2.0)
             if not streams:
-                self.lsl_streams_box.setPlainText("No LSL streams found.")
+                self.lsl_streams_table.setRowCount(0)
                 return
-            lines = [f"Found {len(streams)} stream(s):"]
-            for i, stream in enumerate(streams, start=1):
-                line = (
-                    f"{i}. {stream.name()} | {stream.type()} | "
-                    f"ch={stream.channel_count()} | "
-                    f"srate={stream.nominal_srate()} | "
-                    f"source_id={stream.source_id()} | "
-                    f"uid={stream.uid()} | "
-                    f"host={stream.hostname()}"
-                )
-                lines.append(line)
-            self.lsl_streams_box.setPlainText("\n".join(lines))
+            self.lsl_streams_table.setRowCount(len(streams))
+            for row, stream in enumerate(streams):
+                chk = QTableWidgetItem()
+                chk.setCheckState(Qt.CheckState.Unchecked)
+                chk.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
+                self.lsl_streams_table.setItem(row, 0, chk)
+
+                values = [
+                    stream.name(),
+                    stream.type(),
+                    str(stream.channel_count()),
+                    str(stream.nominal_srate()),
+                    stream.source_id(),
+                    stream.uid(),
+                    stream.hostname(),
+                ]
+                for col, val in enumerate(values, start=1):
+                    item = QTableWidgetItem(val)
+                    item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                    self.lsl_streams_table.setItem(row, col, item)
         except Exception as e:
-            self.lsl_streams_box.setPlainText(f"Error discovering LSL streams: {e}")
+            self.lsl_streams_table.setRowCount(0)
             QMessageBox.critical(self, "LSL stream discovery failed", str(e))
 
     def _update_labrecorder_controls(self):
@@ -414,7 +431,7 @@ class MainWindow(QMainWindow):
         self.labrec_disconnect_btn.setEnabled(enabled and bool(self.labrec_rcs and self.labrec_rcs.sock))
         connected = bool(self.labrec_rcs and self.labrec_rcs.sock)
         self.lsl_discover_btn.setEnabled(connected)
-        self.lsl_streams_box.setEnabled(connected)
+        self.lsl_streams_table.setEnabled(connected)
 
     def _set_labrecorder_status(self, connected: bool, host: str = "", port: int = 0):
         if connected:
@@ -422,11 +439,11 @@ class MainWindow(QMainWindow):
             self.labrec_status.setStyleSheet("color: #0b6a0b;")
             self.labrec_disconnect_btn.setEnabled(True)
             self.lsl_discover_btn.setEnabled(True)
-            self.lsl_streams_box.setEnabled(True)
+            self.lsl_streams_table.setEnabled(True)
         else:
             self.labrec_status.setText("Disconnected")
             self.labrec_status.setStyleSheet("color: #b00020;")
             self.labrec_disconnect_btn.setEnabled(False)
             self.lsl_discover_btn.setEnabled(False)
-            self.lsl_streams_box.setEnabled(False)
-            self.lsl_streams_box.clear()
+            self.lsl_streams_table.setEnabled(False)
+            self.lsl_streams_table.setRowCount(0)
