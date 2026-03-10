@@ -112,8 +112,17 @@ class MainWindow(QMainWindow):
         lf.addRow(self.labrec_connect_btn)
         lf.addRow(self.labrec_disconnect_btn)
         lf.addRow("Status", self.labrec_status)
+        lf.addRow(QLabel("LabRecorder Streams"))
         labrec_widget.setLayout(lf)
         self.tabs.addTab(labrec_widget, "LabRecorder")
+
+        self.lsl_discover_btn = QPushButton("Discover streams")
+        self.lsl_discover_btn.setEnabled(False)
+        self.lsl_streams_box = QTextEdit()
+        self.lsl_streams_box.setReadOnly(True)
+        self.lsl_streams_box.setEnabled(False)
+        lf.addRow(self.lsl_discover_btn)
+        lf.addRow(self.lsl_streams_box)
 
         # Camera tabs
         self.cam_panels = []
@@ -157,6 +166,7 @@ class MainWindow(QMainWindow):
         self.labrec_connect_btn.clicked.connect(self.on_connect_labrecorder)
         self.labrec_disconnect_btn.clicked.connect(self.on_disconnect_labrecorder)
         self.labrec_enabled.stateChanged.connect(self._update_labrecorder_controls)
+        self.lsl_discover_btn.clicked.connect(self.on_discover_lsl_streams)
         self._update_labrecorder_controls()
 
     def _refresh_previews_from_panels(self):
@@ -372,19 +382,51 @@ class MainWindow(QMainWindow):
             self._set_labrecorder_status(connected=False)
             self.log("LabRecorder RCS disconnected")
 
+    def on_discover_lsl_streams(self):
+        self.lsl_streams_box.clear()
+        try:
+            from pylsl import resolve_streams
+            streams = resolve_streams(wait_time=2.0)
+            if not streams:
+                self.lsl_streams_box.setPlainText("No LSL streams found.")
+                return
+            lines = [f"Found {len(streams)} stream(s):"]
+            for i, stream in enumerate(streams, start=1):
+                line = (
+                    f"{i}. {stream.name()} | {stream.type()} | "
+                    f"ch={stream.channel_count()} | "
+                    f"srate={stream.nominal_srate()} | "
+                    f"source_id={stream.source_id()} | "
+                    f"uid={stream.uid()} | "
+                    f"host={stream.hostname()}"
+                )
+                lines.append(line)
+            self.lsl_streams_box.setPlainText("\n".join(lines))
+        except Exception as e:
+            self.lsl_streams_box.setPlainText(f"Error discovering LSL streams: {e}")
+            QMessageBox.critical(self, "LSL stream discovery failed", str(e))
+
     def _update_labrecorder_controls(self):
         enabled = self.labrec_enabled.isChecked()
         self.labrec_host.setEnabled(enabled)
         self.labrec_port.setEnabled(enabled)
         self.labrec_connect_btn.setEnabled(enabled)
         self.labrec_disconnect_btn.setEnabled(enabled and bool(self.labrec_rcs and self.labrec_rcs.sock))
+        connected = bool(self.labrec_rcs and self.labrec_rcs.sock)
+        self.lsl_discover_btn.setEnabled(connected)
+        self.lsl_streams_box.setEnabled(connected)
 
     def _set_labrecorder_status(self, connected: bool, host: str = "", port: int = 0):
         if connected:
             self.labrec_status.setText(f"Connected to {host}:{port}")
             self.labrec_status.setStyleSheet("color: #0b6a0b;")
             self.labrec_disconnect_btn.setEnabled(True)
+            self.lsl_discover_btn.setEnabled(True)
+            self.lsl_streams_box.setEnabled(True)
         else:
             self.labrec_status.setText("Disconnected")
             self.labrec_status.setStyleSheet("color: #b00020;")
             self.labrec_disconnect_btn.setEnabled(False)
+            self.lsl_discover_btn.setEnabled(False)
+            self.lsl_streams_box.setEnabled(False)
+            self.lsl_streams_box.clear()
