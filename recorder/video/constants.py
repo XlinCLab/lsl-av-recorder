@@ -35,6 +35,10 @@ V4L2_CONTROL_MAP = {
     "auto_exposure": "exposure_auto",
     "auto_focus": "focus_auto",
 }
+V4L2_AUTO_EXPOSURE_MODE = 0
+V4L2_MANUAL_EXPOSURE_MODE = 1
+V4L2_AUTO_FOCUS_MODE = 1
+V4L2_MANUAL_FOCUS_MODE = 0
 
 # Other ffmpeg parameters
 # Camera controls not supported via ffmpeg

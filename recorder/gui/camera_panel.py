@@ -14,7 +14,10 @@ from ..video.camera_settings import (apply_camera_controls,
                                      summarize_control_application)
 from ..video.constants import (BRIGHTNESS_RANGE, DEFAULT_CAMERA_FPS,
                                DEFAULT_PIXEL_FORMAT, HUE_RANGE,
-                               PIXEL_FORMAT_OPTIONS, SATURATION_RANGE)
+                               PIXEL_FORMAT_OPTIONS, SATURATION_RANGE,
+                               V4L2_AUTO_EXPOSURE_MODE, V4L2_AUTO_FOCUS_MODE,
+                               V4L2_MANUAL_EXPOSURE_MODE,
+                               V4L2_MANUAL_FOCUS_MODE)
 from ..video.devices import list_video_devices
 
 
@@ -379,9 +382,9 @@ class CameraPanel(QWidget):
         if self.pixel_format.isEnabled():
             controls["pixel_format"] = cfg.PixelFormat
         if self.auto_exposure.isEnabled():
-            controls["auto_exposure"] = 1 if cfg.AutoExposure else 0
+            controls["auto_exposure"] = V4L2_AUTO_EXPOSURE_MODE if cfg.AutoExposure else V4L2_MANUAL_EXPOSURE_MODE
         if self.auto_focus.isEnabled():
-            controls["auto_focus"] = 1 if cfg.AutoFocus else 0
+            controls["auto_focus"] = V4L2_AUTO_FOCUS_MODE if cfg.AutoFocus else V4L2_MANUAL_FOCUS_MODE
 
         if not controls:
             self.text.append("No controls to apply")
