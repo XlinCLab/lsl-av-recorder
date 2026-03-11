@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from typing import Optional
 
@@ -212,6 +213,17 @@ class MainWindow(QMainWindow):
         try:
             self.preview_mgr.stop_recording_all()
             self.controller.stop()
+            outdir = os.path.abspath(self.controller.outdir)
+            msg = f"Results written to:\n{outdir}\n\nClose the app now?"
+            confirm = QMessageBox.question(
+                self,
+                "Recording stopped",
+                msg,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if confirm == QMessageBox.StandardButton.Yes:
+                self.close()
         finally:
             self.btn_start.setEnabled(True)
             self.btn_stop.setEnabled(False)
