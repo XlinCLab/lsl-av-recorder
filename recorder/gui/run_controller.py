@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import glob
 import json
 import os
 from dataclasses import asdict
@@ -55,6 +56,15 @@ class RunController:
     
     def _setup_paths(self):
         os.makedirs(self.outdir, exist_ok=True)
+        # Check that the specified output directory is empty
+        # If not, avoid accidentally overwriting previous results by creating runN subdirectory
+        is_empty = len(os.listdir(self.outdir)) == 0
+        if not is_empty:
+            n = 2
+            while os.path.exists(os.path.join(self.outdir, f"run{n:02d}")):
+                n += 1
+            self.outdir = os.path.join(self.outdir, f"run{n:02d}")
+            os.makedirs(self.outdir, exist_ok=True)
 
     def _write_metadata(self):
         meta_path = os.path.join(self.outdir, f"{self.base_name}_session.json")
@@ -79,6 +89,11 @@ class RunController:
         if self._running:
             return
         
+        # Get path to XDF file
+        # As a safety measure against accidentally overwriting a previous XDF file,
+        # this will raise an error if the output directory already contains an XDF file 
+        xdf_path = self._get_xdf_path()
+        
         # Initialize input streams
         self._initialize_streams()
 
@@ -86,7 +101,7 @@ class RunController:
         self._start_streams()
 
         # Start XDF writer and add streams
-        xdf_writer = self._initialize_xdf_writer()
+        xdf_writer = self._initialize_xdf_writer(xdf_path=xdf_path)
         xdf_writer.start()
         self.info(f"XDF writer started")
         self._add_streams_to_xdf_writer(xdf_writer)
@@ -164,6 +179,11 @@ class RunController:
         # Create containing directory for xdf file
         outdir = os.path.dirname(xdf_path)
         os.makedirs(outdir, exist_ok=True)
+
+        # Verify that there is no existing xdf file already in this directory
+        xdf_contents = glob.glob(os.path.join(outdir, "*.xdf"))
+        if len(xdf_contents) > 0:
+            raise ValueError(f"Specified output directory {outdir} already contains an XDF file!")
         return xdf_path
 
     def _initialize_xdf_writer(self, xdf_path: str = None) -> XDFWriter:

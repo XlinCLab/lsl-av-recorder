@@ -25,7 +25,7 @@ class MainWindow(QMainWindow):
         self.logbox = QTextEdit()
         self.logbox.setReadOnly(True)
         self.cfg: AppConfig = load_cfg(cfg_path) if cfg_path else load_cfg("example.cfg")
-        self.controller = RunController(self.cfg, status_cb=self.log)
+        self.controller: RunController = None
 
         form = QFormLayout()
         self.experiment = QLineEdit(self.cfg.Prompts.ExperimentName)
@@ -180,7 +180,6 @@ class MainWindow(QMainWindow):
             return
         try:
             self.cfg = load_cfg(path)
-            self.controller = RunController(self.cfg, status_cb=self.log)
             self.log(f"Loaded config: {path}")
         except Exception as e:
             QMessageBox.critical(self, "Load failed", str(e))
