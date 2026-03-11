@@ -141,49 +141,16 @@ class RunController:
         self._running = False
         self.info("Run stopped")
 
-    @staticmethod
-    def _resolve_xdf_path(
-        root: str,
-        template: str,
-        participant: str,
-        session: str,
-        task: str,
-        run: str,
-        acq: str = "",
-    ) -> str:
-        path = template
-        path = path.replace("%p", participant)
-        path = path.replace("%s", session)
-        path = path.replace("%b", task)
-        path = path.replace("%r", run)
-        path = path.replace("%a", acq or "default")
-
-        if not path.endswith(".xdf"):
-            path += ".xdf"
-
-        return os.path.join(root, path)
-
     def _get_xdf_path(self) -> str:
-        root = os.path.abspath(self.cfg.Output.StudyRoot)
-        template = self.cfg.Output.PathTemplate
-        prompts = self.cfg.Prompts
-        xdf_path = self._resolve_xdf_path(
-            root=root,
-            template=template,
-            participant=prompts.Subject,
-            session=prompts.Session,
-            task=prompts.Block,
-            run=prompts.Run,
-            acq=prompts.Acquisition,
-        )
-        # Create containing directory for xdf file
-        outdir = os.path.dirname(xdf_path)
-        os.makedirs(outdir, exist_ok=True)
+        base_name = self.base_name
+        if not base_name.endswith(".xdf"):
+            base_name += ".xdf"
+        xdf_path = os.path.join(self.outdir, base_name)
 
         # Verify that there is no existing xdf file already in this directory
-        xdf_contents = glob.glob(os.path.join(outdir, "*.xdf"))
+        xdf_contents = glob.glob(os.path.join(self.outdir, "*.xdf"))
         if len(xdf_contents) > 0:
-            raise ValueError(f"Specified output directory {outdir} already contains an XDF file!")
+            raise ValueError(f"Specified output directory {self.outdir} already contains an XDF file!")
         return xdf_path
 
     def _initialize_xdf_writer(self, xdf_path: str = None) -> XDFWriter:
