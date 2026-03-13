@@ -2,22 +2,26 @@ from __future__ import annotations
 
 import os
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 
+from pylsl import StreamInfo
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QFormLayout,
-                             QHBoxLayout, QLabel, QLineEdit, QMainWindow,
-                             QMessageBox, QPushButton, QSpinBox, QSplitter,
-                             QTabWidget, QTextEdit, QVBoxLayout, QWidget)
+from PyQt6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox,
+                             QFileDialog, QFormLayout, QHBoxLayout, QLabel,
+                             QLineEdit, QMainWindow, QMessageBox, QPushButton,
+                             QSpinBox, QSplitter, QTableWidget,
+                             QTableWidgetItem, QTabWidget, QTextEdit,
+                             QVBoxLayout, QWidget)
 
 from ..audio.devices import default_input_device_index, list_input_devices
 from ..config import AppConfig, VideoCamConfig, load_cfg
-from ..naming import build_paths  # keep global import too
+from ..lsl.labrecorder_rcs import LabRecorderRCS
+from ..naming import build_paths
+from ..video.devices import list_video_devices
 from .camera_panel import CameraPanel
 from .preview_manager import PreviewManager
 from .preview_panel import PreviewPanel
 from .run_controller import RunController
-from ..video.devices import list_video_devices
 
 
 class MainWindow(QMainWindow):
@@ -59,6 +63,7 @@ class MainWindow(QMainWindow):
 
         self.tabs = QTabWidget()
         self.btn_remove_camera = QPushButton("Remove camera")
+        self.labrec_rcs: Optional[LabRecorderRCS] = None
 
         # Audio tab
         audio_widget = QWidget()
@@ -89,6 +94,45 @@ class MainWindow(QMainWindow):
         af.addRow("LSL stream name", self.audio_stream_name)
         audio_widget.setLayout(af)
         self.tabs.addTab(audio_widget, "Audio")
+
+        # LabRecorder tab
+        labrec_widget = QWidget()
+        lf = QFormLayout()
+        self.labrec_enabled = QCheckBox("Enable LabRecorder RCS")
+        self.labrec_enabled.setChecked(bool(self.cfg.LabRecorder.Enabled))
+        self.labrec_host = QLineEdit(self.cfg.LabRecorder.Host)
+        self.labrec_port = QSpinBox()
+        self.labrec_port.setRange(1, 65535)
+        self.labrec_port.setValue(int(self.cfg.LabRecorder.Port))
+        self.labrec_connect_btn = QPushButton("Connect")
+        self.labrec_disconnect_btn = QPushButton("Disconnect")
+        self.labrec_disconnect_btn.setEnabled(False)
+        self.labrec_status = QLabel("Disconnected")
+        self.labrec_status.setStyleSheet("color: #b00020;")
+        lf.addRow(self.labrec_enabled)
+        lf.addRow("RCS host", self.labrec_host)
+        lf.addRow("RCS port", self.labrec_port)
+        lf.addRow(self.labrec_connect_btn)
+        lf.addRow(self.labrec_disconnect_btn)
+        lf.addRow("Status", self.labrec_status)
+        lf.addRow(QLabel("LabRecorder Streams"))
+        labrec_widget.setLayout(lf)
+        self.tabs.addTab(labrec_widget, "LabRecorder")
+
+        self.lsl_discover_btn = QPushButton("Discover streams")
+        self.lsl_discover_btn.setEnabled(False)
+        self.lsl_streams_table = QTableWidget()
+        self.lsl_streams_table.setEnabled(False)
+        self.lsl_streams_table.setColumnCount(8)
+        self.lsl_streams_table.setHorizontalHeaderLabels([
+            "Record", "Name", "Type", "Channels", "SRate", "Source ID", "UID", "Host"
+        ])
+        self.lsl_streams_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.lsl_streams_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.lsl_streams_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.lsl_streams_table.horizontalHeader().setStretchLastSection(True)
+        lf.addRow(self.lsl_discover_btn)
+        lf.addRow(self.lsl_streams_table)
 
         # Camera tabs
         self.cam_panels = []
@@ -129,6 +173,11 @@ class MainWindow(QMainWindow):
         self.btn_add_camera.clicked.connect(self._on_add_camera)
         self.btn_start.clicked.connect(self.on_start)
         self.btn_stop.clicked.connect(self.on_stop)
+        self.labrec_connect_btn.clicked.connect(self.on_connect_labrecorder)
+        self.labrec_disconnect_btn.clicked.connect(self.on_disconnect_labrecorder)
+        self.labrec_enabled.stateChanged.connect(self._update_labrecorder_controls)
+        self.lsl_discover_btn.clicked.connect(self.on_discover_lsl_streams)
+        self._update_labrecorder_controls()
 
     def _refresh_previews_from_panels(self):
         # Don't reconfigure preview workers while a run is active/recording.
@@ -252,6 +301,9 @@ class MainWindow(QMainWindow):
         self.cfg.Audio.Channels = int(self.audio_ch.value())
         self.cfg.Audio.StreamName = self.audio_stream_name.text().strip() or "Audio"
 
+        self.cfg.LabRecorder.Enabled = self.labrec_enabled.isChecked()
+        self.cfg.LabRecorder.Host = self.labrec_host.text().strip() or self.cfg.LabRecorder.Host
+        self.cfg.LabRecorder.Port = int(self.labrec_port.value())
         self.cfg.Video.Cams = []
         for panel in self.cam_panels:
             self.cfg.Video.Cams.append(panel.to_config())
@@ -270,12 +322,11 @@ class MainWindow(QMainWindow):
     def on_start(self):
         self.pull_gui_into_cfg()
         try:
-            self.controller = RunController(self.cfg, status_cb=self.log)
+            lsl_streams = self._get_selected_lsl_streams()
+            self.controller = RunController(self.cfg, status_cb=self.log, lsl_streams=lsl_streams)
             self.controller.start()
 
-            # Local import is intentional (protects against stale installs / name binding issues)
-            from recorder.naming import build_paths as _build_paths
-            paths = _build_paths(self.cfg.Output, self.cfg.Prompts)
+            paths = build_paths(self.cfg.Output, self.cfg.Prompts)
 
             # Start video recording (only if video is enabled in config)
             if self.cfg.Video.Enabled:
@@ -313,3 +364,99 @@ class MainWindow(QMainWindow):
             self.btn_stop.setEnabled(False)
             self._recording_active = False
             self._update_add_camera_button()
+
+    def on_connect_labrecorder(self):
+        host = self.labrec_host.text().strip() or self.cfg.LabRecorder.Host
+        port = int(self.labrec_port.value())
+        if self.labrec_rcs and self.labrec_rcs.sock:
+            self.log(f"LabRecorder RCS already connected at {host}:{port}")
+            return
+        rcs = LabRecorderRCS(host=host, port=port)
+        try:
+            rcs.connect()
+            self.labrec_rcs = rcs
+            self._set_labrecorder_status(connected=True, host=host, port=port)
+            self.log(f"LabRecorder RCS connected at {host}:{port}")
+        except Exception as e:
+            self._set_labrecorder_status(connected=False)
+            QMessageBox.critical(self, "LabRecorder RCS connection failed", str(e))
+
+    def on_disconnect_labrecorder(self):
+        if not self.labrec_rcs:
+            return
+        try:
+            self.labrec_rcs.close()
+        finally:
+            self.labrec_rcs = None
+            self._set_labrecorder_status(connected=False)
+            self.log("LabRecorder RCS disconnected")
+
+    def on_discover_lsl_streams(self):
+        self.lsl_streams_table.setRowCount(0)
+        try:
+            from pylsl import resolve_streams
+            streams = resolve_streams(wait_time=2.0)
+            if not streams:
+                self.lsl_streams_table.setRowCount(0)
+                return
+            self.lsl_streams_table.setRowCount(len(streams))
+            for row, stream in enumerate(streams):
+                chk = QTableWidgetItem()
+                chk.setCheckState(Qt.CheckState.Unchecked)
+                chk.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
+                chk.setData(Qt.ItemDataRole.UserRole, stream)
+                self.lsl_streams_table.setItem(row, 0, chk)
+
+                values = [
+                    stream.name(),
+                    stream.type(),
+                    str(stream.channel_count()),
+                    str(stream.nominal_srate()),
+                    stream.source_id(),
+                    stream.uid(),
+                    stream.hostname(),
+                ]
+                for col, val in enumerate(values, start=1):
+                    item = QTableWidgetItem(val)
+                    item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                    self.lsl_streams_table.setItem(row, col, item)
+        except Exception as e:
+            self.lsl_streams_table.setRowCount(0)
+            QMessageBox.critical(self, "LSL stream discovery failed", str(e))
+
+    def _get_selected_lsl_streams(self):
+        selected: List[StreamInfo] = []
+        for row in range(self.lsl_streams_table.rowCount()):
+            item = self.lsl_streams_table.item(row, 0)
+            if not item:
+                continue
+            if item.checkState() == Qt.CheckState.Checked:
+                stream = item.data(Qt.ItemDataRole.UserRole)
+                if stream is not None:
+                    selected.append(stream)
+        return selected
+
+    def _update_labrecorder_controls(self):
+        enabled = self.labrec_enabled.isChecked()
+        self.labrec_host.setEnabled(enabled)
+        self.labrec_port.setEnabled(enabled)
+        self.labrec_connect_btn.setEnabled(enabled)
+        self.labrec_disconnect_btn.setEnabled(enabled and bool(self.labrec_rcs and self.labrec_rcs.sock))
+        connected = bool(self.labrec_rcs and self.labrec_rcs.sock)
+        self.lsl_discover_btn.setEnabled(connected)
+        self.lsl_streams_table.setEnabled(connected)
+
+    def _set_labrecorder_status(self, connected: bool, host: str = "", port: int = 0):
+        if connected:
+            self.labrec_status.setText(f"Connected to {host}:{port}")
+            self.labrec_status.setStyleSheet("color: #0b6a0b;")
+            self.labrec_disconnect_btn.setEnabled(True)
+            self.lsl_discover_btn.setEnabled(True)
+            self.lsl_streams_table.setEnabled(True)
+        else:
+            self.labrec_status.setText("Disconnected")
+            self.labrec_status.setStyleSheet("color: #b00020;")
+            self.labrec_disconnect_btn.setEnabled(False)
+            self.lsl_discover_btn.setEnabled(False)
+            self.lsl_streams_table.setEnabled(False)
+            self.lsl_streams_table.setRowCount(0)

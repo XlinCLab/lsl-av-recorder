@@ -9,14 +9,21 @@ from typing import Callable, Dict, List, Optional
 
 from ..audio.lsl_audio import (AudioLSLStreamer, AudioStreamSettings,
                                _dtype_format)
+from pylsl import StreamInfo
 from ..config import AppConfig, VideoCamConfig
 from ..naming import build_paths
 from ..video.video_recorder import VideoRecorder
 from ..xdf.xdf_writer import XDFWriter
+from ..lsl.lsl_inlet_recorder import LslInletRecorder, lsl_format_to_xdf
 
 
 class RunController:
-    def __init__(self, cfg: AppConfig, status_cb: Optional[Callable[[str], None]] = None):
+    def __init__(
+        self,
+        cfg: AppConfig,
+        status_cb: Optional[Callable[[str], None]] = None,
+        lsl_streams: Optional[List[StreamInfo]] = None,
+    ):
         self.cfg = cfg
         self.status_cb = status_cb
         self._running = False
@@ -30,6 +37,8 @@ class RunController:
         self.videos: List[VideoRecorder] = []
         self.audio_sid: Optional[int] = None
         self.video_sids: Dict[str, int] = {}
+        self.lsl_streams = lsl_streams or []
+        self.lsl_recorders: List[LslInletRecorder] = []
 
         # XDF writer
         self.xdf: Optional[XDFWriter] = None
@@ -74,6 +83,8 @@ class RunController:
                     "prompts": asdict(self.cfg.Prompts),
                     "output": asdict(self.cfg.Output),
                     "audio": asdict(self.cfg.Audio),
+                    "labrecorder": asdict(self.cfg.LabRecorder),
+                    "lsl_streams": [self._lsl_stream_meta(s) for s in self.lsl_streams],
                     "video": {
                         "Enabled": self.video_enabled,
                         "Cams": [asdict(c) for c in self.cams if c.Enabled] if self.video_enabled else []
@@ -105,6 +116,8 @@ class RunController:
         xdf_writer.start()
         self.info(f"XDF writer started")
         self._add_streams_to_xdf_writer(xdf_writer)
+        self._initialize_lsl_recorders(xdf_writer)
+        self._start_lsl_recorders()
 
         # Once all streams initialized, started, and added to XDF writer,
         # connect XDF writer to RunController to begin recording stream data to XDF
@@ -132,6 +145,9 @@ class RunController:
                 self.error(f"Skipped stopping video {vr} due to exception: {exc}")
         self.videos.clear()
 
+        # Stop LSL inlet recorders
+        self._stop_lsl_recorders()
+
         # XDF
         if self.xdf:
             self.xdf.stop()
@@ -140,6 +156,23 @@ class RunController:
 
         self._running = False
         self.info("Run stopped")
+
+    def _lsl_stream_meta(self, stream: StreamInfo) -> Dict[str, object]:
+        def safe_get(fn, key: str, out: Dict[str, object]):
+            try:
+                out[key] = fn()
+            except Exception:
+                pass
+
+        meta: Dict[str, object] = {}
+        safe_get(stream.name, "name", meta)
+        safe_get(stream.type, "type", meta)
+        safe_get(stream.channel_count, "channel_count", meta)
+        safe_get(stream.nominal_srate, "nominal_srate", meta)
+        safe_get(stream.source_id, "source_id", meta)
+        safe_get(stream.uid, "uid", meta)
+        safe_get(stream.hostname, "hostname", meta)
+        return meta
 
     def _get_xdf_path(self) -> str:
         base_name = self.base_name
@@ -183,6 +216,48 @@ class RunController:
                 source_id=self.audio_settings.source_id,
             )
             self.info(f"Initialized audio stream <{self.audio_settings.stream_name}> in XDF")
+
+        for stream in self.lsl_streams:
+            try:
+                fmt, _ = lsl_format_to_xdf(stream.channel_format())
+                sid = xdf_writer.add_lsl_stream(
+                    name=stream.name(),
+                    stype=stream.type(),
+                    channel_count=stream.channel_count(),
+                    srate=stream.nominal_srate(),
+                    fmt=fmt,
+                    source_id=stream.source_id() or stream.uid(),
+                    extra={"hostname": stream.hostname(), "uid": stream.uid()},
+                    key=f"lsl:{stream.uid()}",
+                )
+                self.info(f"Initialized LSL stream <{stream.name()}> in XDF")
+            except Exception as exc:
+                self.warning(f"Skipping LSL stream due to error: {exc}")
+
+    def _initialize_lsl_recorders(self, xdf_writer: XDFWriter):
+        self.lsl_recorders = []
+        if not self.lsl_streams:
+            return
+        for stream in self.lsl_streams:
+            try:
+                sid = xdf_writer.streams.get(f"lsl:{stream.uid()}")
+                if sid is None:
+                    self.warning(f"LSL stream not registered in XDF: {stream.name()}")
+                    continue
+                rec = LslInletRecorder(stream, sid, xdf_writer)
+                self.lsl_recorders.append(rec)
+                self.info(f"Initialized LSL inlet for stream <{stream.name()}>")
+            except Exception as exc:
+                self.warning(f"Failed to initialize LSL inlet for {stream.name()}: {exc}")
+
+    def _start_lsl_recorders(self):
+        for rec in self.lsl_recorders:
+            rec.start()
+
+    def _stop_lsl_recorders(self):
+        for rec in self.lsl_recorders:
+            rec.stop()
+        self.lsl_recorders = []
 
     def _get_audio_stream_settings(self) -> AudioStreamSettings:
         aset = AudioStreamSettings(
@@ -296,5 +371,3 @@ class RunController:
             timestamps=[timestamp],
             frame_indices=[frame_index],
         )
-
-

@@ -38,6 +38,12 @@ class AudioConfig:
     StreamName: str = "Audio"
 
 @dataclass
+class LabRecorderConfig:
+    Enabled: bool = False
+    Host: str = "127.0.0.1"
+    Port: int = 22345
+
+@dataclass
 class VideoCamConfig:
     Enabled: bool = False
     DeviceIndex: int = 0
@@ -71,6 +77,7 @@ class AppConfig:
     Prompts: AppPrompts = field(default_factory=AppPrompts)
     Output: OutputConfig = field(default_factory=OutputConfig)
     Audio: AudioConfig = field(default_factory=AudioConfig)
+    LabRecorder: LabRecorderConfig = field(default_factory=LabRecorderConfig)
     Video: VideoConfig = field(default_factory=VideoConfig)
 
 def _get_bool(cp: configparser.ConfigParser, section: str, key: str, default: bool=False) -> bool:
@@ -108,6 +115,12 @@ def load_cfg(path: str) -> AppConfig:
         cfg.Audio.BitDepth = cp.getint(s, "BitDepth", fallback=cfg.Audio.BitDepth)
         cfg.Audio.Channels = cp.getint(s, "Channels", fallback=cfg.Audio.Channels)
         cfg.Audio.StreamName = cp.get(s, "StreamName", fallback=cfg.Audio.StreamName)
+
+    if cp.has_section("LabRecorder"):
+        s = "LabRecorder"
+        cfg.LabRecorder.Enabled = _get_bool(cp, s, "Enabled", cfg.LabRecorder.Enabled)
+        cfg.LabRecorder.Host = cp.get(s, "Host", fallback=cfg.LabRecorder.Host).strip() or cfg.LabRecorder.Host
+        cfg.LabRecorder.Port = cp.getint(s, "Port", fallback=cfg.LabRecorder.Port)
 
     if cp.has_section("Video"):
         s = "Video"
