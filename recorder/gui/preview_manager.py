@@ -16,18 +16,6 @@ class PreviewManager(QObject):
         self.main = main_window
         self.threads: Dict[int, QThread] = {}
         self.workers: Dict[int, CameraWorker] = {}
-        self.slot_for_cam: Dict[int, int] = {}
-
-    def _assign_slot(self, cam_index: int) -> int:
-        if cam_index in self.slot_for_cam:
-            return self.slot_for_cam[cam_index]
-        used = set(self.slot_for_cam.values())
-        for s in range(4):
-            if s not in used:
-                self.slot_for_cam[cam_index] = s
-                return s
-        self.slot_for_cam[cam_index] = 0
-        return 0
 
     def start_cam_preview(self, cam_cfg):
         idx = int(cam_cfg.DeviceIndex)
@@ -51,8 +39,18 @@ class PreviewManager(QObject):
 
         self.workers[idx] = worker
         self.threads[idx] = thread
-        self._assign_slot(idx)
         thread.start()
+        self.main.preview_panel.set_active_cameras(self.workers.keys())
+
+    def stop_all_previews(self):
+        for w in self.workers.values():
+            w.stop_preview()
+        for t in self.threads.values():
+            t.quit()
+            t.wait(1000)
+        self.workers.clear()
+        self.threads.clear()
+        self.main.preview_panel.set_active_cameras([])
 
     def start_recording_all(self, out_dir: str, base_name: str, video_container: str, codec: str):
         for panel in self.main.cam_panels:
@@ -73,8 +71,7 @@ class PreviewManager(QObject):
             w.request_stop_recording()
 
     def on_frame(self, cam_index: int, frame_bgr):
-        slot = self._assign_slot(int(cam_index))
-        lbl = self.main.preview_wall[slot]
+        lbl = self.main.preview_panel.ensure_label(int(cam_index))
         h, w, ch = frame_bgr.shape
         rgb = frame_bgr[:, :, ::-1].copy()
         qimg = QImage(rgb.data, w, h, ch * w, QImage.Format.Format_RGB888)

@@ -1,8 +1,17 @@
 from __future__ import annotations
 
 import configparser
+import logging
 from dataclasses import dataclass, field
 from typing import List, Optional
+
+from .audio.constants import (DEFAULT_BIT_DEPTH, DEFAULT_N_CHANNELS,
+                              DEFAULT_SAMPLING_RATE)
+from .video.constants import (DEFAULT_CAMERA_FPS, DEFAULT_HEIGHT,
+                              DEFAULT_PIXEL_FORMAT, DEFAULT_PREVIEW_FPS,
+                              DEFAULT_WIDTH, DEVNODE_PATTERN)
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -23,9 +32,9 @@ class OutputConfig:
 class AudioConfig:
     Enabled: bool = False
     Device: Optional[str] = None
-    SampleRate: int = 48000
-    BitDepth: int = 32
-    Channels: int = 1
+    SampleRate: int = DEFAULT_SAMPLING_RATE
+    BitDepth: int = DEFAULT_BIT_DEPTH
+    Channels: int = DEFAULT_N_CHANNELS
     StreamName: str = "Audio"
 
 @dataclass
@@ -34,9 +43,9 @@ class VideoCamConfig:
     DeviceIndex: int = 0
     DevNode: str = "/dev/video0"
     Label: str = "Cam"
-    FPS: int = 30
-    Width: int = 1280
-    Height: int = 720
+    FPS: int = DEFAULT_CAMERA_FPS
+    Width: int = DEFAULT_WIDTH
+    Height: int = DEFAULT_HEIGHT
     AutoExposure: Optional[bool] = False
     Exposure: Optional[int] = None
     AutoFocus: Optional[bool] = False
@@ -46,6 +55,7 @@ class VideoCamConfig:
     Hue: Optional[int] = None
     Saturation: Optional[int] = None
     Zoom: Optional[int] = None
+    PixelFormat: str = DEFAULT_PIXEL_FORMAT
 
 @dataclass
 class VideoConfig:
@@ -53,7 +63,7 @@ class VideoConfig:
     MaxCams: int = 4
     Codec: str = "mp4v"
     Container: str = "mp4"
-    PreviewFPS: int = 15
+    PreviewFPS: int = DEFAULT_PREVIEW_FPS
     Cams: List[VideoCamConfig] = field(default_factory=list)
 
 @dataclass
@@ -110,15 +120,29 @@ def load_cfg(path: str) -> AppConfig:
     cams: List[VideoCamConfig] = []
     for i in range(1, cfg.Video.MaxCams + 1):
         sec = f"VideoCam{i}"
+        if not cp.has_section(sec):
+            continue
         vc = VideoCamConfig()
-        if cp.has_section(sec):
-            vc.Enabled = _get_bool(cp, sec, "Enabled", vc.Enabled)
-            vc.DeviceIndex = cp.getint(sec, "DeviceIndex", fallback=vc.DeviceIndex)
-            vc.DevNode = cp.get(sec, "DevNode", fallback=vc.DevNode)
-            vc.Label = cp.get(sec, "Label", fallback=vc.Label)
-            vc.FPS = cp.getint(sec, "FPS", fallback=vc.FPS)
-            vc.Width = cp.getint(sec, "Width", fallback=vc.Width)
-            vc.Height = cp.getint(sec, "Height", fallback=vc.Height)
+        vc.Enabled = _get_bool(cp, sec, "Enabled", vc.Enabled)
+        vc.DeviceIndex = cp.getint(sec, "DeviceIndex", fallback=vc.DeviceIndex)
+        vc.DevNode = cp.get(sec, "DevNode", fallback=vc.DevNode)
+        vc.Label = cp.get(sec, "Label", fallback=vc.Label)
+        vc.FPS = cp.getint(sec, "FPS", fallback=vc.FPS)
+        vc.Width = cp.getint(sec, "Width", fallback=vc.Width)
+        vc.Height = cp.getint(sec, "Height", fallback=vc.Height)
+        vc.AutoExposure = _get_bool(cp, sec, "AutoExposure", bool(vc.AutoExposure))
+        vc.AutoFocus = _get_bool(cp, sec, "AutoFocus", bool(vc.AutoFocus))
+        vc.Brightness = cp.getint(sec, "Brightness", fallback=vc.Brightness or 0)
+        vc.Hue = cp.getint(sec, "Hue", fallback=vc.Hue or 0)
+        vc.Saturation = cp.getint(sec, "Saturation", fallback=vc.Saturation or 100)
+        vc.PixelFormat = cp.get(sec, "PixelFormat", fallback=vc.PixelFormat).upper()
+        if vc.DevNode:
+            m = DEVNODE_PATTERN.match(vc.DevNode.strip())
+            if m:
+                try:
+                    vc.DeviceIndex = int(m.group(1))
+                except Exception as exc:
+                    logger.warning("Failed to derive DeviceIndex from DevNode %s: %s", vc.DevNode, exc)
         cams.append(vc)
     cfg.Video.Cams = cams
     return cfg

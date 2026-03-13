@@ -57,7 +57,8 @@ class CameraWorker(QObject):
         if sys.platform == "darwin":  # MacOS
             self.cap = cv2.VideoCapture(self.cam_index, cv2.CAP_AVFOUNDATION)
         elif sys.platform.startswith("linux"):
-            self.cap = cv2.VideoCapture(self.cam_index, cv2.CAP_V4L2)
+            source = self.devnode if self.devnode else self.cam_index
+            self.cap = cv2.VideoCapture(source, cv2.CAP_V4L2)
         else:  # Windows
             self.cap = cv2.VideoCapture(self.cam_index)
 

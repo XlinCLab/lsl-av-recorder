@@ -17,12 +17,14 @@ from .camera_panel import CameraPanel
 from .preview_manager import PreviewManager
 from .preview_panel import PreviewPanel
 from .run_controller import RunController
+from ..video.devices import list_video_devices
 
 
 class MainWindow(QMainWindow):
     def __init__(self, cfg_path: Optional[str] = None):
         super().__init__()
         self.setWindowTitle("LSL AV Recorder (Audio via LSL, LabRecorder XDF)")
+        self._recording_active = False
         self.logbox = QTextEdit()
         self.logbox.setReadOnly(True)
         self.cfg: AppConfig = load_cfg(cfg_path) if cfg_path else load_cfg("example.cfg")
@@ -45,15 +47,18 @@ class MainWindow(QMainWindow):
 
         btn_row = QHBoxLayout()
         self.btn_load = QPushButton("Load config")
+        self.btn_add_camera = QPushButton("Add camera")
         self.btn_start = QPushButton("Start")
         self.btn_stop = QPushButton("Stop")
         self.btn_stop.setEnabled(False)
         btn_row.addWidget(self.btn_load)
+        btn_row.addWidget(self.btn_add_camera)
         btn_row.addStretch(1)
         btn_row.addWidget(self.btn_start)
         btn_row.addWidget(self.btn_stop)
 
         self.tabs = QTabWidget()
+        self.btn_remove_camera = QPushButton("Remove camera")
 
         # Audio tab
         audio_widget = QWidget()
@@ -87,15 +92,11 @@ class MainWindow(QMainWindow):
 
         # Camera tabs
         self.cam_panels = []
-        for i in range(4):
-            cam_cfg = self.cfg.Video.Cams[i] if i < len(self.cfg.Video.Cams) else VideoCamConfig()
-            panel = CameraPanel(cam_cfg)
-            self.cam_panels.append(panel)
-            self.tabs.addTab(panel, f"Camera {i+1}")
+        self.max_cams = 4
+        self._init_camera_tabs()
 
         # Preview wall
         self.preview_panel = PreviewPanel()
-        self.preview_wall = [self.preview_panel.labels[i] for i in range(4)]
         self.preview_mgr = PreviewManager(self)
         # Show camera previews if video is enabled in config
         if self.cfg.Video.Enabled:
@@ -125,8 +126,23 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(root)
 
         self.btn_load.clicked.connect(self.on_load)
+        self.btn_add_camera.clicked.connect(self._on_add_camera)
         self.btn_start.clicked.connect(self.on_start)
         self.btn_stop.clicked.connect(self.on_stop)
+
+    def _refresh_previews_from_panels(self):
+        # Don't reconfigure preview workers while a run is active/recording.
+        if not self.btn_start.isEnabled():
+            return
+        if not self.cfg.Video.Enabled:
+            self.preview_mgr.stop_all_previews()
+            return
+
+        self.preview_mgr.stop_all_previews()
+        for panel in self.cam_panels:
+            cam_cfg = panel.to_config()
+            if cam_cfg.Enabled:
+                self.preview_mgr.start_cam_preview(cam_cfg)
 
     def log(self, msg: str, loglevel: str = "INFO"):
         now = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
@@ -153,6 +169,73 @@ class MainWindow(QMainWindow):
             if idx >= 0:
                 self.audio_device.setCurrentIndex(idx)
 
+    def _init_camera_tabs(self):
+        initial_count = self._determine_initial_camera_count()
+        for i in range(initial_count):
+            cam_cfg = self.cfg.Video.Cams[i] if i < len(self.cfg.Video.Cams) else VideoCamConfig()
+            self._add_camera_panel(cam_cfg)
+
+    def _determine_initial_camera_count(self) -> int:
+        cfg_count = len(self.cfg.Video.Cams)
+        if cfg_count > 0:
+            return min(cfg_count, self.max_cams)
+
+        detected = 0
+        try:
+            detected = len(list_video_devices())
+        except Exception:
+            detected = 0
+
+        if detected > 1:
+            return min(detected, self.max_cams)
+        return 1
+
+    def _update_add_camera_button(self):
+        self.btn_add_camera.setEnabled(
+            (len(self.cam_panels) < self.max_cams) and not self._recording_active
+        )
+        self._update_remove_buttons()
+
+    def _update_remove_buttons(self):
+        enabled = (len(self.cam_panels) > 1) and not self._recording_active
+        for panel in self.cam_panels:
+            panel.set_remove_enabled(enabled)
+
+    def _add_camera_panel(self, cam_cfg: VideoCamConfig | None = None):
+        if len(self.cam_panels) >= self.max_cams:
+            return
+        cam_cfg = cam_cfg or VideoCamConfig()
+        panel = CameraPanel(cam_cfg)
+        panel.enabled.setChecked(True)
+        panel.previewConfigChanged.connect(self._refresh_previews_from_panels)
+        panel.removeRequested.connect(self._on_remove_camera)
+        self.cam_panels.append(panel)
+        self.tabs.addTab(panel, f"Camera {len(self.cam_panels)}")
+        self._update_add_camera_button()
+
+    def _on_add_camera(self):
+        self._add_camera_panel()
+        self._refresh_previews_from_panels()
+
+    def _on_remove_camera(self, panel: CameraPanel):
+        if self._recording_active or len(self.cam_panels) <= 1:
+            return
+        if panel not in self.cam_panels:
+            return
+
+        cam_index = self.cam_panels.index(panel)
+        tab_index = cam_index + 1  # tab 0 is Audio
+        self.cam_panels.pop(cam_index)
+        self.tabs.removeTab(tab_index)
+        panel.setParent(None)
+        panel.deleteLater()
+
+        for i, cam_panel in enumerate(self.cam_panels):
+            self.tabs.setTabText(i + 1, f"Camera {i + 1}")
+
+        self._update_add_camera_button()
+        self._refresh_previews_from_panels()
+
     def pull_gui_into_cfg(self):
         self.cfg.Prompts.ExperimentName = self.experiment.text().strip()
         self.cfg.Prompts.Subject = self.subject.text().strip()
@@ -169,11 +252,10 @@ class MainWindow(QMainWindow):
         self.cfg.Audio.Channels = int(self.audio_ch.value())
         self.cfg.Audio.StreamName = self.audio_stream_name.text().strip() or "Audio"
 
-        for i, panel in enumerate(self.cam_panels):
-            if i < len(self.cfg.Video.Cams):
-                self.cfg.Video.Cams[i] = panel.to_config()
-            else:
-                self.cfg.Video.Cams.append(panel.to_config())
+        self.cfg.Video.Cams = []
+        for panel in self.cam_panels:
+            self.cfg.Video.Cams.append(panel.to_config())
+        self.cfg.Video.MaxCams = max(self.cfg.Video.MaxCams, len(self.cfg.Video.Cams))
 
     def on_load(self):
         path, _ = QFileDialog.getOpenFileName(self, "Load config", ".", "CFG files (*.cfg);;All files (*)")
@@ -206,6 +288,8 @@ class MainWindow(QMainWindow):
 
             self.btn_start.setEnabled(False)
             self.btn_stop.setEnabled(True)
+            self._recording_active = True
+            self._update_add_camera_button()
         except Exception as e:
             QMessageBox.critical(self, "Start failed", str(e))
 
@@ -227,3 +311,5 @@ class MainWindow(QMainWindow):
         finally:
             self.btn_start.setEnabled(True)
             self.btn_stop.setEnabled(False)
+            self._recording_active = False
+            self._update_add_camera_button()

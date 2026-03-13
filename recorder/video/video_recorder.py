@@ -1,3 +1,4 @@
+import sys
 import threading
 import time
 from typing import Callable
@@ -38,7 +39,10 @@ class VideoRecorder:
         self.log(msg, loglevel="ERROR")
 
     def start(self):
-        self.cap = cv2.VideoCapture(self.cam.DeviceIndex)
+        if sys.platform.startswith("linux") and getattr(self.cam, "DevNode", ""):
+            self.cap = cv2.VideoCapture(self.cam.DevNode)
+        else:
+            self.cap = cv2.VideoCapture(self.cam.DeviceIndex)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.cam.Width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.cam.Height)
         self.cap.set(cv2.CAP_PROP_FPS, self.cam.FPS)
