@@ -69,7 +69,7 @@ Main window includes:
   - `Run (%r)`
 - Audio tab
 - 4 camera tabs (Camera 1..4)
-- Live preview panel (2x2)
+- Live preview panel
 - Log panel
 - Run controls: `Load config`, `Start`, `Stop`
 
