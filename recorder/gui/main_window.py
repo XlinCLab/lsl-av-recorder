@@ -253,9 +253,11 @@ class MainWindow(QMainWindow):
     def _add_camera_panel(self, cam_cfg: VideoCamConfig | None = None):
         if len(self.cam_panels) >= self.max_cams:
             return
+        is_default = cam_cfg is None
         cam_cfg = cam_cfg or VideoCamConfig()
         panel = CameraPanel(cam_cfg)
-        panel.enabled.setChecked(True)
+        if is_default:
+            panel.enabled.setChecked(True)
         panel.previewConfigChanged.connect(self._refresh_previews_from_panels)
         panel.removeRequested.connect(self._on_remove_camera)
         self.cam_panels.append(panel)
@@ -315,6 +317,7 @@ class MainWindow(QMainWindow):
             return
         try:
             self.cfg = load_cfg(path)
+            self._apply_cfg_to_gui()
             self.log(f"Loaded config: {path}")
         except Exception as e:
             QMessageBox.critical(self, "Load failed", str(e))
@@ -460,3 +463,47 @@ class MainWindow(QMainWindow):
             self.lsl_discover_btn.setEnabled(False)
             self.lsl_streams_table.setEnabled(False)
             self.lsl_streams_table.setRowCount(0)
+
+    def _apply_cfg_to_gui(self):
+        self.experiment.setText(self.cfg.Prompts.ExperimentName)
+        self.subject.setText(self.cfg.Prompts.Subject)
+        self.session.setText(self.cfg.Prompts.Session)
+        self.block.setText(self.cfg.Prompts.Block)
+        self.acq.setText(self.cfg.Prompts.Acquisition)
+        self.run.setText(self.cfg.Prompts.Run)
+
+        self.audio_enabled.setChecked(bool(self.cfg.Audio.Enabled))
+        self._populate_audio_devices()
+        self._set_combo_to_data(self.audio_sr, int(self.cfg.Audio.SampleRate))
+        self._set_combo_to_data(self.audio_bit, int(self.cfg.Audio.BitDepth))
+        self.audio_ch.setValue(int(self.cfg.Audio.Channels))
+        self.audio_stream_name.setText(getattr(self.cfg.Audio, "StreamName", "Audio") or "Audio")
+
+        self.labrec_enabled.setChecked(bool(self.cfg.LabRecorder.Enabled))
+        self.labrec_host.setText(self.cfg.LabRecorder.Host)
+        self.labrec_port.setValue(int(self.cfg.LabRecorder.Port))
+        self._update_labrecorder_controls()
+
+        self._rebuild_camera_tabs_from_cfg()
+        self._refresh_previews_from_panels()
+
+    def _set_combo_to_data(self, combo: QComboBox, value: int):
+        idx = combo.findData(value)
+        if idx < 0:
+            combo.addItem(str(value), value)
+            idx = combo.findData(value)
+        combo.setCurrentIndex(max(idx, 0))
+
+    def _rebuild_camera_tabs_from_cfg(self):
+        for panel in list(self.cam_panels):
+            idx = self.tabs.indexOf(panel)
+            if idx >= 0:
+                self.tabs.removeTab(idx)
+            panel.setParent(None)
+            panel.deleteLater()
+        self.cam_panels = []
+
+        initial_count = self._determine_initial_camera_count()
+        for i in range(initial_count):
+            cam_cfg = self.cfg.Video.Cams[i] if i < len(self.cfg.Video.Cams) else VideoCamConfig()
+            self._add_camera_panel(cam_cfg)
