@@ -29,7 +29,7 @@ class XDFWriter:
       - N generic LSL streams (numeric samples)
     """
 
-    def __init__(self, path: str):
+    def __init__(self, path: str, clock_offset_interval_s: float = 5.0):
         self.path = path
         self.f: Optional[BinaryIO] = None
         self._lock = threading.Lock()
@@ -40,7 +40,8 @@ class XDFWriter:
         self._first_timestamp: Dict[int, float] = {}
         self._last_timestamp: Dict[int, float] = {}
         self._clock_offsets: Dict[int, list[tuple[float, float]]] = {}
-        self._clock_offset_written: set[int] = set()
+        self._clock_offset_interval_s = float(clock_offset_interval_s)
+        self._last_clock_offset_time: Dict[int, float] = {}
 
     def _get_next_stream_id(self):
         sid = self._next_stream_id
@@ -254,20 +255,22 @@ class XDFWriter:
 
     def _ensure_clock_offset(self, stream_id: int, timestamps):
         """
-        Emit a single clock offset chunk per stream (offset=0.0).
+        Emit periodic clock offset chunks per stream (offset=0.0).
         This keeps pyxdf's clock_segments aligned with segments when
         all streams share the same clock domain.
         """
-        if stream_id in self._clock_offset_written:
-            return
         if timestamps is None:
             return
         ts = np.asarray(timestamps, dtype=np.float64)
         if ts.size == 0:
             return
+        ts0 = float(ts[0])
+        last = self._last_clock_offset_time.get(stream_id)
+        if last is not None and (ts0 - last) < self._clock_offset_interval_s:
+            return
         # Use the first sample timestamp as the collection time; offset is zero
-        self._write_stream_offset(stream_id, now=float(ts[0]), offset=0.0)
-        self._clock_offset_written.add(stream_id)
+        self._write_stream_offset(stream_id, now=ts0, offset=0.0)
+        self._last_clock_offset_time[stream_id] = ts0
 
     # -------------------------------------------------
     # Samples
