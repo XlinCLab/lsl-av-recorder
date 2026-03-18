@@ -4,6 +4,7 @@ import time
 from typing import Callable
 
 import cv2
+from pylsl import local_clock
 
 
 class VideoRecorder:
@@ -68,7 +69,7 @@ class VideoRecorder:
                 time.sleep(0.001)
                 continue
 
-            ts = time.time()  # wall-clock timestamp
+            ts = local_clock()  # LSL clock timestamp (aligns with audio)
             self.writer.write(frame)
 
             if self.frame_cb:
