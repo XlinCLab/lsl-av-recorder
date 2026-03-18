@@ -40,6 +40,7 @@ class XDFWriter:
         self._first_timestamp: Dict[int, float] = {}
         self._last_timestamp: Dict[int, float] = {}
         self._clock_offsets: Dict[int, list[tuple[float, float]]] = {}
+        self._clock_offset_written: set[int] = set()
 
     def _get_next_stream_id(self):
         sid = self._next_stream_id
@@ -251,6 +252,22 @@ class XDFWriter:
                 stream_id=None,
             )
 
+    def _ensure_clock_offset(self, stream_id: int, timestamps):
+        """
+        Emit a single clock offset chunk per stream (offset=0.0).
+        This keeps pyxdf's clock_segments aligned with segments when
+        all streams share the same clock domain.
+        """
+        if stream_id in self._clock_offset_written:
+            return
+        if timestamps is None:
+            return
+        ts = np.asarray(timestamps, dtype=np.float64)
+        if ts.size == 0:
+            return
+        # Use the first sample timestamp as the collection time; offset is zero
+        self._write_stream_offset(stream_id, now=float(ts[0]), offset=0.0)
+        self._clock_offset_written.add(stream_id)
 
     # -------------------------------------------------
     # Samples
@@ -411,6 +428,7 @@ class XDFWriter:
         samples: np.ndarray,
     ):
         self._write_boundary_chunk()
+        self._ensure_clock_offset(stream_id, timestamps)
         with self._lock:
             self._write_samples(stream_id, timestamps, samples)
 
@@ -421,6 +439,7 @@ class XDFWriter:
         frame_indices: np.ndarray,
     ):
         self._write_boundary_chunk()
+        self._ensure_clock_offset(stream_id, timestamps)
         frame_indices = np.asarray(frame_indices, dtype=np.int64)
         with self._lock:
             self._write_samples(stream_id, timestamps, frame_indices)
@@ -432,6 +451,7 @@ class XDFWriter:
         samples: np.ndarray,
     ):
         self._write_boundary_chunk()
+        self._ensure_clock_offset(stream_id, timestamps)
         with self._lock:
             self._write_samples(stream_id, timestamps, samples)
 
