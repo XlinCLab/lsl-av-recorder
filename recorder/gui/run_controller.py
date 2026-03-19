@@ -3,20 +3,23 @@ from __future__ import annotations
 import glob
 import json
 import os
+import queue
 import threading
+import time
 from dataclasses import asdict
 from time import sleep
 from typing import Callable, Dict, List, Optional
 
 import numpy as np
+from pylsl import StreamInfo
+
 from ..audio.lsl_audio import (AudioLSLStreamer, AudioStreamSettings,
                                _dtype_format)
-from pylsl import StreamInfo
 from ..config import AppConfig, VideoCamConfig
+from ..lsl.lsl_inlet_recorder import LslInletRecorder, lsl_format_to_xdf
 from ..naming import build_paths
 from ..video.video_recorder import VideoRecorder
 from ..xdf.xdf_writer import XDFWriter
-from ..lsl.lsl_inlet_recorder import LslInletRecorder, lsl_format_to_xdf
 
 
 class RunController:
@@ -53,6 +56,16 @@ class RunController:
         self._video_buf_lock = threading.Lock()
         self._video_ts_buf: Dict[str, List[float]] = {}
         self._video_idx_buf: Dict[str, List[int]] = {}
+
+        # Background writer (bounded queue for jitter resilience)
+        # Queue of write tasks (write function, descrition for logging) processed by the writer thread
+        self._writer_queue: queue.Queue[tuple] = queue.Queue(maxsize=256)
+        # Thread that drains the queue and performs XDF writes
+        self._writer_thread: Optional[threading.Thread] = None
+        # Event flag to request a graceful writer shutdown
+        self._writer_stop = threading.Event()
+        # Counter for dropped tasks when the queue is full
+        self._writer_drop_count = 0
 
         # XDF writer
         self.xdf: Optional[XDFWriter] = None
@@ -137,6 +150,7 @@ class RunController:
         # connect XDF writer to RunController to begin recording stream data to XDF
         self.xdf = xdf_writer
         self._running = True
+        self._start_writer_thread()
         self.info("Started recording streams in XDF")
         self.info(f"Run started in {self.outdir}")
 
@@ -166,6 +180,7 @@ class RunController:
         if self.xdf:
             self._flush_audio_buffer()
             self._flush_video_buffer()
+            self._stop_writer_thread()
             self.xdf.stop()
             self.xdf = None
             self.info("XDF writer stopped")
@@ -381,13 +396,19 @@ class RunController:
             return
         if self.xdf and self.audio_sid is not None:
             if self._audio_buffer_target <= 0:
-                self.xdf.write_audio(self.audio_sid, timestamps, samples)
+                self._enqueue_write(
+                    lambda ts=timestamps, x=samples: self.xdf.write_audio(self.audio_sid, ts, x),
+                    desc="audio",
+                )
                 return
 
             batch = self._buffer_audio_samples(timestamps, samples)
             if batch is not None:
                 ts, x = batch
-                self.xdf.write_audio(self.audio_sid, ts, x)
+                self._enqueue_write(
+                    lambda ts=ts, x=x: self.xdf.write_audio(self.audio_sid, ts, x),
+                    desc="audio",
+                )
 
     def _on_video_frame(self, label: str, timestamp: float, frame_index: int):
         """
@@ -402,17 +423,23 @@ class RunController:
 
         # write single-sample chunk (simple, safe)
         if self.video_buffer_frames <= 0:
-            self.xdf.write_video_frames(
-                sid,
-                timestamps=[timestamp],
-                frame_indices=[frame_index],
+            self._enqueue_write(
+                lambda ts=timestamp, idx=frame_index, s=sid: self.xdf.write_video_frames(
+                    s,
+                    timestamps=[ts],
+                    frame_indices=[idx],
+                ),
+                desc=f"video:{label}",
             )
             return
 
         batch = self._buffer_video_frames(label, timestamp, frame_index)
         if batch is not None:
             ts, idx = batch
-            self.xdf.write_video_frames(sid, ts, idx)
+            self._enqueue_write(
+                lambda ts=ts, idx=idx, s=sid: self.xdf.write_video_frames(s, ts, idx),
+                desc=f"video:{label}",
+            )
 
     def _buffer_audio_samples(self, timestamps: np.ndarray, samples: np.ndarray):
         with self._audio_buf_lock:
@@ -444,7 +471,11 @@ class RunController:
             self._audio_buf_n = 0
         ts = ts_chunks[0] if len(ts_chunks) == 1 else np.concatenate(ts_chunks)
         x = sample_chunks[0] if len(sample_chunks) == 1 else np.concatenate(sample_chunks, axis=0)
-        self.xdf.write_audio(self.audio_sid, ts, x)
+        self._enqueue_write(
+            lambda ts=ts, x=x: self.xdf.write_audio(self.audio_sid, ts, x),
+            desc="audio:flush",
+            block=True,
+        )
 
     def _buffer_video_frames(self, label: str, timestamp: float, frame_index: int):
         with self._video_buf_lock:
@@ -479,8 +510,106 @@ class RunController:
             sid = self.video_sids.get(label)
             if sid is None:
                 continue
-            self.xdf.write_video_frames(
-                sid,
-                np.asarray(ts, dtype=np.float64),
-                np.asarray(idx, dtype=np.int64),
+            self._enqueue_write(
+                lambda ts=ts, idx=idx, s=sid: self.xdf.write_video_frames(
+                    s,
+                    np.asarray(ts, dtype=np.float64),
+                    np.asarray(idx, dtype=np.int64),
+                ),
+                desc=f"video:{label}:flush",
+                block=True,
             )
+
+    def _start_writer_thread(self):
+        """
+        Start the background writer thread if not already running.
+        This lets capture callbacks enqueue work and return quickly.
+        """
+        if self._writer_thread and self._writer_thread.is_alive():
+            return
+        # Clear any prior stop request before starting
+        self._writer_stop.clear()
+        # Launch a daemon thread to drain the queue
+        self._writer_thread = threading.Thread(
+            target=self._writer_loop,
+            name="XDFWriterThread",
+            daemon=True,
+        )
+        self._writer_thread.start()
+
+    def _stop_writer_thread(self):
+        """
+        Signal the writer thread to stop, then wait briefly for it to drain.
+        This is called during shutdown after buffers are flushed.
+        """
+        if not self._writer_thread:
+            return
+        # Request stop and give the queue a moment to drain
+        self._writer_stop.set()
+        deadline = time.time() + 5.0
+        while not self._writer_queue.empty() and time.time() < deadline:
+            time.sleep(0.05)
+        # Join with a timeout so shutdown doesn't hang indefinitely
+        self._writer_thread.join(timeout=2.0)
+        self._writer_thread = None
+
+    def _writer_loop(self):
+        """
+        Worker loop that drains the queue and executes XDF write tasks.
+        Exits when stop is requested and the queue is empty.
+        """
+        while True:
+            # Exit when requested and no more work remains
+            if self._writer_stop.is_set() and self._writer_queue.empty():
+                break
+            try:
+                # Wait briefly for work to avoid busy-waiting
+                fn, desc = self._writer_queue.get(timeout=0.1)
+            except queue.Empty:
+                # Skip if no item is yet available in queue
+                continue
+            try:
+                # Only write if XDF is active
+                if self.xdf and self.xdf._started:
+                    fn()
+            except Exception as exc:
+                self.error(f"XDF writer task failed ({desc}): {exc}")
+            finally:
+                # Mark task complete to keep queue accounting correct
+                self._writer_queue.task_done()
+
+    def _enqueue_write(self, fn: Callable[[], None], desc: str, block: bool = False):
+        """
+        Enqueue a write task for the writer thread.
+        If the queue is full, drop the oldest task to keep capture threads responsive.
+        If no writer thread exists, execute immediately (fallback).
+        """
+        if not self._writer_thread:
+            # Fallback: write directly if the writer thread isn't running.
+            if self.xdf and self.xdf._started:
+                fn()
+            return
+        try:
+            if block:
+                # Block briefly for critical writes (e.g., final flush)
+                self._writer_queue.put((fn, desc), timeout=2.0)
+            else:
+                # Non-blocking enqueue for capture callbacks
+                self._writer_queue.put_nowait((fn, desc))
+        except queue.Full:
+            # Drop oldest task to avoid blocking the capture thread
+            try:
+                _ = self._writer_queue.get_nowait()
+                self._writer_queue.task_done()
+            except Exception:
+                pass
+            try:
+                self._writer_queue.put_nowait((fn, desc))
+            except queue.Full:
+                # If still full, drop this task from queue
+                pass
+            self._writer_drop_count += 1
+            if self._writer_drop_count == 1 or self._writer_drop_count % 100 == 0:
+                self.warning(
+                    f"XDF writer queue full; dropped {self._writer_drop_count} tasks so far"
+                )
