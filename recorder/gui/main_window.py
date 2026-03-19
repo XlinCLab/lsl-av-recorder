@@ -85,11 +85,6 @@ class MainWindow(QMainWindow):
 
         self.audio_ch = QSpinBox(); self.audio_ch.setRange(1, 16); self.audio_ch.setValue(self.cfg.Audio.Channels)
         self.audio_stream_name = QLineEdit(getattr(self.cfg.Audio, "StreamName", "Audio") or "Audio")
-        self.audio_buffer_seconds = QDoubleSpinBox()
-        self.audio_buffer_seconds.setRange(0.0, 10.0)
-        self.audio_buffer_seconds.setSingleStep(0.05)
-        self.audio_buffer_seconds.setDecimals(3)
-        self.audio_buffer_seconds.setValue(float(getattr(self.cfg.Audio, "BufferSeconds", 0.0)))
 
         af.addRow(self.audio_enabled)
         af.addRow("Input device", self.audio_device)
@@ -97,23 +92,20 @@ class MainWindow(QMainWindow):
         af.addRow("Bit depth", self.audio_bit)
         af.addRow("Channels", self.audio_ch)
         af.addRow("LSL stream name", self.audio_stream_name)
-        af.addRow("Buffer seconds", self.audio_buffer_seconds)
         audio_widget.setLayout(af)
         self.tabs.addTab(audio_widget, "Audio")
-
-        # Video tab (global settings)
-        video_widget = QWidget()
-        vf = QFormLayout()
-        self.video_buffer_frames = QSpinBox()
-        self.video_buffer_frames.setRange(0, 10000)
-        self.video_buffer_frames.setValue(int(getattr(self.cfg.Video, "BufferFrames", 0)))
-        vf.addRow("Buffer frames", self.video_buffer_frames)
-        video_widget.setLayout(vf)
-        self.tabs.addTab(video_widget, "Video")
 
         # Buffering tab (writer thread settings)
         buffering_widget = QWidget()
         bf = QFormLayout()
+        self.audio_buffer_seconds = QDoubleSpinBox()
+        self.audio_buffer_seconds.setRange(0.0, 10.0)
+        self.audio_buffer_seconds.setSingleStep(0.05)
+        self.audio_buffer_seconds.setDecimals(3)
+        self.audio_buffer_seconds.setValue(float(getattr(self.cfg.Buffering, "AudioBufferSeconds", 0.0)))
+        self.video_buffer_frames = QSpinBox()
+        self.video_buffer_frames.setRange(0, 10000)
+        self.video_buffer_frames.setValue(int(getattr(self.cfg.Buffering, "VideoBufferFrames", 0)))
         self.writer_queue_size = QSpinBox()
         self.writer_queue_size.setRange(1, 100000)
         self.writer_queue_size.setValue(int(getattr(self.cfg.Buffering, "WriterQueueSize", 256)))
@@ -125,6 +117,8 @@ class MainWindow(QMainWindow):
         idx = self.writer_drop_policy.findData(policy)
         if idx >= 0:
             self.writer_drop_policy.setCurrentIndex(idx)
+        bf.addRow("Audio buffer seconds", self.audio_buffer_seconds)
+        bf.addRow("Video buffer frames", self.video_buffer_frames)
         bf.addRow("Writer queue size", self.writer_queue_size)
         bf.addRow("When full", self.writer_drop_policy)
         buffering_widget.setLayout(bf)
@@ -340,7 +334,6 @@ class MainWindow(QMainWindow):
         self.cfg.Audio.BitDepth = int(self.audio_bit.currentData())
         self.cfg.Audio.Channels = int(self.audio_ch.value())
         self.cfg.Audio.StreamName = self.audio_stream_name.text().strip() or "Audio"
-        self.cfg.Audio.BufferSeconds = float(self.audio_buffer_seconds.value())
 
         self.cfg.LabRecorder.Enabled = self.labrec_enabled.isChecked()
         self.cfg.LabRecorder.Host = self.labrec_host.text().strip() or self.cfg.LabRecorder.Host
@@ -349,7 +342,8 @@ class MainWindow(QMainWindow):
         for panel in self.cam_panels:
             self.cfg.Video.Cams.append(panel.to_config())
         self.cfg.Video.MaxCams = max(self.cfg.Video.MaxCams, len(self.cfg.Video.Cams))
-        self.cfg.Video.BufferFrames = int(self.video_buffer_frames.value())
+        self.cfg.Buffering.AudioBufferSeconds = float(self.audio_buffer_seconds.value())
+        self.cfg.Buffering.VideoBufferFrames = int(self.video_buffer_frames.value())
         self.cfg.Buffering.WriterQueueSize = int(self.writer_queue_size.value())
         self.cfg.Buffering.WriterDropPolicy = str(self.writer_drop_policy.currentData())
 
@@ -520,14 +514,14 @@ class MainWindow(QMainWindow):
         self._set_combo_to_data(self.audio_bit, int(self.cfg.Audio.BitDepth))
         self.audio_ch.setValue(int(self.cfg.Audio.Channels))
         self.audio_stream_name.setText(getattr(self.cfg.Audio, "StreamName", "Audio") or "Audio")
-        self.audio_buffer_seconds.setValue(float(getattr(self.cfg.Audio, "BufferSeconds", 0.0)))
 
         self.labrec_enabled.setChecked(bool(self.cfg.LabRecorder.Enabled))
         self.labrec_host.setText(self.cfg.LabRecorder.Host)
         self.labrec_port.setValue(int(self.cfg.LabRecorder.Port))
         self._update_labrecorder_controls()
 
-        self.video_buffer_frames.setValue(int(getattr(self.cfg.Video, "BufferFrames", 0)))
+        self.audio_buffer_seconds.setValue(float(getattr(self.cfg.Buffering, "AudioBufferSeconds", 0.0)))
+        self.video_buffer_frames.setValue(int(getattr(self.cfg.Buffering, "VideoBufferFrames", 0)))
         self.writer_queue_size.setValue(int(getattr(self.cfg.Buffering, "WriterQueueSize", 256)))
         policy = getattr(self.cfg.Buffering, "WriterDropPolicy", "drop_oldest")
         idx = self.writer_drop_policy.findData(policy)

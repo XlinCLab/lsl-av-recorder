@@ -46,8 +46,8 @@ class RunController:
         self.lsl_recorders: List[LslInletRecorder] = []
 
         # Buffering config (software buffers before XDF writes)
-        self.audio_buffer_seconds: float = max(0.0, float(self.cfg.Audio.BufferSeconds))
-        self.video_buffer_frames: int = max(0, int(self.cfg.Video.BufferFrames))
+        self.audio_buffer_seconds: float = max(0.0, float(self.cfg.Buffering.AudioBufferSeconds))
+        self.video_buffer_frames: int = max(0, int(self.cfg.Buffering.VideoBufferFrames))
         self._audio_buffer_target: int = 0
         self._audio_buf_lock = threading.Lock()
         self._audio_ts_buf: List[np.ndarray] = []
@@ -61,6 +61,11 @@ class RunController:
         # Queue of write tasks (write function, descrition for logging) processed by the writer thread
         # Drop policy for when the writer queue is full (drop_oldest | drop_newest | block)
         self._writer_drop_policy = str(getattr(self.cfg.Buffering, "WriterDropPolicy", "drop_oldest"))
+        if self._writer_drop_policy not in ("drop_oldest", "drop_newest", "block"):
+            self.warning(
+                f"Invalid writer drop policy '{self._writer_drop_policy}'; using 'drop_oldest'."
+            )
+            self._writer_drop_policy = "drop_oldest"
         # Max number of queued write tasks to keep memory bounded
         self._writer_queue_size = max(1, int(getattr(self.cfg.Buffering, "WriterQueueSize", 256)))
         self._writer_queue: queue.Queue[tuple] = queue.Queue(maxsize=self._writer_queue_size)
