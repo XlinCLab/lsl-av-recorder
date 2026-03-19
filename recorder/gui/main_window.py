@@ -7,11 +7,11 @@ from typing import List, Optional
 from pylsl import StreamInfo
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox,
-                             QFileDialog, QFormLayout, QHBoxLayout, QLabel,
-                             QLineEdit, QMainWindow, QMessageBox, QPushButton,
-                             QSpinBox, QSplitter, QTableWidget,
-                             QTableWidgetItem, QTabWidget, QTextEdit,
-                             QVBoxLayout, QWidget)
+                             QDoubleSpinBox, QFileDialog, QFormLayout,
+                             QHBoxLayout, QLabel, QLineEdit, QMainWindow,
+                             QMessageBox, QPushButton, QSpinBox, QSplitter,
+                             QTableWidget, QTableWidgetItem, QTabWidget,
+                             QTextEdit, QVBoxLayout, QWidget)
 
 from ..audio.devices import default_input_device_index, list_input_devices
 from ..config import AppConfig, VideoCamConfig, load_cfg
@@ -85,6 +85,11 @@ class MainWindow(QMainWindow):
 
         self.audio_ch = QSpinBox(); self.audio_ch.setRange(1, 16); self.audio_ch.setValue(self.cfg.Audio.Channels)
         self.audio_stream_name = QLineEdit(getattr(self.cfg.Audio, "StreamName", "Audio") or "Audio")
+        self.audio_buffer_seconds = QDoubleSpinBox()
+        self.audio_buffer_seconds.setRange(0.0, 10.0)
+        self.audio_buffer_seconds.setSingleStep(0.05)
+        self.audio_buffer_seconds.setDecimals(3)
+        self.audio_buffer_seconds.setValue(float(getattr(self.cfg.Audio, "BufferSeconds", 0.0)))
 
         af.addRow(self.audio_enabled)
         af.addRow("Input device", self.audio_device)
@@ -92,8 +97,19 @@ class MainWindow(QMainWindow):
         af.addRow("Bit depth", self.audio_bit)
         af.addRow("Channels", self.audio_ch)
         af.addRow("LSL stream name", self.audio_stream_name)
+        af.addRow("Buffer seconds", self.audio_buffer_seconds)
         audio_widget.setLayout(af)
         self.tabs.addTab(audio_widget, "Audio")
+
+        # Video tab (global settings)
+        video_widget = QWidget()
+        vf = QFormLayout()
+        self.video_buffer_frames = QSpinBox()
+        self.video_buffer_frames.setRange(0, 10000)
+        self.video_buffer_frames.setValue(int(getattr(self.cfg.Video, "BufferFrames", 0)))
+        vf.addRow("Buffer frames", self.video_buffer_frames)
+        video_widget.setLayout(vf)
+        self.tabs.addTab(video_widget, "Video")
 
         # LabRecorder tab
         labrec_widget = QWidget()
@@ -275,14 +291,17 @@ class MainWindow(QMainWindow):
             return
 
         cam_index = self.cam_panels.index(panel)
-        tab_index = cam_index + 1  # tab 0 is Audio
         self.cam_panels.pop(cam_index)
-        self.tabs.removeTab(tab_index)
+        tab_index = self.tabs.indexOf(panel)
+        if tab_index >= 0:
+            self.tabs.removeTab(tab_index)
         panel.setParent(None)
         panel.deleteLater()
 
         for i, cam_panel in enumerate(self.cam_panels):
-            self.tabs.setTabText(i + 1, f"Camera {i + 1}")
+            idx = self.tabs.indexOf(cam_panel)
+            if idx >= 0:
+                self.tabs.setTabText(idx, f"Camera {i + 1}")
 
         self._update_add_camera_button()
         self._refresh_previews_from_panels()
@@ -302,6 +321,7 @@ class MainWindow(QMainWindow):
         self.cfg.Audio.BitDepth = int(self.audio_bit.currentData())
         self.cfg.Audio.Channels = int(self.audio_ch.value())
         self.cfg.Audio.StreamName = self.audio_stream_name.text().strip() or "Audio"
+        self.cfg.Audio.BufferSeconds = float(self.audio_buffer_seconds.value())
 
         self.cfg.LabRecorder.Enabled = self.labrec_enabled.isChecked()
         self.cfg.LabRecorder.Host = self.labrec_host.text().strip() or self.cfg.LabRecorder.Host
@@ -310,6 +330,7 @@ class MainWindow(QMainWindow):
         for panel in self.cam_panels:
             self.cfg.Video.Cams.append(panel.to_config())
         self.cfg.Video.MaxCams = max(self.cfg.Video.MaxCams, len(self.cfg.Video.Cams))
+        self.cfg.Video.BufferFrames = int(self.video_buffer_frames.value())
 
     def on_load(self):
         path, _ = QFileDialog.getOpenFileName(self, "Load config", ".", "CFG files (*.cfg);;All files (*)")
@@ -478,11 +499,14 @@ class MainWindow(QMainWindow):
         self._set_combo_to_data(self.audio_bit, int(self.cfg.Audio.BitDepth))
         self.audio_ch.setValue(int(self.cfg.Audio.Channels))
         self.audio_stream_name.setText(getattr(self.cfg.Audio, "StreamName", "Audio") or "Audio")
+        self.audio_buffer_seconds.setValue(float(getattr(self.cfg.Audio, "BufferSeconds", 0.0)))
 
         self.labrec_enabled.setChecked(bool(self.cfg.LabRecorder.Enabled))
         self.labrec_host.setText(self.cfg.LabRecorder.Host)
         self.labrec_port.setValue(int(self.cfg.LabRecorder.Port))
         self._update_labrecorder_controls()
+
+        self.video_buffer_frames.setValue(int(getattr(self.cfg.Video, "BufferFrames", 0)))
 
         self._rebuild_camera_tabs_from_cfg()
         self._refresh_previews_from_panels()
