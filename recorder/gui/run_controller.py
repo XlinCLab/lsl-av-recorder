@@ -75,6 +75,8 @@ class RunController:
         self._writer_stop = threading.Event()
         # Counter for dropped tasks when the queue is full
         self._writer_drop_count = 0
+        self._newest_drop_count = 0
+        self._oldest_drop_count = 0
 
         # XDF writer
         self.xdf: Optional[XDFWriter] = None
@@ -609,22 +611,31 @@ class RunController:
         except queue.Full:
             if self._writer_drop_policy == "drop_newest":
                 # Drop this task (newest) when the queue is full
-                self.warning("XDF writer queue full; dropping current (newest) XDF write task.")
                 self._writer_drop_count += 1
+                self._newest_drop_count += 1
             else:
                 # Drop oldest task to avoid blocking the capture thread
                 try:
                     _ = self._writer_queue.get_nowait()
                     self._writer_queue.task_done()
-                    self.warning("XDF writer queue full; dropping oldest XDF write task.")
                     self._writer_drop_count += 1
+                    self._oldest_drop_count += 1
                 except Exception:
                     pass
                 try:
                     self._writer_queue.put_nowait((fn, desc))
                 except queue.Full:
                     # If still full, drop this task from queue
-                    self.warning("XDF writer queue still full after dropping oldest write task; dropping current task.")
                     self._writer_drop_count += 1
-            if self._writer_drop_count == 1 or self._writer_drop_count % 100 == 0:
-                self.warning(f"Dropped {self._writer_drop_count} tasks so far")
+                    self._newest_drop_count += 1
+            self._log_dropped_write_tasks()
+    
+    def _log_dropped_write_tasks(self):
+        # NB: do not log on every drop as this could pollute logs; instead log only on first drop and then every 100 drops
+        if self._writer_drop_count == 1 or self._writer_drop_count % 100 == 0:
+            warning_msg = f"Dropped {self._writer_drop_count} tasks so far:"
+            if self._oldest_drop_count > 0:
+                warning_msg += f" oldest: {self._oldest_drop_count}"
+            if self._newest_drop_count > 0:
+                warning_msg += f" newest: {self._newest_drop_count}"
+            self.warning(warning_msg)
