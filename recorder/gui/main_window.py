@@ -7,11 +7,11 @@ from typing import List, Optional
 from pylsl import StreamInfo
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox,
-                             QFileDialog, QFormLayout, QHBoxLayout, QLabel,
-                             QLineEdit, QMainWindow, QMessageBox, QPushButton,
-                             QSpinBox, QSplitter, QTableWidget,
-                             QTableWidgetItem, QTabWidget, QTextEdit,
-                             QVBoxLayout, QWidget)
+                             QDoubleSpinBox, QFileDialog, QFormLayout,
+                             QHBoxLayout, QLabel, QLineEdit, QMainWindow,
+                             QMessageBox, QPushButton, QSpinBox, QSplitter,
+                             QTableWidget, QTableWidgetItem, QTabWidget,
+                             QTextEdit, QVBoxLayout, QWidget)
 
 from ..audio.devices import default_input_device_index, list_input_devices
 from ..config import AppConfig, VideoCamConfig, load_cfg
@@ -94,6 +94,35 @@ class MainWindow(QMainWindow):
         af.addRow("LSL stream name", self.audio_stream_name)
         audio_widget.setLayout(af)
         self.tabs.addTab(audio_widget, "Audio")
+
+        # Buffering tab (writer thread settings)
+        buffering_widget = QWidget()
+        bf = QFormLayout()
+        self.audio_buffer_seconds = QDoubleSpinBox()
+        self.audio_buffer_seconds.setRange(0.0, 10.0)
+        self.audio_buffer_seconds.setSingleStep(0.05)
+        self.audio_buffer_seconds.setDecimals(3)
+        self.audio_buffer_seconds.setValue(float(getattr(self.cfg.Buffering, "AudioBufferSeconds", 0.0)))
+        self.video_buffer_frames = QSpinBox()
+        self.video_buffer_frames.setRange(0, 10000)
+        self.video_buffer_frames.setValue(int(getattr(self.cfg.Buffering, "VideoBufferFrames", 0)))
+        self.writer_queue_size = QSpinBox()
+        self.writer_queue_size.setRange(1, 100000)
+        self.writer_queue_size.setValue(int(getattr(self.cfg.Buffering, "WriterQueueSize", 256)))
+        self.writer_drop_policy = QComboBox()
+        self.writer_drop_policy.addItem("Drop oldest (recommended)", "drop_oldest")
+        self.writer_drop_policy.addItem("Drop newest (incoming)", "drop_newest")
+        self.writer_drop_policy.addItem("Block capture thread", "block")
+        policy = getattr(self.cfg.Buffering, "WriterDropPolicy", "drop_oldest")
+        idx = self.writer_drop_policy.findData(policy)
+        if idx >= 0:
+            self.writer_drop_policy.setCurrentIndex(idx)
+        bf.addRow("Audio buffer seconds", self.audio_buffer_seconds)
+        bf.addRow("Video buffer frames", self.video_buffer_frames)
+        bf.addRow("Writer queue size", self.writer_queue_size)
+        bf.addRow("When full", self.writer_drop_policy)
+        buffering_widget.setLayout(bf)
+        self.tabs.addTab(buffering_widget, "Buffering")
 
         # LabRecorder tab
         labrec_widget = QWidget()
@@ -275,14 +304,17 @@ class MainWindow(QMainWindow):
             return
 
         cam_index = self.cam_panels.index(panel)
-        tab_index = cam_index + 1  # tab 0 is Audio
         self.cam_panels.pop(cam_index)
-        self.tabs.removeTab(tab_index)
+        tab_index = self.tabs.indexOf(panel)
+        if tab_index >= 0:
+            self.tabs.removeTab(tab_index)
         panel.setParent(None)
         panel.deleteLater()
 
         for i, cam_panel in enumerate(self.cam_panels):
-            self.tabs.setTabText(i + 1, f"Camera {i + 1}")
+            idx = self.tabs.indexOf(cam_panel)
+            if idx >= 0:
+                self.tabs.setTabText(idx, f"Camera {i + 1}")
 
         self._update_add_camera_button()
         self._refresh_previews_from_panels()
@@ -310,6 +342,10 @@ class MainWindow(QMainWindow):
         for panel in self.cam_panels:
             self.cfg.Video.Cams.append(panel.to_config())
         self.cfg.Video.MaxCams = max(self.cfg.Video.MaxCams, len(self.cfg.Video.Cams))
+        self.cfg.Buffering.AudioBufferSeconds = float(self.audio_buffer_seconds.value())
+        self.cfg.Buffering.VideoBufferFrames = int(self.video_buffer_frames.value())
+        self.cfg.Buffering.WriterQueueSize = int(self.writer_queue_size.value())
+        self.cfg.Buffering.WriterDropPolicy = str(self.writer_drop_policy.currentData())
 
     def on_load(self):
         path, _ = QFileDialog.getOpenFileName(self, "Load config", ".", "CFG files (*.cfg);;All files (*)")
@@ -483,6 +519,14 @@ class MainWindow(QMainWindow):
         self.labrec_host.setText(self.cfg.LabRecorder.Host)
         self.labrec_port.setValue(int(self.cfg.LabRecorder.Port))
         self._update_labrecorder_controls()
+
+        self.audio_buffer_seconds.setValue(float(getattr(self.cfg.Buffering, "AudioBufferSeconds", 0.0)))
+        self.video_buffer_frames.setValue(int(getattr(self.cfg.Buffering, "VideoBufferFrames", 0)))
+        self.writer_queue_size.setValue(int(getattr(self.cfg.Buffering, "WriterQueueSize", 256)))
+        policy = getattr(self.cfg.Buffering, "WriterDropPolicy", "drop_oldest")
+        idx = self.writer_drop_policy.findData(policy)
+        if idx >= 0:
+            self.writer_drop_policy.setCurrentIndex(idx)
 
         self._rebuild_camera_tabs_from_cfg()
         self._refresh_previews_from_panels()

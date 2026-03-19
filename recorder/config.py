@@ -73,12 +73,20 @@ class VideoConfig:
     Cams: List[VideoCamConfig] = field(default_factory=list)
 
 @dataclass
+class BufferingConfig:
+    AudioBufferSeconds: float = 0.0
+    VideoBufferFrames: int = 0
+    WriterQueueSize: int = 256
+    WriterDropPolicy: str = "drop_oldest"  # drop_oldest | drop_newest | block
+
+@dataclass
 class AppConfig:
     Prompts: AppPrompts = field(default_factory=AppPrompts)
     Output: OutputConfig = field(default_factory=OutputConfig)
     Audio: AudioConfig = field(default_factory=AudioConfig)
     LabRecorder: LabRecorderConfig = field(default_factory=LabRecorderConfig)
     Video: VideoConfig = field(default_factory=VideoConfig)
+    Buffering: BufferingConfig = field(default_factory=BufferingConfig)
 
 def _get_bool(cp: configparser.ConfigParser, section: str, key: str, default: bool=False) -> bool:
     try:
@@ -115,6 +123,9 @@ def load_cfg(path: str) -> AppConfig:
         cfg.Audio.BitDepth = cp.getint(s, "BitDepth", fallback=cfg.Audio.BitDepth)
         cfg.Audio.Channels = cp.getint(s, "Channels", fallback=cfg.Audio.Channels)
         cfg.Audio.StreamName = cp.get(s, "StreamName", fallback=cfg.Audio.StreamName)
+        if cp.has_option(s, "BufferSeconds"):
+            cfg.Buffering.AudioBufferSeconds = cp.getfloat(s, "BufferSeconds", fallback=cfg.Buffering.AudioBufferSeconds)
+            logger.warning("Audio.BufferSeconds is deprecated; use Buffering.AudioBufferSeconds instead.")
 
     if cp.has_section("LabRecorder"):
         s = "LabRecorder"
@@ -129,6 +140,20 @@ def load_cfg(path: str) -> AppConfig:
         cfg.Video.Codec = cp.get(s, "Codec", fallback=cfg.Video.Codec)
         cfg.Video.Container = cp.get(s, "Container", fallback=cfg.Video.Container)
         cfg.Video.PreviewFPS = cp.getint(s, "PreviewFPS", fallback=cfg.Video.PreviewFPS)
+        if cp.has_option(s, "BufferFrames"):
+            cfg.Buffering.VideoBufferFrames = cp.getint(s, "BufferFrames", fallback=cfg.Buffering.VideoBufferFrames)
+            logger.warning("Video.BufferFrames is deprecated; use Buffering.VideoBufferFrames instead.")
+
+    if cp.has_section("Buffering"):
+        s = "Buffering"
+        cfg.Buffering.AudioBufferSeconds = cp.getfloat(s, "AudioBufferSeconds", fallback=cfg.Buffering.AudioBufferSeconds)
+        cfg.Buffering.VideoBufferFrames = cp.getint(s, "VideoBufferFrames", fallback=cfg.Buffering.VideoBufferFrames)
+        cfg.Buffering.WriterQueueSize = cp.getint(s, "WriterQueueSize", fallback=cfg.Buffering.WriterQueueSize)
+        policy = cp.get(s, "WriterDropPolicy", fallback=cfg.Buffering.WriterDropPolicy).strip().lower()
+        if policy in ("drop_oldest", "drop_newest", "block", "drop"):
+            cfg.Buffering.WriterDropPolicy = "drop_newest" if policy == "drop" else policy
+        else:
+            logger.warning(f"Invalid Buffering.WriterDropPolicy '{policy}'; falling back to '{cfg.Buffering.WriterDropPolicy}'.")
 
     cams: List[VideoCamConfig] = []
     for i in range(1, cfg.Video.MaxCams + 1):
