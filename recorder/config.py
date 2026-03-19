@@ -36,6 +36,7 @@ class AudioConfig:
     BitDepth: int = DEFAULT_BIT_DEPTH
     Channels: int = DEFAULT_N_CHANNELS
     StreamName: str = "Audio"
+    BufferSeconds: float = 0.0
 
 @dataclass
 class LabRecorderConfig:
@@ -70,6 +71,7 @@ class VideoConfig:
     Codec: str = "mp4v"
     Container: str = "mp4"
     PreviewFPS: int = DEFAULT_PREVIEW_FPS
+    BufferFrames: int = 0
     Cams: List[VideoCamConfig] = field(default_factory=list)
 
 @dataclass
@@ -115,6 +117,7 @@ def load_cfg(path: str) -> AppConfig:
         cfg.Audio.BitDepth = cp.getint(s, "BitDepth", fallback=cfg.Audio.BitDepth)
         cfg.Audio.Channels = cp.getint(s, "Channels", fallback=cfg.Audio.Channels)
         cfg.Audio.StreamName = cp.get(s, "StreamName", fallback=cfg.Audio.StreamName)
+        cfg.Audio.BufferSeconds = cp.getfloat(s, "BufferSeconds", fallback=cfg.Audio.BufferSeconds)
 
     if cp.has_section("LabRecorder"):
         s = "LabRecorder"
@@ -129,6 +132,7 @@ def load_cfg(path: str) -> AppConfig:
         cfg.Video.Codec = cp.get(s, "Codec", fallback=cfg.Video.Codec)
         cfg.Video.Container = cp.get(s, "Container", fallback=cfg.Video.Container)
         cfg.Video.PreviewFPS = cp.getint(s, "PreviewFPS", fallback=cfg.Video.PreviewFPS)
+        cfg.Video.BufferFrames = cp.getint(s, "BufferFrames", fallback=cfg.Video.BufferFrames)
 
     cams: List[VideoCamConfig] = []
     for i in range(1, cfg.Video.MaxCams + 1):

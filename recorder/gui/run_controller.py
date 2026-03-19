@@ -3,10 +3,12 @@ from __future__ import annotations
 import glob
 import json
 import os
+import threading
 from dataclasses import asdict
 from time import sleep
 from typing import Callable, Dict, List, Optional
 
+import numpy as np
 from ..audio.lsl_audio import (AudioLSLStreamer, AudioStreamSettings,
                                _dtype_format)
 from pylsl import StreamInfo
@@ -39,6 +41,18 @@ class RunController:
         self.video_sids: Dict[str, int] = {}
         self.lsl_streams = lsl_streams or []
         self.lsl_recorders: List[LslInletRecorder] = []
+
+        # Buffering config (software buffers before XDF writes)
+        self.audio_buffer_seconds: float = max(0.0, float(self.cfg.Audio.BufferSeconds))
+        self.video_buffer_frames: int = max(0, int(self.cfg.Video.BufferFrames))
+        self._audio_buffer_target: int = 0
+        self._audio_buf_lock = threading.Lock()
+        self._audio_ts_buf: List[np.ndarray] = []
+        self._audio_samples_buf: List[np.ndarray] = []
+        self._audio_buf_n: int = 0
+        self._video_buf_lock = threading.Lock()
+        self._video_ts_buf: Dict[str, List[float]] = {}
+        self._video_idx_buf: Dict[str, List[int]] = {}
 
         # XDF writer
         self.xdf: Optional[XDFWriter] = None
@@ -150,6 +164,8 @@ class RunController:
 
         # XDF
         if self.xdf:
+            self._flush_audio_buffer()
+            self._flush_video_buffer()
             self.xdf.stop()
             self.xdf = None
             self.info("XDF writer stopped")
@@ -313,6 +329,14 @@ class RunController:
         # Initialize audio stream
         if self.audio_enabled:
             self.audio_settings = self._get_audio_stream_settings()
+            if self.audio_buffer_seconds > 0:
+                self._audio_buffer_target = max(
+                    1, int(self.audio_buffer_seconds * self.audio_settings.samplerate)
+                )
+                self.info(
+                    f"Audio buffering enabled: ~{self.audio_buffer_seconds:.3f}s "
+                    f"({self._audio_buffer_target} samples)"
+                )
             self.audio = AudioLSLStreamer(
                 self.audio_settings,
                 status_cb=self.log,
@@ -322,7 +346,11 @@ class RunController:
 
         # Initialize video streams
         if self.video_enabled:
+            if self.video_buffer_frames > 0:
+                self.info(f"Video buffering enabled: {self.video_buffer_frames} frames")
             for cam in self.cams:
+                self._video_ts_buf.setdefault(cam.Label, [])
+                self._video_idx_buf.setdefault(cam.Label, [])
                 self._initialize_video_stream(cam)
 
     def _start_streams(self, sleep_timer: float | int = 3):
@@ -352,7 +380,14 @@ class RunController:
         if not self.xdf or self.xdf._started is False:
             return
         if self.xdf and self.audio_sid is not None:
-            self.xdf.write_audio(self.audio_sid, timestamps, samples)
+            if self._audio_buffer_target <= 0:
+                self.xdf.write_audio(self.audio_sid, timestamps, samples)
+                return
+
+            batch = self._buffer_audio_samples(timestamps, samples)
+            if batch is not None:
+                ts, x = batch
+                self.xdf.write_audio(self.audio_sid, ts, x)
 
     def _on_video_frame(self, label: str, timestamp: float, frame_index: int):
         """
@@ -366,8 +401,86 @@ class RunController:
             return
 
         # write single-sample chunk (simple, safe)
-        self.xdf.write_video_frames(
-            sid,
-            timestamps=[timestamp],
-            frame_indices=[frame_index],
-        )
+        if self.video_buffer_frames <= 0:
+            self.xdf.write_video_frames(
+                sid,
+                timestamps=[timestamp],
+                frame_indices=[frame_index],
+            )
+            return
+
+        batch = self._buffer_video_frames(label, timestamp, frame_index)
+        if batch is not None:
+            ts, idx = batch
+            self.xdf.write_video_frames(sid, ts, idx)
+
+    def _buffer_audio_samples(self, timestamps: np.ndarray, samples: np.ndarray):
+        with self._audio_buf_lock:
+            self._audio_ts_buf.append(timestamps)
+            self._audio_samples_buf.append(samples)
+            self._audio_buf_n += len(timestamps)
+            if self._audio_buf_n < self._audio_buffer_target:
+                return None
+            ts_chunks = self._audio_ts_buf
+            sample_chunks = self._audio_samples_buf
+            self._audio_ts_buf = []
+            self._audio_samples_buf = []
+            self._audio_buf_n = 0
+
+        ts = ts_chunks[0] if len(ts_chunks) == 1 else np.concatenate(ts_chunks)
+        x = sample_chunks[0] if len(sample_chunks) == 1 else np.concatenate(sample_chunks, axis=0)
+        return ts, x
+
+    def _flush_audio_buffer(self):
+        if self._audio_buffer_target <= 0 or not self.xdf or self.audio_sid is None:
+            return
+        with self._audio_buf_lock:
+            if self._audio_buf_n == 0:
+                return
+            ts_chunks = self._audio_ts_buf
+            sample_chunks = self._audio_samples_buf
+            self._audio_ts_buf = []
+            self._audio_samples_buf = []
+            self._audio_buf_n = 0
+        ts = ts_chunks[0] if len(ts_chunks) == 1 else np.concatenate(ts_chunks)
+        x = sample_chunks[0] if len(sample_chunks) == 1 else np.concatenate(sample_chunks, axis=0)
+        self.xdf.write_audio(self.audio_sid, ts, x)
+
+    def _buffer_video_frames(self, label: str, timestamp: float, frame_index: int):
+        with self._video_buf_lock:
+            ts_buf = self._video_ts_buf.setdefault(label, [])
+            idx_buf = self._video_idx_buf.setdefault(label, [])
+            ts_buf.append(float(timestamp))
+            idx_buf.append(int(frame_index))
+            if len(ts_buf) < self.video_buffer_frames:
+                return None
+            ts = ts_buf
+            idx = idx_buf
+            self._video_ts_buf[label] = []
+            self._video_idx_buf[label] = []
+        return np.asarray(ts, dtype=np.float64), np.asarray(idx, dtype=np.int64)
+
+    def _flush_video_buffer(self):
+        if self.video_buffer_frames <= 0 or not self.xdf:
+            return
+        with self._video_buf_lock:
+            labels = list(self._video_ts_buf.keys())
+            if not labels:
+                return
+            data = []
+            for label in labels:
+                ts = self._video_ts_buf.get(label, [])
+                idx = self._video_idx_buf.get(label, [])
+                if ts and idx:
+                    data.append((label, ts, idx))
+                self._video_ts_buf[label] = []
+                self._video_idx_buf[label] = []
+        for label, ts, idx in data:
+            sid = self.video_sids.get(label)
+            if sid is None:
+                continue
+            self.xdf.write_video_frames(
+                sid,
+                np.asarray(ts, dtype=np.float64),
+                np.asarray(idx, dtype=np.int64),
+            )
