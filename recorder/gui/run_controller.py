@@ -77,6 +77,8 @@ class RunController:
         self._writer_drop_count = 0
         self._newest_drop_count = 0
         self._oldest_drop_count = 0
+        # Lock to make drop counters and logging thread-safe
+        self._drop_lock = threading.Lock()
 
         # XDF writer
         self.xdf: Optional[XDFWriter] = None
@@ -611,26 +613,39 @@ class RunController:
         except queue.Full:
             if self._writer_drop_policy == "drop_newest":
                 # Drop this task (newest) when the queue is full
-                self._writer_drop_count += 1
-                self._newest_drop_count += 1
+                self._increment_drop_counts(newest=1)
             else:
                 # Drop oldest task to avoid blocking the capture thread
                 try:
                     _ = self._writer_queue.get_nowait()
                     self._writer_queue.task_done()
-                    self._writer_drop_count += 1
-                    self._oldest_drop_count += 1
+                    self._increment_drop_counts(oldest=1)
                 except Exception:
                     pass
                 try:
                     self._writer_queue.put_nowait((fn, desc))
                 except queue.Full:
                     # If still full, drop this task from queue
-                    self._writer_drop_count += 1
-                    self._newest_drop_count += 1
+                    self._increment_drop_counts(newest=1)
+
+    def _increment_drop_counts(self, newest: int = 0, oldest: int = 0):
+        """
+        Thread-safe increment of drop counters, followed by throttled logging.
+        """
+        with self._drop_lock:
+            if newest:
+                self._newest_drop_count += newest
+                self._writer_drop_count += newest
+            if oldest:
+                self._oldest_drop_count += oldest
+                self._writer_drop_count += oldest
             self._log_dropped_write_tasks()
-    
+
     def _log_dropped_write_tasks(self):
+        """
+        Log drop counts at a throttled cadence.
+        NB: Caller must hold _drop_lock .
+        """
         # NB: do not log on every drop as this could pollute logs; instead log only on first drop and then every 100 drops
         if self._writer_drop_count == 1 or self._writer_drop_count % 100 == 0:
             warning_msg = f"Dropped {self._writer_drop_count} tasks so far:"
