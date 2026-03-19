@@ -111,6 +111,25 @@ class MainWindow(QMainWindow):
         video_widget.setLayout(vf)
         self.tabs.addTab(video_widget, "Video")
 
+        # Buffering tab (writer thread settings)
+        buffering_widget = QWidget()
+        bf = QFormLayout()
+        self.writer_queue_size = QSpinBox()
+        self.writer_queue_size.setRange(1, 100000)
+        self.writer_queue_size.setValue(int(getattr(self.cfg.Buffering, "WriterQueueSize", 256)))
+        self.writer_drop_policy = QComboBox()
+        self.writer_drop_policy.addItem("Drop oldest (recommended)", "drop_oldest")
+        self.writer_drop_policy.addItem("Drop newest (incoming)", "drop_newest")
+        self.writer_drop_policy.addItem("Block capture thread", "block")
+        policy = getattr(self.cfg.Buffering, "WriterDropPolicy", "drop_oldest")
+        idx = self.writer_drop_policy.findData(policy)
+        if idx >= 0:
+            self.writer_drop_policy.setCurrentIndex(idx)
+        bf.addRow("Writer queue size", self.writer_queue_size)
+        bf.addRow("When full", self.writer_drop_policy)
+        buffering_widget.setLayout(bf)
+        self.tabs.addTab(buffering_widget, "Buffering")
+
         # LabRecorder tab
         labrec_widget = QWidget()
         lf = QFormLayout()
@@ -331,6 +350,8 @@ class MainWindow(QMainWindow):
             self.cfg.Video.Cams.append(panel.to_config())
         self.cfg.Video.MaxCams = max(self.cfg.Video.MaxCams, len(self.cfg.Video.Cams))
         self.cfg.Video.BufferFrames = int(self.video_buffer_frames.value())
+        self.cfg.Buffering.WriterQueueSize = int(self.writer_queue_size.value())
+        self.cfg.Buffering.WriterDropPolicy = str(self.writer_drop_policy.currentData())
 
     def on_load(self):
         path, _ = QFileDialog.getOpenFileName(self, "Load config", ".", "CFG files (*.cfg);;All files (*)")
@@ -507,6 +528,11 @@ class MainWindow(QMainWindow):
         self._update_labrecorder_controls()
 
         self.video_buffer_frames.setValue(int(getattr(self.cfg.Video, "BufferFrames", 0)))
+        self.writer_queue_size.setValue(int(getattr(self.cfg.Buffering, "WriterQueueSize", 256)))
+        policy = getattr(self.cfg.Buffering, "WriterDropPolicy", "drop_oldest")
+        idx = self.writer_drop_policy.findData(policy)
+        if idx >= 0:
+            self.writer_drop_policy.setCurrentIndex(idx)
 
         self._rebuild_camera_tabs_from_cfg()
         self._refresh_previews_from_panels()

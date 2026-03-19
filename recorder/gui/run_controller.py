@@ -59,7 +59,11 @@ class RunController:
 
         # Background writer (bounded queue for jitter resilience)
         # Queue of write tasks (write function, descrition for logging) processed by the writer thread
-        self._writer_queue: queue.Queue[tuple] = queue.Queue(maxsize=256)
+        # Drop policy for when the writer queue is full (drop_oldest | drop_newest | block)
+        self._writer_drop_policy = str(getattr(self.cfg.Buffering, "WriterDropPolicy", "drop_oldest"))
+        # Max number of queued write tasks to keep memory bounded
+        self._writer_queue_size = max(1, int(getattr(self.cfg.Buffering, "WriterQueueSize", 256)))
+        self._writer_queue: queue.Queue[tuple] = queue.Queue(maxsize=self._writer_queue_size)
         # Thread that drains the queue and performs XDF writes
         self._writer_thread: Optional[threading.Thread] = None
         # Event flag to request a graceful writer shutdown
@@ -110,6 +114,7 @@ class RunController:
                     "prompts": asdict(self.cfg.Prompts),
                     "output": asdict(self.cfg.Output),
                     "audio": asdict(self.cfg.Audio),
+                    "buffering": asdict(self.cfg.Buffering),
                     "labrecorder": asdict(self.cfg.LabRecorder),
                     "lsl_streams": [self._lsl_stream_meta(s) for s in self.lsl_streams],
                     "video": {
@@ -581,7 +586,7 @@ class RunController:
     def _enqueue_write(self, fn: Callable[[], None], desc: str, block: bool = False):
         """
         Enqueue a write task for the writer thread.
-        If the queue is full, drop the oldest task to keep capture threads responsive.
+        If the queue is full, apply the configured drop policy to keep capture threads responsive.
         If no writer thread exists, execute immediately (fallback).
         """
         if not self._writer_thread:
@@ -590,24 +595,28 @@ class RunController:
                 fn()
             return
         try:
-            if block:
+            if block or self._writer_drop_policy == "block":
                 # Block briefly for critical writes (e.g., final flush)
                 self._writer_queue.put((fn, desc), timeout=2.0)
             else:
                 # Non-blocking enqueue for capture callbacks
                 self._writer_queue.put_nowait((fn, desc))
         except queue.Full:
-            # Drop oldest task to avoid blocking the capture thread
-            try:
-                _ = self._writer_queue.get_nowait()
-                self._writer_queue.task_done()
-            except Exception:
+            if self._writer_drop_policy == "drop_newest":
+                # Drop this task (newest) when the queue is full
                 pass
-            try:
-                self._writer_queue.put_nowait((fn, desc))
-            except queue.Full:
-                # If still full, drop this task from queue
-                pass
+            else:
+                # Drop oldest task to avoid blocking the capture thread
+                try:
+                    _ = self._writer_queue.get_nowait()
+                    self._writer_queue.task_done()
+                except Exception:
+                    pass
+                try:
+                    self._writer_queue.put_nowait((fn, desc))
+                except queue.Full:
+                    # If still full, drop this task from queue
+                    pass
             self._writer_drop_count += 1
             if self._writer_drop_count == 1 or self._writer_drop_count % 100 == 0:
                 self.warning(

@@ -75,12 +75,18 @@ class VideoConfig:
     Cams: List[VideoCamConfig] = field(default_factory=list)
 
 @dataclass
+class BufferingConfig:
+    WriterQueueSize: int = 256
+    WriterDropPolicy: str = "drop_oldest"  # drop_oldest | drop_newest | block
+
+@dataclass
 class AppConfig:
     Prompts: AppPrompts = field(default_factory=AppPrompts)
     Output: OutputConfig = field(default_factory=OutputConfig)
     Audio: AudioConfig = field(default_factory=AudioConfig)
     LabRecorder: LabRecorderConfig = field(default_factory=LabRecorderConfig)
     Video: VideoConfig = field(default_factory=VideoConfig)
+    Buffering: BufferingConfig = field(default_factory=BufferingConfig)
 
 def _get_bool(cp: configparser.ConfigParser, section: str, key: str, default: bool=False) -> bool:
     try:
@@ -133,6 +139,13 @@ def load_cfg(path: str) -> AppConfig:
         cfg.Video.Container = cp.get(s, "Container", fallback=cfg.Video.Container)
         cfg.Video.PreviewFPS = cp.getint(s, "PreviewFPS", fallback=cfg.Video.PreviewFPS)
         cfg.Video.BufferFrames = cp.getint(s, "BufferFrames", fallback=cfg.Video.BufferFrames)
+
+    if cp.has_section("Buffering"):
+        s = "Buffering"
+        cfg.Buffering.WriterQueueSize = cp.getint(s, "WriterQueueSize", fallback=cfg.Buffering.WriterQueueSize)
+        policy = cp.get(s, "WriterDropPolicy", fallback=cfg.Buffering.WriterDropPolicy).strip().lower()
+        if policy in ("drop_oldest", "drop_newest", "block", "drop"):
+            cfg.Buffering.WriterDropPolicy = "drop_newest" if policy == "drop" else policy
 
     cams: List[VideoCamConfig] = []
     for i in range(1, cfg.Video.MaxCams + 1):
