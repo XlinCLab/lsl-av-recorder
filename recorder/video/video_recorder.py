@@ -25,6 +25,7 @@ class VideoRecorder:
         self.running = False
         self.thread = None
         self.frame_idx = 0
+        self.writer_fps = None
 
     def log(self, msg: str, loglevel: str = "INFO"):
         if self.status_cb:
@@ -48,11 +49,20 @@ class VideoRecorder:
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.cam.Height)
         self.cap.set(cv2.CAP_PROP_FPS, self.cam.FPS)
 
+        actual_fps = float(self.cap.get(cv2.CAP_PROP_FPS) or 0.0)
+        if actual_fps <= 0:
+            actual_fps = float(self.cam.FPS)
+        if abs(actual_fps - float(self.cam.FPS)) > 0.1:
+            self.warning(
+                f"Camera FPS mismatch: requested={self.cam.FPS} actual={actual_fps:.3f}"
+            )
+        self.writer_fps = actual_fps
+
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         self.writer = cv2.VideoWriter(
             self.output_path,
             fourcc,
-            self.cam.FPS,
+            self.writer_fps,
             (self.cam.Width, self.cam.Height),
         )
 
