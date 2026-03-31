@@ -367,14 +367,10 @@ class MainWindow(QMainWindow):
 
             paths = build_paths(self.cfg.Output, self.cfg.Prompts)
 
-            # Start video recording (only if video is enabled in config)
+            # Start video previews (only if video is enabled in config)
+            # NB: Actual video recording is handled by RunController
             if self.cfg.Video.Enabled:
-                self.preview_mgr.start_recording_all(
-                    out_dir=paths["base_dir"],
-                    base_name=paths["base_name"],
-                    video_container=self.cfg.Video.Container,
-                    codec=self.cfg.Video.Codec,
-                )
+                self.preview_mgr.start_preview_all()
 
             self.btn_start.setEnabled(False)
             self.btn_stop.setEnabled(True)
@@ -385,7 +381,7 @@ class MainWindow(QMainWindow):
 
     def on_stop(self):
         try:
-            self.preview_mgr.stop_recording_all()
+            self.preview_mgr.stop_all_previews()
             self.controller.stop()
             outdir = os.path.abspath(self.controller.outdir)
             msg = f"Results written to:\n{outdir}\n\nClose the app now?"

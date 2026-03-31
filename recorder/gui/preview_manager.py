@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import os
 from typing import Dict
 
 from PyQt6.QtCore import QObject, Qt, QThread
 from PyQt6.QtGui import QImage, QPixmap
 
-from ..naming import video_filename
-from .camera_worker import CameraWorker, RecordParams
+from .camera_worker import CameraWorker
 
 
 class PreviewManager(QObject):
@@ -52,23 +50,12 @@ class PreviewManager(QObject):
         self.threads.clear()
         self.main.preview_panel.set_active_cameras([])
 
-    def start_recording_all(self, out_dir: str, base_name: str, video_container: str, codec: str):
+    def start_preview_all(self):
         for panel in self.main.cam_panels:
             cam_cfg = panel.to_config()
             if not cam_cfg.Enabled:
                 continue
             self.start_cam_preview(cam_cfg)
-            idx = int(cam_cfg.DeviceIndex)
-            w = self.workers.get(idx)
-            if not w:
-                continue
-            out_path = os.path.join(out_dir, video_filename(base_name, idx, cam_cfg.Label, video_container))
-            rp = RecordParams(out_path=out_path, fps=cam_cfg.FPS, size=(cam_cfg.Width, cam_cfg.Height), codec=codec)
-            w.request_start_recording(rp)
-
-    def stop_recording_all(self):
-        for w in self.workers.values():
-            w.request_stop_recording()
 
     def on_frame(self, cam_index: int, frame_bgr):
         lbl = self.main.preview_panel.ensure_label(int(cam_index))
