@@ -22,11 +22,13 @@ DEFAULT_CAMERA_FPS = 30
 DEFAULT_PREVIEW_FPS = 15
 
 # Pixel format
-PIXEL_FORMAT_OPTIONS = ("MJPG", "YUYV")
 DEFAULT_PIXEL_FORMAT = "YUYV"
 # UI -> AVFoundation pixel format mapping for macOS ffmpeg
 MAC_PIXEL_FORMAT_MAP = {
     "YUYV": "yuyv422",
+    "UYVY": "uyvy422",
+    "NV12": "nv12",
+    "BGRA": "bgra",
     "MJPG": "mjpeg",
 }
 

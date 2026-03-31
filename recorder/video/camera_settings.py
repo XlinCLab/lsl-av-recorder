@@ -10,7 +10,8 @@ from ..video.constants import (DEFAULT_CAMERA_FPS, DEVNODE_PATTERN,
                                V4L2_CONTROL_MAP, V4L2_MANUAL_EXPOSURE_MODE)
 from ..video.ffmpeg_utils import (_get_supported_modes,
                                   _probe_mac_supported_fps,
-                                  _probe_mac_supported_ui_formats)
+                                  _probe_mac_supported_ui_formats,
+                                  probe_avfoundation_mode)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
@@ -155,6 +156,23 @@ def reformat_devnode_for_ffmpeg(devnode: str) -> str:
         raise ValueError(f"Unrecognized devnode: {devnode}")
 
     return DEVNODE_PATTERN.sub(r"\1", devnode)
+
+
+def probe_mac_mode_support(
+    devnode: str,
+    device_index: int | None,
+    width: int | None,
+    height: int | None,
+    fps: int,
+    pixel_format: str | None = None,
+) -> bool:
+    if not IS_MAC:
+        return True
+    device = str(device_index) if device_index is not None else reformat_devnode_for_ffmpeg(devnode)
+    ff_pf = None
+    if pixel_format:
+        ff_pf = MAC_PIXEL_FORMAT_MAP.get(str(pixel_format).upper(), str(pixel_format).lower())
+    return probe_avfoundation_mode(device, width, height, fps, ff_pf)
 
 
 def get_control_settings_string(controls: dict) -> str:
