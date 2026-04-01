@@ -26,6 +26,7 @@ class VideoRecorder:
         self.thread = None
         self.frame_idx = 0
         self.writer_fps = None
+        self.writer_size = None
 
     def log(self, msg: str, loglevel: str = "INFO"):
         if self.status_cb:
@@ -58,14 +59,6 @@ class VideoRecorder:
             )
         self.writer_fps = actual_fps
 
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        self.writer = cv2.VideoWriter(
-            self.output_path,
-            fourcc,
-            self.writer_fps,
-            (self.cam.Width, self.cam.Height),
-        )
-
         self.running = True
         self.thread = threading.Thread(target=self._loop, daemon=True)
         self.thread.start()
@@ -78,6 +71,27 @@ class VideoRecorder:
             if not ret:
                 time.sleep(0.001)
                 continue
+
+            if self.writer is None:
+                actual_h, actual_w = frame.shape[:2]
+                self.writer_size = (actual_w, actual_h)
+                if (actual_w, actual_h) != (self.cam.Width, self.cam.Height):
+                    self.warning(
+                        f"Camera frame size mismatch: requested={self.cam.Width}x{self.cam.Height} "
+                        f"actual={actual_w}x{actual_h}"
+                    )
+                fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+                self.writer = cv2.VideoWriter(
+                    self.output_path,
+                    fourcc,
+                    self.writer_fps,
+                    (actual_w, actual_h),
+                )
+                if not self.writer.isOpened():
+                    self.writer = None
+                    self.error(f"Could not open VideoWriter: {self.output_path}")
+                    self.running = False
+                    break
 
             ts = local_clock()  # LSL clock timestamp (aligns with audio)
             self.writer.write(frame)
