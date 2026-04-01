@@ -41,6 +41,10 @@ class VideoRecorder:
         self._probe_logged = False
         self._read_fail_count = 0
         self._last_read_fail_log = None
+        self._fps_warn_interval = 5.0
+        self._fps_warn_rel = 0.10
+        self._fps_warn_abs = 0.5
+        self._last_fps_warn_ts = None
 
     def log(self, msg: str, loglevel: str = "INFO"):
         if self.status_cb:
@@ -57,6 +61,31 @@ class VideoRecorder:
 
     def debug(self, msg: str):
         self.log(msg, loglevel="DEBUG")
+
+    def _expected_fps(self) -> float:
+        if self.writer_fps is not None:
+            return float(self.writer_fps)
+        if self._reported_fps is not None:
+            return float(self._reported_fps)
+        return float(self.cam.FPS or 0.0)
+
+    def _maybe_warn_fps(self, inst_fps: float, now: float):
+        expected = self._expected_fps()
+        if expected <= 0:
+            return
+        delta = abs(inst_fps - expected)
+        threshold = max(self._fps_warn_abs, expected * self._fps_warn_rel)
+        if delta < threshold:
+            return
+        if (
+            self._last_fps_warn_ts is None
+            or (now - self._last_fps_warn_ts) >= self._fps_warn_interval
+        ):
+            self.warning(
+                "Capture FPS deviation: "
+                f"expected≈{expected:.2f}, observed={inst_fps:.2f}"
+            )
+            self._last_fps_warn_ts = now
 
     def start(self):
         if sys.platform == "darwin":
@@ -189,6 +218,7 @@ class VideoRecorder:
                                 self.debug(
                                     f"Capture FPS (last {dt:.1f}s): {inst_fps:.2f}"
                                 )
+                                self._maybe_warn_fps(inst_fps, now)
                             self._last_log_ts = now
                             self._last_log_frame_idx = self.frame_idx
                         continue
@@ -240,6 +270,7 @@ class VideoRecorder:
                     if dt > 0:
                         inst_fps = frames / dt
                         self.debug(f"Capture FPS (last {dt:.1f}s): {inst_fps:.2f}")
+                        self._maybe_warn_fps(inst_fps, now)
                     self._last_log_ts = now
                     self._last_log_frame_idx = self.frame_idx
         except Exception:
