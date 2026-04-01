@@ -37,6 +37,9 @@ class MainWindow(QMainWindow):
             "1",
             "true",
         }
+        self.debug_logs = QCheckBox("Show debug logs")
+        self.debug_logs.setChecked(self._show_debug)
+        self.debug_logs.stateChanged.connect(self._on_debug_logs_changed)
         self.log_signal.connect(self._append_log)
         self.cfg: AppConfig = load_cfg(cfg_path) if cfg_path else load_cfg("example.cfg")
         self.controller: RunController = None
@@ -190,6 +193,7 @@ class MainWindow(QMainWindow):
         left_layout.addLayout(btn_row)
         left_layout.addWidget(self.tabs)
         left_layout.addWidget(QLabel("Log"))
+        left_layout.addWidget(self.debug_logs)
         left_layout.addWidget(self.logbox)
         left.setLayout(left_layout)
 
@@ -243,6 +247,9 @@ class MainWindow(QMainWindow):
             self.log_signal.emit(msg, loglevel)
             return
         self._append_log(msg, loglevel)
+
+    def _on_debug_logs_changed(self, _state: int):
+        self._show_debug = self.debug_logs.isChecked()
 
     def _populate_audio_devices(self):
         self.audio_device.clear()
