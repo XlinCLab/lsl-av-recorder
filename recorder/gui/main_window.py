@@ -33,6 +33,10 @@ class MainWindow(QMainWindow):
         self._recording_active = False
         self.logbox = QTextEdit()
         self.logbox.setReadOnly(True)
+        self._show_debug = os.getenv("LSL_AV_RECORDER_DEBUG", "").strip().lower() in {
+            "1",
+            "true",
+        }
         self.log_signal.connect(self._append_log)
         self.cfg: AppConfig = load_cfg(cfg_path) if cfg_path else load_cfg("example.cfg")
         self.controller: RunController = None
@@ -226,11 +230,15 @@ class MainWindow(QMainWindow):
                 self.preview_mgr.start_cam_preview(cam_cfg)
 
     def _append_log(self, msg: str, loglevel: str = "INFO"):
+        if loglevel == "DEBUG" and not self._show_debug:
+            return
         now = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
         msg = f"{now} {loglevel}: {msg}"
         self.logbox.append(msg)
 
     def log(self, msg: str, loglevel: str = "INFO"):
+        if loglevel == "DEBUG" and not self._show_debug:
+            return
         if QThread.currentThread() != self.thread():
             self.log_signal.emit(msg, loglevel)
             return
