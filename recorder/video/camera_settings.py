@@ -56,12 +56,22 @@ def _linux_camera_capabilities(devnode: str) -> Dict[str, Any]:
 
     # Parse V4L2 size/fps mode associations from --list-formats-ext output.
     mode_fps: dict[tuple[int, int], set[int]] = {}
+    mode_fps_by_format: dict[str, dict[tuple[int, int], set[int]]] = {}
     current_mode: tuple[int, int] | None = None
+    current_format: str | None = None
     for line in fmt_text.splitlines():
+        fmt_match = re.search(r"^\s*\[\d+\]:\s*'([A-Za-z0-9]{4})'", line)
+        if fmt_match:
+            current_format = fmt_match.group(1).upper()
+            mode_fps_by_format.setdefault(current_format, {})
+            current_mode = None
+            continue
         size_match = re.search(r"Size:\s+Discrete\s+(\d+)x(\d+)", line)
         if size_match:
             current_mode = (int(size_match.group(1)), int(size_match.group(2)))
             mode_fps.setdefault(current_mode, set())
+            if current_format:
+                mode_fps_by_format[current_format].setdefault(current_mode, set())
             continue
         if current_mode is None:
             continue
@@ -70,12 +80,23 @@ def _linux_camera_capabilities(devnode: str) -> Dict[str, Any]:
             fps_value = int(round(float(fps_match.group(1))))
             if fps_value > 0:
                 mode_fps[current_mode].add(fps_value)
+                if current_format:
+                    mode_fps_by_format[current_format][current_mode].add(fps_value)
 
     caps["modes"] = [
         {"width": w, "height": h, "fps": sorted(list(fps_values))}
         for (w, h), fps_values in sorted(mode_fps.items())
         if fps_values
     ]
+    if mode_fps_by_format:
+        caps["modes_by_format"] = {
+            fmt: [
+                {"width": w, "height": h, "fps": sorted(list(fps_values))}
+                for (w, h), fps_values in sorted(modes.items())
+                if fps_values
+            ]
+            for fmt, modes in mode_fps_by_format.items()
+        }
     return caps
 
 
@@ -321,17 +342,17 @@ def set_camera_controls(devnode: str, control_settings: dict) -> dict:
 def apply_camera_controls(devnode: str, controls: Dict[str, Any]) -> Dict[str, Any]:
     applied, failed = {}, {}
 
-    # Handle frame rate separately
+    # Handle camera recording settings (format/size first)
     fps = controls.pop('fps', None)
-    if fps:
-        success = set_frame_rate(devnode, fps)
-        (applied if success else failed)['fps'] = fps
-
-    # Handle other camera recording settings
     if controls:
         settings_results = set_camera_controls(devnode, controls)
         for k, v in controls.items():
             (applied if k in settings_results else failed)[k] = v
+
+    # Handle frame rate after format/size to respect driver constraints
+    if fps:
+        success = set_frame_rate(devnode, fps)
+        (applied if success else failed)['fps'] = fps
     
     # Return successfully applied and failed settings
     return {"devnode": devnode, "applied": applied, "failed": failed}

@@ -163,14 +163,14 @@ class MainWindow(QMainWindow):
         lf.addRow(self.lsl_discover_btn)
         lf.addRow(self.lsl_streams_table)
 
+        # Preview wall
+        self.preview_panel = PreviewPanel()
+        self.preview_mgr = PreviewManager(self)
+
         # Camera tabs
         self.cam_panels = []
         self.max_cams = 4
         self._init_camera_tabs()
-
-        # Preview wall
-        self.preview_panel = PreviewPanel()
-        self.preview_mgr = PreviewManager(self)
         # Show camera previews if video is enabled in config
         if self.cfg.Video.Enabled:
             for panel in self.cam_panels:
@@ -288,6 +288,8 @@ class MainWindow(QMainWindow):
         if is_default:
             panel.enabled.setChecked(True)
         panel.previewConfigChanged.connect(self._refresh_previews_from_panels)
+        panel.applyStarted.connect(self.preview_mgr.stop_all_previews)
+        panel.applyFinished.connect(self._refresh_previews_from_panels)
         panel.removeRequested.connect(self._on_remove_camera)
         self.cam_panels.append(panel)
         self.tabs.addTab(panel, f"Camera {len(self.cam_panels)}")

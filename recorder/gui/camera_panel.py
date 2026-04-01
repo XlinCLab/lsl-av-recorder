@@ -24,12 +24,15 @@ class CameraPanel(QWidget):
     log = pyqtSignal(str)
     previewConfigChanged = pyqtSignal()
     removeRequested = pyqtSignal(object)
+    applyStarted = pyqtSignal()
+    applyFinished = pyqtSignal()
 
     def __init__(self, cam_cfg: VideoCamConfig, parent: Optional[QWidget] = None):
         super().__init__(parent)
 
         self._default_resolution = (int(cam_cfg.Width), int(cam_cfg.Height))
         self._modes: list[tuple[int, int, set[int]]] = []
+        self._modes_by_format: dict[str, list[tuple[int, int, set[int]]]] = {}
         self._mode_support_cache: dict[tuple[int, int, int, str], bool] = {}
 
         self.enabled = QCheckBox("Enabled (starts preview)")
@@ -239,6 +242,27 @@ class CameraPanel(QWidget):
                 return [f for f in fps_list if self._is_mode_supported(w, h, f, pf)]
         return []
 
+    def _set_modes_for_pixel_format(self, pixel_format: str) -> bool:
+        fmt = str(pixel_format).upper()
+        if not fmt:
+            return False
+        fmt_modes = self._modes_by_format.get(fmt)
+        if fmt_modes:
+            self._modes = fmt_modes
+            return True
+        if self._modes_by_format:
+            # Fallback to first available format if current is unsupported.
+            first_fmt = sorted(self._modes_by_format.keys())[0]
+            self._modes = self._modes_by_format[first_fmt]
+            self.pixel_format.blockSignals(True)
+            idx = self.pixel_format.findText(first_fmt)
+            if idx >= 0:
+                self.pixel_format.setCurrentIndex(idx)
+            self.pixel_format.blockSignals(False)
+            return True
+        self._modes = []
+        return False
+
     def _is_mode_supported(self, width: int, height: int, fps: int, pixel_format: str) -> bool:
         if not IS_MAC:
             return True
@@ -281,8 +305,6 @@ class CameraPanel(QWidget):
             selected = fps_values[0]
         self._set_fps_choices(fps_values, selected)
         self.fps.setEnabled(True)
-
-        self.pixel_format.setEnabled(False)
 
     def _populate_video_devices(self, preferred_index: int, preferred_devnode: str):
         self.device_name.clear()
@@ -348,8 +370,9 @@ class CameraPanel(QWidget):
         self.previewConfigChanged.emit()
 
     def _on_pixel_format_changed(self):
-        if self._modes:
+        if self._modes or self._modes_by_format:
             self._mode_support_cache.clear()
+            self._set_modes_for_pixel_format(self.pixel_format.currentText())
             self._update_fps_choices_for_selected_resolution(prefer_current=True)
             self._update_resolution_choices_for_selected_fps(prefer_current=True)
         self.previewConfigChanged.emit()
@@ -364,6 +387,7 @@ class CameraPanel(QWidget):
 
         raw_modes = caps.get("modes") or []
         self._modes = []
+        self._modes_by_format = {}
         for m in raw_modes:
             try:
                 width = int(m["width"])
@@ -373,8 +397,24 @@ class CameraPanel(QWidget):
                     self._modes.append((width, height, fps_values))
             except Exception:
                 continue
+        raw_modes_by_format = caps.get("modes_by_format") or {}
+        for fmt, modes in raw_modes_by_format.items():
+            try:
+                fmt_modes = []
+                for m in modes:
+                    width = int(m["width"])
+                    height = int(m["height"])
+                    fps_values = {int(v) for v in (m.get("fps") or []) if int(v) > 0}
+                    if width > 0 and height > 0 and fps_values:
+                        fmt_modes.append((width, height, fps_values))
+                if fmt_modes:
+                    self._modes_by_format[str(fmt).upper()] = fmt_modes
+            except Exception:
+                continue
 
         if self._modes:
+            if self._modes_by_format:
+                self._set_modes_for_pixel_format(current_pf)
             self._update_resolution_choices_for_selected_fps(prefer_current=False)
             self._update_fps_choices_for_selected_resolution(prefer_current=True)
         else:
@@ -385,6 +425,8 @@ class CameraPanel(QWidget):
             self.resolution.setEnabled(False)
 
         pixel_formats = list(caps.get("pixel_formats") or [])
+        if not pixel_formats and self._modes_by_format:
+            pixel_formats = sorted(self._modes_by_format.keys())
         if pixel_formats:
             self.pixel_format.setEnabled(True)
             self.pixel_format.blockSignals(True)
@@ -394,6 +436,10 @@ class CameraPanel(QWidget):
             idx = self.pixel_format.findText(str(current_pf).upper())
             self.pixel_format.setCurrentIndex(idx if idx >= 0 else 0)
             self.pixel_format.blockSignals(False)
+            if self._modes_by_format:
+                if self._set_modes_for_pixel_format(self.pixel_format.currentText()):
+                    self._update_resolution_choices_for_selected_fps(prefer_current=True)
+                    self._update_fps_choices_for_selected_resolution(prefer_current=True)
         else:
             self.pixel_format.setEnabled(False)
             self.text.append("INFO: Could not determine supported pixel formats for this device")
@@ -481,6 +527,7 @@ class CameraPanel(QWidget):
             self.text.append("No controls to apply")
             return
 
+        self.applyStarted.emit()
         rep = apply_camera_controls(dev, controls)
         # Print summary of successfully applied and failed settings
         summary = summarize_control_application(
@@ -489,3 +536,4 @@ class CameraPanel(QWidget):
             rep["failed"],
         )
         self.text.append(summary)
+        self.applyFinished.emit()
