@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from datetime import datetime
 from typing import List, Optional
 
@@ -25,7 +26,7 @@ from .run_controller import RunController
 
 
 class MainWindow(QMainWindow):
-    log_signal = pyqtSignal(str, str)
+    log_signal = pyqtSignal(str)
 
     def __init__(self, cfg_path: Optional[str] = None):
         super().__init__()
@@ -41,6 +42,9 @@ class MainWindow(QMainWindow):
         self.debug_logs.setChecked(self._show_debug)
         self.debug_logs.stateChanged.connect(self._on_debug_logs_changed)
         self.log_signal.connect(self._append_log)
+        self._log_file = None
+        self._log_lock = threading.Lock()
+        self._log_path = None
         self.cfg: AppConfig = load_cfg(cfg_path) if cfg_path else load_cfg("example.cfg")
         self.controller: RunController = None
 
@@ -233,23 +237,56 @@ class MainWindow(QMainWindow):
             if cam_cfg.Enabled:
                 self.preview_mgr.start_cam_preview(cam_cfg)
 
-    def _append_log(self, msg: str, loglevel: str = "INFO"):
-        if loglevel == "DEBUG" and not self._show_debug:
-            return
+    def _format_log_line(self, msg: str, loglevel: str) -> str:
         now = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-        msg = f"{now} {loglevel}: {msg}"
-        self.logbox.append(msg)
+        return f"{now} {loglevel}: {msg}"
+
+    def _append_log(self, line: str):
+        self.logbox.append(line)
+
+    def _write_log_line(self, line: str):
+        if not self._log_file:
+            return
+        with self._log_lock:
+            try:
+                self._log_file.write(line + "\n")
+                self._log_file.flush()
+            except Exception:
+                pass
 
     def log(self, msg: str, loglevel: str = "INFO"):
         if loglevel == "DEBUG" and not self._show_debug:
             return
+        line = self._format_log_line(msg, loglevel)
+        self._write_log_line(line)
         if QThread.currentThread() != self.thread():
-            self.log_signal.emit(msg, loglevel)
+            self.log_signal.emit(line)
             return
-        self._append_log(msg, loglevel)
+        self._append_log(line)
 
     def _on_debug_logs_changed(self, _state: int):
         self._show_debug = self.debug_logs.isChecked()
+
+    def _open_run_log(self):
+        self._close_run_log()
+        if not self.controller:
+            return
+        try:
+            self._log_path = os.path.join(self.controller.outdir, "run.log")
+            self._log_file = open(self._log_path, "a", encoding="utf-8")
+        except Exception as exc:
+            self._log_file = None
+            self._log_path = None
+            self.log(f"Could not open run log: {exc}", loglevel="WARNING")
+
+    def _close_run_log(self):
+        if self._log_file:
+            try:
+                self._log_file.close()
+            except Exception:
+                pass
+        self._log_file = None
+        self._log_path = None
 
     def _populate_audio_devices(self):
         self.audio_device.clear()
@@ -391,6 +428,7 @@ class MainWindow(QMainWindow):
             self.preview_mgr.stop_all_previews()
             lsl_streams = self._get_selected_lsl_streams()
             self.controller = RunController(self.cfg, status_cb=self.log, lsl_streams=lsl_streams)
+            self._open_run_log()
             self.controller.start()
 
             paths = build_paths(self.cfg.Output, self.cfg.Prompts)
@@ -424,6 +462,7 @@ class MainWindow(QMainWindow):
             self._update_add_camera_button()
             if self.cfg.Video.Enabled:
                 self._refresh_previews_from_panels()
+            self._close_run_log()
 
     def on_connect_labrecorder(self):
         host = self.labrec_host.text().strip() or self.cfg.LabRecorder.Host
