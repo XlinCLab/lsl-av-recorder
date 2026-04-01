@@ -386,8 +386,11 @@ class RunController:
         # NB: Start video before audio
         if self.video_enabled:
             for vr in self.videos:
-                vr.start()
-                self.info(f"Video capture started: {vr.cam.Label}")
+                started = vr.start()
+                if started:
+                    self.info(f"Video capture started: {vr.cam.Label}")
+                else:
+                    self.error(f"Video capture failed to start: {vr.cam.Label}")
         if self.audio_enabled:
             self.audio.start()
             self.info("Audio capture started")

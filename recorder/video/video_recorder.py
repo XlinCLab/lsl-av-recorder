@@ -1,6 +1,7 @@
 import sys
 import threading
 import time
+import traceback
 from typing import Callable
 
 import cv2
@@ -30,6 +31,16 @@ class VideoRecorder:
         self._start_ts = None
         self._last_log_ts = None
         self._last_log_frame_idx = 0
+        self._reported_fps = None
+        self._fps_probe_start = None
+        self._fps_probe_times = []
+        self._fps_probe_frames = []
+        self._fps_probe_min_frames = 10
+        self._fps_probe_min_duration = 0.5
+        self._fps_probe_max_wait = 2.0
+        self._probe_logged = False
+        self._read_fail_count = 0
+        self._last_read_fail_log = None
 
     def log(self, msg: str, loglevel: str = "INFO"):
         if self.status_cb:
@@ -44,11 +55,25 @@ class VideoRecorder:
     def error(self, msg: str):
         self.log(msg, loglevel="ERROR")
 
+    def debug(self, msg: str):
+        self.log(msg, loglevel="DEBUG")
+
     def start(self):
-        if sys.platform.startswith("linux") and getattr(self.cam, "DevNode", ""):
-            self.cap = cv2.VideoCapture(self.cam.DevNode)
+        if sys.platform == "darwin":
+            self.cap = cv2.VideoCapture(self.cam.DeviceIndex, cv2.CAP_AVFOUNDATION)
+        elif sys.platform.startswith("linux"):
+            source = self.cam.DevNode if getattr(self.cam, "DevNode", "") else self.cam.DeviceIndex
+            self.cap = cv2.VideoCapture(source, cv2.CAP_V4L2)
         else:
             self.cap = cv2.VideoCapture(self.cam.DeviceIndex)
+        if not self.cap.isOpened():
+            self.error(f"Could not open camera: {self.cam.Label}")
+            try:
+                self.cap.release()
+            except Exception:
+                pass
+            self.cap = None
+            return False
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.cam.Width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.cam.Height)
         self.cap.set(cv2.CAP_PROP_FPS, self.cam.FPS)
@@ -59,78 +84,192 @@ class VideoRecorder:
                 f"Camera FPS mismatch: requested={self.cam.FPS} reported={reported_fps:.3f}"
             )
         self.writer_fps = None
-        if reported_fps > 0:
+        self._reported_fps = reported_fps if reported_fps > 0 else None
+        if self._reported_fps is not None:
             self.info(f"Camera reported FPS: {reported_fps:.3f}")
+
+        requested_fps = float(self.cam.FPS or 0.0)
+        if requested_fps > 0:
+            self._fps_probe_min_frames = max(5, int(round(requested_fps * 0.25)))
 
         self.running = True
         self.thread = threading.Thread(target=self._loop, daemon=True)
         self.thread.start()
 
         self.info(f"VideoRecorder started: {self.cam.Label}")
+        return True
 
     def _loop(self):
-        while self.running:
-            ret, frame = self.cap.read()
-            if not ret:
-                time.sleep(0.001)
-                continue
+        try:
+            while self.running:
+                ret, frame = self.cap.read()
+                if not ret or frame is None:
+                    self._read_fail_count += 1
+                    now = time.perf_counter()
+                    if (
+                        self._last_read_fail_log is None
+                        or (now - self._last_read_fail_log) >= 2.0
+                    ):
+                        self.warning(
+                            "Camera read failed "
+                            f"({self._read_fail_count} consecutive failures)"
+                        )
+                        self._last_read_fail_log = now
+                    time.sleep(0.001)
+                    continue
 
-            if self.writer is None:
-                actual_h, actual_w = frame.shape[:2]
-                self.writer_size = (actual_w, actual_h)
-                if (actual_w, actual_h) != (self.cam.Width, self.cam.Height):
-                    self.warning(
-                        f"Camera frame size mismatch: requested={self.cam.Width}x{self.cam.Height} "
-                        f"actual={actual_w}x{actual_h}"
-                    )
-
-                fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-                self.writer = cv2.VideoWriter(
-                    self.output_path,
-                    fourcc,
-                    float(self.writer_fps),
-                    (actual_w, actual_h),
-                )
-                if not self.writer.isOpened():
-                    self.writer = None
-                    self.error(f"Could not open VideoWriter: {self.output_path}")
-                    self.running = False
+                if not self.running:
                     break
 
-                self.info(
-                    f"VideoWriter opened: fps={self.writer_fps:.3f} size={actual_w}x{actual_h}"
-                )
+                self._read_fail_count = 0
+                now = time.perf_counter()
 
-            ts = local_clock()  # LSL clock timestamp (aligns with audio)
-            self.writer.write(frame)
+                if self.writer is None:
+                    if not self._probe_logged:
+                        self.debug("Probing capture FPS before opening VideoWriter")
+                        self._probe_logged = True
+                    if self._fps_probe_start is None:
+                        self._fps_probe_start = now
+                    self._fps_probe_frames.append(frame)
+                    self._fps_probe_times.append(now)
 
-            if self.frame_cb:
-                self.frame_cb(ts, self.frame_idx)
+                    if self.writer_fps is None:
+                        if len(self._fps_probe_times) >= self._fps_probe_min_frames:
+                            dt = self._fps_probe_times[-1] - self._fps_probe_times[0]
+                            if dt >= self._fps_probe_min_duration:
+                                fps = (
+                                    (len(self._fps_probe_times) - 1) / dt
+                                    if dt > 0
+                                    else 0.0
+                                )
+                                if fps > 0:
+                                    self.writer_fps = fps
+                                    self.info(
+                                        f"Measured capture FPS: {self.writer_fps:.2f}"
+                                    )
+                        if (
+                            self.writer_fps is None
+                            and self._fps_probe_start is not None
+                            and (now - self._fps_probe_start) >= self._fps_probe_max_wait
+                        ):
+                            if self._reported_fps is not None:
+                                self.writer_fps = self._reported_fps
+                                self.warning(
+                                    "Falling back to reported FPS: "
+                                    f"{self.writer_fps:.2f}"
+                                )
+                            else:
+                                fallback = float(self.cam.FPS or 0.0)
+                                if fallback <= 0:
+                                    fallback = 30.0
+                                self.writer_fps = fallback
+                                self.warning(
+                                    "Falling back to requested FPS: "
+                                    f"{self.writer_fps:.2f}"
+                                )
 
-            self.frame_idx += 1
-            now = time.perf_counter()
-            if self._start_ts is None:
-                self._start_ts = now
-                self._last_log_ts = now
-                self._last_log_frame_idx = self.frame_idx
-            elif self._last_log_ts is not None and (now - self._last_log_ts) >= 2.0:
-                dt = now - self._last_log_ts
-                frames = self.frame_idx - self._last_log_frame_idx
-                if dt > 0:
-                    inst_fps = frames / dt
-                    self.info(f"Capture FPS (last {dt:.1f}s): {inst_fps:.2f}")
-                self._last_log_ts = now
-                self._last_log_frame_idx = self.frame_idx
+                    if self.writer_fps is None:
+                        # Keep buffering until we have a usable FPS estimate.
+                        ts = local_clock()
+                        if self.frame_cb:
+                            self.frame_cb(ts, self.frame_idx)
+                        self.frame_idx += 1
+                        if self._start_ts is None:
+                            self._start_ts = now
+                            self._last_log_ts = now
+                            self._last_log_frame_idx = self.frame_idx
+                        elif (
+                            self._last_log_ts is not None
+                            and (now - self._last_log_ts) >= 2.0
+                        ):
+                            dt = now - self._last_log_ts
+                            frames = self.frame_idx - self._last_log_frame_idx
+                            if dt > 0:
+                                inst_fps = frames / dt
+                                self.debug(
+                                    f"Capture FPS (last {dt:.1f}s): {inst_fps:.2f}"
+                                )
+                            self._last_log_ts = now
+                            self._last_log_frame_idx = self.frame_idx
+                        continue
+
+                    actual_h, actual_w = frame.shape[:2]
+                    self.writer_size = (actual_w, actual_h)
+                    if (actual_w, actual_h) != (self.cam.Width, self.cam.Height):
+                        self.warning(
+                            f"Camera frame size mismatch: requested={self.cam.Width}x{self.cam.Height} "
+                            f"actual={actual_w}x{actual_h}"
+                        )
+
+                    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+                    self.writer = cv2.VideoWriter(
+                        self.output_path,
+                        fourcc,
+                        float(self.writer_fps),
+                        (actual_w, actual_h),
+                    )
+                    if not self.writer.isOpened():
+                        self.writer = None
+                        self.error(f"Could not open VideoWriter: {self.output_path}")
+                        self.running = False
+                        break
+
+                    self.info(
+                        f"VideoWriter opened: fps={self.writer_fps:.3f} size={actual_w}x{actual_h}"
+                    )
+
+                    for buffered_frame in self._fps_probe_frames:
+                        self.writer.write(buffered_frame)
+                    self._fps_probe_frames = []
+                    self._fps_probe_times = []
+                else:
+                    self.writer.write(frame)
+
+                ts = local_clock()  # LSL clock timestamp (aligns with audio)
+                if self.frame_cb:
+                    self.frame_cb(ts, self.frame_idx)
+
+                self.frame_idx += 1
+                if self._start_ts is None:
+                    self._start_ts = now
+                    self._last_log_ts = now
+                    self._last_log_frame_idx = self.frame_idx
+                elif self._last_log_ts is not None and (now - self._last_log_ts) >= 2.0:
+                    dt = now - self._last_log_ts
+                    frames = self.frame_idx - self._last_log_frame_idx
+                    if dt > 0:
+                        inst_fps = frames / dt
+                        self.debug(f"Capture FPS (last {dt:.1f}s): {inst_fps:.2f}")
+                    self._last_log_ts = now
+                    self._last_log_frame_idx = self.frame_idx
+        except Exception:
+            self.error("VideoRecorder crashed:")
+            self.error(traceback.format_exc())
+            self.running = False
 
     def stop(self):
         self.running = False
         if self.thread:
+            self.debug(f"VideoRecorder stopping (join): {self.cam.Label}")
             self.thread.join()
+            self.debug(f"VideoRecorder joined: {self.cam.Label}")
 
-        if self.cap:
-            self.cap.release()
         if self.writer:
-            self.writer.release()
+            try:
+                self.debug(f"VideoRecorder releasing writer: {self.cam.Label}")
+                self.writer.release()
+                self.debug(f"VideoRecorder released writer: {self.cam.Label}")
+            except Exception:
+                pass
+            self.writer = None
+        if self.cap:
+            try:
+                self.debug(f"VideoRecorder releasing camera: {self.cam.Label}")
+                self.cap.release()
+                self.debug(f"VideoRecorder released camera: {self.cam.Label}")
+            except Exception:
+                pass
+            self.cap = None
 
         if self._start_ts is not None:
             total_dt = time.perf_counter() - self._start_ts
