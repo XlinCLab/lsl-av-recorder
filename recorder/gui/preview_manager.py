@@ -53,6 +53,18 @@ class PreviewManager(QObject):
         self.threads.clear()
         self.main.preview_panel.set_active_cameras([])
 
+    def stop_cam_preview(self, cam_index: int) -> bool:
+        idx = int(cam_index)
+        worker = self.workers.pop(idx, None)
+        thread = self.threads.pop(idx, None)
+        if worker:
+            worker.stop_preview()
+        if thread:
+            thread.quit()
+            thread.wait(1000)
+        self.main.preview_panel.set_active_cameras(self.workers.keys())
+        return worker is not None
+
     def start_preview_all(self):
         for panel in self.main.cam_panels:
             cam_cfg = panel.to_config()

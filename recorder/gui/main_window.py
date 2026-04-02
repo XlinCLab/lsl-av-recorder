@@ -424,10 +424,13 @@ class MainWindow(QMainWindow):
     def on_start(self):
         self.pull_gui_into_cfg()
         try:
-            # Ensure previews are not holding the camera when recording starts.
-            self.preview_mgr.stop_all_previews()
             lsl_streams = self._get_selected_lsl_streams()
-            self.controller = RunController(self.cfg, status_cb=self.log, lsl_streams=lsl_streams)
+            self.controller = RunController(
+                self.cfg,
+                status_cb=self.log,
+                lsl_streams=lsl_streams,
+                preview_release_cb=self._stop_preview_for_cam,
+            )
             self._open_run_log()
             self.controller.start()
 
@@ -439,6 +442,13 @@ class MainWindow(QMainWindow):
             self._update_add_camera_button()
         except Exception as e:
             QMessageBox.critical(self, "Start failed", str(e))
+
+    def _stop_preview_for_cam(self, cam_cfg: VideoCamConfig) -> bool:
+        cam_index = int(cam_cfg.DeviceIndex)
+        if cam_index not in self.preview_mgr.workers:
+            return False
+        self.log(f"Stopping preview for camera {cam_cfg.Label} (index {cam_index})")
+        return self.preview_mgr.stop_cam_preview(cam_index)
 
     def on_stop(self):
         try:

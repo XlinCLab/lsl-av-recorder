@@ -28,9 +28,11 @@ class RunController:
         cfg: AppConfig,
         status_cb: Optional[Callable[[str], None]] = None,
         lsl_streams: Optional[List[StreamInfo]] = None,
+        preview_release_cb: Optional[Callable[[VideoCamConfig], bool]] = None,
     ):
         self.cfg = cfg
         self.status_cb = status_cb
+        self.preview_release_cb = preview_release_cb
         self._running = False
 
         # Audio and video streams
@@ -387,6 +389,15 @@ class RunController:
         if self.video_enabled:
             for vr in self.videos:
                 started = vr.start()
+                if not started and self.preview_release_cb:
+                    self.warning(
+                        f"Video capture failed to start: {vr.cam.Label}; "
+                        "stopping preview and retrying."
+                    )
+                    released = self.preview_release_cb(vr.cam)
+                    if released:
+                        sleep(0.2)
+                        started = vr.start()
                 if started:
                     self.info(f"Video capture started: {vr.cam.Label}")
                 else:
