@@ -359,7 +359,6 @@ class MainWindow(QMainWindow):
         panel = CameraPanel(cam_cfg)
         if is_default:
             panel.enabled.setChecked(True)
-        panel.previewConfigChanged.connect(self._refresh_previews_from_panels)
         panel.applyStarted.connect(self.preview_mgr.stop_all_previews)
         panel.applyFinished.connect(self._refresh_previews_from_panels)
         panel.removeRequested.connect(self._on_remove_camera)
