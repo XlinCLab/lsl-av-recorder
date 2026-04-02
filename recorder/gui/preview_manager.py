@@ -15,6 +15,31 @@ class PreviewManager(QObject):
         self.threads: Dict[int, QThread] = {}
         self.workers: Dict[int, CameraWorker] = {}
 
+    def _finalize_stop(self, cam_index: int):
+        worker = self.workers.pop(cam_index, None)
+        thread = self.threads.pop(cam_index, None)
+        if worker:
+            worker.deleteLater()
+        if thread:
+            thread.deleteLater()
+        self.main.preview_panel.set_active_cameras(self.workers.keys())
+
+    def _request_stop(self, cam_index: int):
+        idx = int(cam_index)
+        worker = self.workers.get(idx)
+        thread = self.threads.get(idx)
+        if not thread:
+            return
+        if worker:
+            worker.stop_preview()
+        if not getattr(thread, "_stop_connected", False):
+            thread.finished.connect(lambda idx=idx: self._finalize_stop(idx))
+            thread._stop_connected = True
+        thread.quit()
+        thread.wait(1000)
+        if not thread.isRunning():
+            self._finalize_stop(idx)
+
     def start_cam_preview(self, cam_cfg):
         idx = int(cam_cfg.DeviceIndex)
         if idx in self.workers:
@@ -44,26 +69,16 @@ class PreviewManager(QObject):
         self.main.preview_panel.set_active_cameras(self.workers.keys())
 
     def stop_all_previews(self):
-        for w in self.workers.values():
-            w.stop_preview()
-        for t in self.threads.values():
-            t.quit()
-            t.wait(1000)
-        self.workers.clear()
-        self.threads.clear()
+        for idx in list(self.workers.keys()):
+            self._request_stop(idx)
         self.main.preview_panel.set_active_cameras([])
 
     def stop_cam_preview(self, cam_index: int) -> bool:
         idx = int(cam_index)
-        worker = self.workers.pop(idx, None)
-        thread = self.threads.pop(idx, None)
-        if worker:
-            worker.stop_preview()
-        if thread:
-            thread.quit()
-            thread.wait(1000)
-        self.main.preview_panel.set_active_cameras(self.workers.keys())
-        return worker is not None
+        exists = idx in self.workers
+        if exists:
+            self._request_stop(idx)
+        return exists
 
     def start_preview_all(self):
         for panel in self.main.cam_panels:

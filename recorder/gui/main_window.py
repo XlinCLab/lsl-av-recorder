@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import List, Optional
 
 from pylsl import StreamInfo
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox,
                              QDoubleSpinBox, QFileDialog, QFormLayout,
                              QHBoxLayout, QLabel, QLineEdit, QMainWindow,
@@ -183,6 +183,9 @@ class MainWindow(QMainWindow):
         self.preview_panel = PreviewPanel()
         self.preview_mgr = PreviewManager(self)
         self.preview_frame_signal.connect(self.preview_mgr.on_frame)
+        self._preview_refresh_timer = QTimer(self)
+        self._preview_refresh_timer.setSingleShot(True)
+        self._preview_refresh_timer.timeout.connect(self._do_refresh_previews_from_panels)
 
         # Camera tabs
         self.cam_panels = []
@@ -227,6 +230,11 @@ class MainWindow(QMainWindow):
         self._update_labrecorder_controls()
 
     def _refresh_previews_from_panels(self):
+        if self._preview_refresh_timer.isActive():
+            self._preview_refresh_timer.stop()
+        self._preview_refresh_timer.start(200)
+
+    def _do_refresh_previews_from_panels(self):
         # Don't reconfigure preview workers while a run is active/recording.
         if not self.btn_start.isEnabled():
             return
