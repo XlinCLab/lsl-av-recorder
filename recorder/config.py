@@ -170,7 +170,7 @@ def load_cfg(path: str) -> AppConfig:
         vc.Height = cp.getint(sec, "Height", fallback=vc.Height)
         vc.AutoExposure = _get_bool(cp, sec, "AutoExposure", bool(vc.AutoExposure))
         vc.AutoFocus = _get_bool(cp, sec, "AutoFocus", bool(vc.AutoFocus))
-        vc.Brightness = cp.getint(sec, "Brightness", fallback=vc.Brightness or 0)
+        vc.Brightness = cp.getint(sec, "Brightness", fallback=vc.Brightness)
         vc.Hue = cp.getint(sec, "Hue", fallback=vc.Hue or 0)
         vc.Saturation = cp.getint(sec, "Saturation", fallback=vc.Saturation or 100)
         vc.PixelFormat = cp.get(sec, "PixelFormat", fallback=vc.PixelFormat).upper()

@@ -12,10 +12,11 @@ from ..video.camera_settings import (apply_camera_controls,
                                      get_camera_capabilities,
                                      probe_mac_mode_support,
                                      summarize_control_application)
-from ..video.constants import (BRIGHTNESS_RANGE, DEFAULT_CAMERA_FPS,
-                               DEFAULT_PIXEL_FORMAT, HUE_RANGE, IS_MAC,
-                               SATURATION_RANGE, V4L2_AUTO_EXPOSURE_MODE,
-                               V4L2_AUTO_FOCUS_MODE, V4L2_MANUAL_EXPOSURE_MODE,
+from ..video.constants import (BRIGHTNESS_RANGE, DEFAULT_BRIGHTNESS,
+                               DEFAULT_CAMERA_FPS, DEFAULT_PIXEL_FORMAT,
+                               HUE_RANGE, IS_MAC, SATURATION_RANGE,
+                               V4L2_AUTO_EXPOSURE_MODE, V4L2_AUTO_FOCUS_MODE,
+                               V4L2_MANUAL_EXPOSURE_MODE,
                                V4L2_MANUAL_FOCUS_MODE)
 from ..video.devices import list_video_devices
 
@@ -50,7 +51,10 @@ class CameraPanel(QWidget):
 
         self.fps = self._init_fps(int(cam_cfg.FPS))
         self.resolution = self._init_resolution(self._default_resolution)
-        self.brightness = self._init_brightness(int(cam_cfg.Brightness or 0))
+        self._brightness_configured = cam_cfg.Brightness is not None
+        self._brightness_auto_defaulted = False
+        brightness_value = cam_cfg.Brightness if cam_cfg.Brightness is not None else DEFAULT_BRIGHTNESS
+        self.brightness = self._init_brightness(int(brightness_value))
         self.hue = self._init_hue(int(cam_cfg.Hue or 0))
         self.saturation = self._init_saturation(int(cam_cfg.Saturation or 100))
         self.pixel_format = self._init_pixel_format(getattr(cam_cfg, "PixelFormat", "") or DEFAULT_PIXEL_FORMAT)
@@ -445,6 +449,7 @@ class CameraPanel(QWidget):
             self.text.append("INFO: Could not determine supported pixel formats for this device")
 
         brightness_range = caps.get("brightness_range")
+        brightness_default = caps.get("brightness_default")
         hue_range = caps.get("hue_range")
         saturation_range = caps.get("saturation_range")
         self.brightness.setEnabled(bool(brightness_range))
@@ -452,7 +457,18 @@ class CameraPanel(QWidget):
         self.saturation.setEnabled(bool(saturation_range))
         if brightness_range:
             self.brightness.setRange(brightness_range[0], brightness_range[1])
-            self.brightness.setValue(min(max(self.brightness.value(), brightness_range[0]), brightness_range[1]))
+            if (
+                not self._brightness_configured
+                and not self._brightness_auto_defaulted
+                and brightness_default is not None
+            ):
+                new_value = min(max(int(brightness_default), brightness_range[0]), brightness_range[1])
+                self.brightness.setValue(new_value)
+                self._brightness_auto_defaulted = True
+            else:
+                self.brightness.setValue(
+                    min(max(self.brightness.value(), brightness_range[0]), brightness_range[1])
+                )
         if hue_range:
             self.hue.setRange(hue_range[0], hue_range[1])
             self.hue.setValue(min(max(self.hue.value(), hue_range[0]), hue_range[1]))

@@ -3,7 +3,7 @@ import re
 import sys
 from typing import Any, Dict
 
-from ..utils.utils import _extract_range, run_capture_cmd
+from ..utils.utils import _extract_default, _extract_range, run_capture_cmd
 from ..video.constants import (DEFAULT_CAMERA_FPS, DEVNODE_PATTERN,
                                FFMPEG_UNSUPPORTED_CONTROLS, IS_LINUX, IS_MAC,
                                MAC_PIXEL_FORMAT_MAP, V4L2_AUTO_EXPOSURE_MODE,
@@ -25,6 +25,7 @@ def _empty_capabilities() -> Dict[str, Any]:
         "supports_auto_exposure": False,
         "supports_auto_focus": False,
         "brightness_range": None,
+        "brightness_default": None,
         "hue_range": None,
         "saturation_range": None,
     }
@@ -46,6 +47,7 @@ def _linux_camera_capabilities(devnode: str) -> Dict[str, Any]:
     caps["supports_auto_exposure"] = bool(re.search(r"^\s*exposure_auto\b", ctrl_text, re.MULTILINE))
     caps["supports_auto_focus"] = bool(re.search(r"^\s*focus_auto\b", ctrl_text, re.MULTILINE))
     caps["brightness_range"] = _extract_range(ctrl_text, "brightness")
+    caps["brightness_default"] = _extract_default(ctrl_text, "brightness")
     caps["hue_range"] = _extract_range(ctrl_text, "hue")
     caps["saturation_range"] = _extract_range(ctrl_text, "saturation")
     exposure_menu = _parse_v4l2_menu(ctrl_text, "exposure_auto")
