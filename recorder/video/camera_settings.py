@@ -4,10 +4,12 @@ import sys
 from typing import Any, Dict
 
 from ..utils.utils import _extract_default, _extract_range, run_capture_cmd
-from ..video.constants import (DEFAULT_CAMERA_FPS, DEVNODE_PATTERN,
-                               FFMPEG_UNSUPPORTED_CONTROLS, IS_LINUX, IS_MAC,
-                               MAC_PIXEL_FORMAT_MAP, V4L2_AUTO_EXPOSURE_MODE,
-                               V4L2_CONTROL_MAP, V4L2_MANUAL_EXPOSURE_MODE)
+from ..video.constants import (BRIGHTNESS_RANGE, DEFAULT_CAMERA_FPS,
+                               DEVNODE_PATTERN, FFMPEG_UNSUPPORTED_CONTROLS,
+                               HUE_RANGE, IS_LINUX, IS_MAC,
+                               MAC_PIXEL_FORMAT_MAP, SATURATION_RANGE,
+                               V4L2_AUTO_EXPOSURE_MODE, V4L2_CONTROL_MAP,
+                               V4L2_MANUAL_EXPOSURE_MODE)
 from ..video.ffmpeg_utils import (_get_supported_modes,
                                   _probe_mac_supported_fps,
                                   _probe_mac_supported_ui_formats,
@@ -159,6 +161,9 @@ def _mac_camera_capabilities(devnode: str, device_index: int | None) -> Dict[str
     ]
     caps["pixel_formats"] = _probe_mac_supported_ui_formats(device, modes)
     caps["fps"] = _probe_mac_supported_fps(modes)
+    caps["brightness_range"] = BRIGHTNESS_RANGE
+    caps["hue_range"] = HUE_RANGE
+    caps["saturation_range"] = SATURATION_RANGE
     return caps
 
 
@@ -290,6 +295,15 @@ def set_camera_controls(devnode: str, control_settings: dict) -> dict:
                 logger.warning(f"{parameter} not supported on macOS via ffmpeg; skipping.")
                 settings_to_apply.pop(parameter)
 
+        # Color controls are handled in software for macOS capture
+        color_controls = {}
+        for key in ("brightness", "hue", "saturation"):
+            if key in settings_to_apply:
+                color_controls[key] = settings_to_apply.pop(key)
+        if not settings_to_apply and color_controls:
+            successful_settings.update(color_controls)
+            return successful_settings
+
         mac_pixel_format = None
         if "pixel_format" in settings_to_apply:
             mac_pixel_format = MAC_PIXEL_FORMAT_MAP.get(
@@ -297,20 +311,8 @@ def set_camera_controls(devnode: str, control_settings: dict) -> dict:
                 str(settings_to_apply["pixel_format"]).lower(),
             )
 
-        # Build ffmpeg filter chain. `eq` supports brightness/saturation;
-        # hue is a dedicated filter.
+        # Build ffmpeg filter chain for remaining non-color controls.
         vf_filters = []
-        eq_parts = []
-        if "brightness" in settings_to_apply:
-            brightness = float(settings_to_apply["brightness"]) / 100.0
-            eq_parts.append(f"brightness={brightness:.3f}")
-        if "saturation" in settings_to_apply:
-            saturation = float(settings_to_apply["saturation"]) / 100.0
-            eq_parts.append(f"saturation={saturation:.3f}")
-        if eq_parts:
-            vf_filters.append("eq=" + ":".join(eq_parts))
-        if "hue" in settings_to_apply:
-            vf_filters.append(f"hue=h={settings_to_apply['hue']}")
 
         cmd = [
             "ffmpeg",
@@ -338,6 +340,8 @@ def set_camera_controls(devnode: str, control_settings: dict) -> dict:
         _, error = run_capture_cmd(cmd)
         if error is None:
             successful_settings.update(settings_to_apply)
+        if color_controls:
+            successful_settings.update(color_controls)
 
     else:
         raise ValueError(f"Unsupported OS: {sys.platform}")

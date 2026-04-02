@@ -7,6 +7,9 @@ from typing import Callable
 import cv2
 from pylsl import local_clock
 
+from .color_adjust import apply_color_adjustments
+from .constants import DEFAULT_BRIGHTNESS, DEFAULT_HUE, DEFAULT_SATURATION
+
 
 class VideoRecorder:
     def __init__(
@@ -45,6 +48,19 @@ class VideoRecorder:
         self._fps_warn_rel = 0.10
         self._fps_warn_abs = 0.5
         self._last_fps_warn_ts = None
+        self._brightness = self.cam.Brightness
+        self._hue = self.cam.Hue
+        self._saturation = self.cam.Saturation
+        # Color (brightness, hue, saturation) adjustments for MacOS only
+        # On Linux, color settings are controllable via V4L2
+        self._apply_color_adjustments = (
+            sys.platform == "darwin"
+            and (
+                (self._brightness is not None and int(self._brightness) != DEFAULT_BRIGHTNESS)
+                or (self._hue is not None and int(self._hue) != DEFAULT_HUE)
+                or (self._saturation is not None and int(self._saturation) != DEFAULT_SATURATION)
+            )
+        )
 
     def log(self, msg: str, loglevel: str = "INFO"):
         if self.status_cb:
@@ -149,6 +165,11 @@ class VideoRecorder:
 
                 if not self.running:
                     break
+
+                if self._apply_color_adjustments:
+                    frame = apply_color_adjustments(
+                        frame, self._brightness, self._hue, self._saturation
+                    )
 
                 self._read_fail_count = 0
                 now = time.perf_counter()

@@ -13,7 +13,8 @@ from ..video.camera_settings import (apply_camera_controls,
                                      probe_mac_mode_support,
                                      summarize_control_application)
 from ..video.constants import (BRIGHTNESS_RANGE, DEFAULT_BRIGHTNESS,
-                               DEFAULT_CAMERA_FPS, DEFAULT_PIXEL_FORMAT,
+                               DEFAULT_CAMERA_FPS, DEFAULT_HUE,
+                               DEFAULT_PIXEL_FORMAT, DEFAULT_SATURATION,
                                HUE_RANGE, IS_MAC, SATURATION_RANGE,
                                V4L2_AUTO_EXPOSURE_MODE, V4L2_AUTO_FOCUS_MODE,
                                V4L2_MANUAL_EXPOSURE_MODE,
@@ -57,11 +58,11 @@ class CameraPanel(QWidget):
         self.brightness = self._init_brightness(int(brightness_value))
         self._hue_configured = cam_cfg.Hue is not None
         self._hue_auto_defaulted = False
-        hue_value = cam_cfg.Hue if cam_cfg.Hue is not None else 0
+        hue_value = cam_cfg.Hue if cam_cfg.Hue is not None else DEFAULT_HUE
         self.hue = self._init_hue(int(hue_value))
         self._saturation_configured = cam_cfg.Saturation is not None
         self._saturation_auto_defaulted = False
-        saturation_value = cam_cfg.Saturation if cam_cfg.Saturation is not None else 100
+        saturation_value = cam_cfg.Saturation if cam_cfg.Saturation is not None else DEFAULT_SATURATION
         self.saturation = self._init_saturation(int(saturation_value))
         self.pixel_format = self._init_pixel_format(getattr(cam_cfg, "PixelFormat", "") or DEFAULT_PIXEL_FORMAT)
 

@@ -27,6 +27,9 @@ class PreviewManager(QObject):
             fps=cam_cfg.FPS,
             size=(cam_cfg.Width, cam_cfg.Height),
             preview_fps=getattr(self.main.cfg.Video, "PreviewFPS", 15),
+            brightness=cam_cfg.Brightness,
+            hue=cam_cfg.Hue,
+            saturation=cam_cfg.Saturation,
         )
         thread = QThread()
         worker.moveToThread(thread)

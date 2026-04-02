@@ -10,6 +10,10 @@ import cv2
 from pylsl import StreamInfo, StreamOutlet, local_clock
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
 
+from ..video.color_adjust import apply_color_adjustments
+from ..video.constants import (DEFAULT_BRIGHTNESS, DEFAULT_HUE,
+                               DEFAULT_SATURATION)
+
 
 @dataclass
 class RecordParams:
@@ -24,7 +28,18 @@ class CameraWorker(QObject):
     frameReady = pyqtSignal(int, object)
     status = pyqtSignal(str)
 
-    def __init__(self, cam_index: int, devnode: str, label: str, fps: int, size: Tuple[int, int], preview_fps: int = 15):
+    def __init__(
+        self,
+        cam_index: int,
+        devnode: str,
+        label: str,
+        fps: int,
+        size: Tuple[int, int],
+        preview_fps: int = 15,
+        brightness: Optional[int] = None,
+        hue: Optional[int] = None,
+        saturation: Optional[int] = None,
+    ):
         super().__init__()
         self.cam_index = int(cam_index)
         self.devnode = devnode
@@ -32,6 +47,19 @@ class CameraWorker(QObject):
         self.fps = int(fps)
         self.w, self.h = int(size[0]), int(size[1])
         self.preview_fps = max(1, int(preview_fps))
+        self.brightness = brightness
+        self.hue = hue
+        self.saturation = saturation
+        # Color (brightness, hue, saturation) adjustments for MacOS only
+        # On Linux, color settings are controllable via V4L2
+        self._apply_color_adjustments = (
+            sys.platform == "darwin"
+            and (
+                (self.brightness is not None and int(self.brightness) != DEFAULT_BRIGHTNESS)
+                or (self.hue is not None and int(self.hue) != DEFAULT_HUE)
+                or (self.saturation is not None and int(self.saturation) != DEFAULT_SATURATION)
+            )
+        )
 
         self._running = False
         self.cap: Optional[cv2.VideoCapture] = None
@@ -127,6 +155,8 @@ class CameraWorker(QObject):
             if not ok or frame is None:
                 time.sleep(0.005)
                 continue
+            if self._apply_color_adjustments:
+                frame = apply_color_adjustments(frame, self.brightness, self.hue, self.saturation)
 
             # ---- handle recording requests inside worker thread ----
             if self._stop_record_request and self.writer is not None:
