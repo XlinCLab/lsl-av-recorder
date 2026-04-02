@@ -27,7 +27,9 @@ def _empty_capabilities() -> Dict[str, Any]:
         "brightness_range": None,
         "brightness_default": None,
         "hue_range": None,
+        "hue_default": None,
         "saturation_range": None,
+        "saturation_default": None,
     }
 
 
@@ -49,7 +51,9 @@ def _linux_camera_capabilities(devnode: str) -> Dict[str, Any]:
     caps["brightness_range"] = _extract_range(ctrl_text, "brightness")
     caps["brightness_default"] = _extract_default(ctrl_text, "brightness")
     caps["hue_range"] = _extract_range(ctrl_text, "hue")
+    caps["hue_default"] = _extract_default(ctrl_text, "hue")
     caps["saturation_range"] = _extract_range(ctrl_text, "saturation")
+    caps["saturation_default"] = _extract_default(ctrl_text, "saturation")
     exposure_menu = _parse_v4l2_menu(ctrl_text, "exposure_auto")
     if exposure_menu:
         caps["exposure_auto_menu"] = exposure_menu

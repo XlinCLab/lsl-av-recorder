@@ -55,8 +55,14 @@ class CameraPanel(QWidget):
         self._brightness_auto_defaulted = False
         brightness_value = cam_cfg.Brightness if cam_cfg.Brightness is not None else DEFAULT_BRIGHTNESS
         self.brightness = self._init_brightness(int(brightness_value))
-        self.hue = self._init_hue(int(cam_cfg.Hue or 0))
-        self.saturation = self._init_saturation(int(cam_cfg.Saturation or 100))
+        self._hue_configured = cam_cfg.Hue is not None
+        self._hue_auto_defaulted = False
+        hue_value = cam_cfg.Hue if cam_cfg.Hue is not None else 0
+        self.hue = self._init_hue(int(hue_value))
+        self._saturation_configured = cam_cfg.Saturation is not None
+        self._saturation_auto_defaulted = False
+        saturation_value = cam_cfg.Saturation if cam_cfg.Saturation is not None else 100
+        self.saturation = self._init_saturation(int(saturation_value))
         self.pixel_format = self._init_pixel_format(getattr(cam_cfg, "PixelFormat", "") or DEFAULT_PIXEL_FORMAT)
 
         self.auto_exposure = QCheckBox("On")
@@ -451,7 +457,9 @@ class CameraPanel(QWidget):
         brightness_range = caps.get("brightness_range")
         brightness_default = caps.get("brightness_default")
         hue_range = caps.get("hue_range")
+        hue_default = caps.get("hue_default")
         saturation_range = caps.get("saturation_range")
+        saturation_default = caps.get("saturation_default")
         self.brightness.setEnabled(bool(brightness_range))
         self.hue.setEnabled(bool(hue_range))
         self.saturation.setEnabled(bool(saturation_range))
@@ -471,10 +479,30 @@ class CameraPanel(QWidget):
                 )
         if hue_range:
             self.hue.setRange(hue_range[0], hue_range[1])
-            self.hue.setValue(min(max(self.hue.value(), hue_range[0]), hue_range[1]))
+            if (
+                not self._hue_configured
+                and not self._hue_auto_defaulted
+                and hue_default is not None
+            ):
+                new_value = min(max(int(hue_default), hue_range[0]), hue_range[1])
+                self.hue.setValue(new_value)
+                self._hue_auto_defaulted = True
+            else:
+                self.hue.setValue(min(max(self.hue.value(), hue_range[0]), hue_range[1]))
         if saturation_range:
             self.saturation.setRange(saturation_range[0], saturation_range[1])
-            self.saturation.setValue(min(max(self.saturation.value(), saturation_range[0]), saturation_range[1]))
+            if (
+                not self._saturation_configured
+                and not self._saturation_auto_defaulted
+                and saturation_default is not None
+            ):
+                new_value = min(max(int(saturation_default), saturation_range[0]), saturation_range[1])
+                self.saturation.setValue(new_value)
+                self._saturation_auto_defaulted = True
+            else:
+                self.saturation.setValue(
+                    min(max(self.saturation.value(), saturation_range[0]), saturation_range[1])
+                )
 
         auto_exposure_ok = bool(caps.get("supports_auto_exposure"))
         auto_focus_ok = bool(caps.get("supports_auto_focus"))
