@@ -450,7 +450,7 @@ class CameraPanel(QWidget):
 
     def _on_device_name_selected(self):
         self._sync_device_fields_from_combo()
-        self.refresh_capabilities()
+        self.text.append("INFO: Device changed. Click 'Refresh device capabilities' to load supported modes.")
         self.previewConfigChanged.emit()
 
     def refresh_video_devices(self):

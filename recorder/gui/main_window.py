@@ -470,7 +470,9 @@ class MainWindow(QMainWindow):
         self.cam_panels.append(panel)
         self.tabs.addTab(panel, f"Camera {len(self.cam_panels)}")
         self._update_add_camera_button()
-        panel.refresh_capabilities()
+        should_probe = (not is_default) or (len(self.cam_panels) == 1)
+        if should_probe:
+            panel.refresh_capabilities()
 
     def _on_add_camera(self):
         self._add_camera_panel()
