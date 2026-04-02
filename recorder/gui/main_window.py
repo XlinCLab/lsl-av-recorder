@@ -19,6 +19,7 @@ from ..config import AppConfig, VideoCamConfig, load_cfg
 from ..lsl.labrecorder_rcs import LabRecorderRCS
 from ..naming import build_paths
 from ..video.devices import list_video_devices
+from ..video.camera_settings import apply_camera_controls
 from .camera_panel import CameraPanel
 from .preview_manager import PreviewManager
 from .preview_panel import PreviewPanel
@@ -428,6 +429,13 @@ class MainWindow(QMainWindow):
         try:
             # Stop preview workers; recording will supply frames for preview.
             self.preview_mgr.stop_all_previews()
+            # Apply and validate settings
+            # If any settings are invalid, are unsupported, or conflict with each other,
+            # a pop-up warning will appear instead and block the recording start until 
+            # the problematic settings are fixed.
+            if not self._apply_and_validate_camera_settings():
+                self._refresh_previews_from_panels()
+                return
             lsl_streams = self._get_selected_lsl_streams()
             self.controller = RunController(
                 self.cfg,
@@ -447,6 +455,33 @@ class MainWindow(QMainWindow):
             self._update_add_camera_button()
         except Exception as e:
             QMessageBox.critical(self, "Start failed", str(e))
+
+    def _apply_and_validate_camera_settings(self) -> bool:
+        warnings: list[str] = []
+        for panel in self.cam_panels:
+            cam_cfg = panel.to_config()
+            if not cam_cfg.Enabled:
+                continue
+            for msg in panel.validate_settings():
+                warnings.append(f"Camera {cam_cfg.Label}: {msg}")
+            controls = panel.build_controls()
+            if not controls:
+                continue
+            rep = apply_camera_controls(cam_cfg.DevNode, controls)
+            failed = rep.get("failed", {})
+            if failed:
+                failed_items = ", ".join(f"{k}={v}" for k, v in failed.items())
+                warnings.append(f"Camera {cam_cfg.Label}: failed to apply {failed_items}")
+
+        if warnings:
+            body = "Some camera settings may not be supported:\n\n"
+            body += "\n".join(f"- {msg}" for msg in warnings)
+            body += "\n\nPlease adjust settings before starting the run."
+            QMessageBox.warning(self, "Camera settings warning", body)
+            for msg in warnings:
+                self.log(msg, loglevel="WARNING")
+            return False
+        return True
 
     def _stop_preview_for_cam(self, cam_cfg: VideoCamConfig) -> bool:
         cam_index = int(cam_cfg.DeviceIndex)

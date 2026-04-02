@@ -160,6 +160,60 @@ class CameraPanel(QWidget):
         widget.setCurrentIndex(idx if idx >= 0 else 0)
         return widget
 
+    def build_controls(self) -> dict[str, Any]:
+        cfg = self.to_config()
+        controls: dict[str, Any] = {}
+        if cfg.Width:
+            controls["width"] = cfg.Width
+        if cfg.Height:
+            controls["height"] = cfg.Height
+        if cfg.FPS:
+            controls["fps"] = cfg.FPS
+        if self.brightness.isEnabled():
+            controls["brightness"] = cfg.Brightness
+        if self.hue.isEnabled():
+            controls["hue"] = cfg.Hue
+        if self.saturation.isEnabled():
+            controls["saturation"] = cfg.Saturation
+        if self.pixel_format.isEnabled():
+            controls["pixel_format"] = cfg.PixelFormat
+        if self.auto_exposure.isEnabled():
+            controls["auto_exposure"] = (
+                self._auto_exposure_values["auto"]
+                if cfg.AutoExposure
+                else self._auto_exposure_values["manual"]
+            )
+        if self.auto_focus.isEnabled():
+            controls["auto_focus"] = V4L2_AUTO_FOCUS_MODE if cfg.AutoFocus else V4L2_MANUAL_FOCUS_MODE
+        return controls
+
+    def validate_settings(self) -> list[str]:
+        messages: list[str] = []
+        if not self._modes and not self._modes_by_format:
+            return messages
+        fps = int(self.fps.currentData() or DEFAULT_CAMERA_FPS)
+        width, height = self._selected_resolution()
+        pf = self.pixel_format.currentText().strip().upper()
+        fmt_info = f" with pixel format {pf}" if pf else ""
+        if self._modes_by_format and pf and pf not in self._modes_by_format:
+            messages.append(f"Pixel format {pf} is not supported for this camera.")
+            return messages
+        if self._modes:
+            if not any(mw == width and mh == height for mw, mh, _ in self._modes):
+                messages.append(f"Resolution {width}x{height} is not supported{fmt_info}.")
+                return messages
+            supported_fps = self._fps_for_resolution((width, height))
+            if fps not in supported_fps:
+                if supported_fps:
+                    fps_list = ", ".join(str(v) for v in supported_fps)
+                    messages.append(
+                        f"FPS {fps} is not supported for {width}x{height}{fmt_info}. "
+                        f"Supported FPS: {fps_list}."
+                    )
+                else:
+                    messages.append(f"FPS {fps} is not supported for {width}x{height}{fmt_info}.")
+        return messages
+
     def set_remove_enabled(self, enabled: bool):
         self.btn_remove.setEnabled(enabled)
 
@@ -541,32 +595,8 @@ class CameraPanel(QWidget):
 
     def on_apply(self):
         dev = self.devnode.text().strip()
-
         # Gather controls from the UI
-        cfg = self.to_config()
-        controls: dict[str, Any] = {}
-        if cfg.Width:
-            controls["width"] = cfg.Width
-        if cfg.Height:
-            controls["height"] = cfg.Height
-        if cfg.FPS:
-            controls["fps"] = cfg.FPS
-        if self.brightness.isEnabled():
-            controls["brightness"] = cfg.Brightness
-        if self.hue.isEnabled():
-            controls["hue"] = cfg.Hue
-        if self.saturation.isEnabled():
-            controls["saturation"] = cfg.Saturation
-        if self.pixel_format.isEnabled():
-            controls["pixel_format"] = cfg.PixelFormat
-        if self.auto_exposure.isEnabled():
-            controls["auto_exposure"] = (
-                self._auto_exposure_values["auto"]
-                if cfg.AutoExposure
-                else self._auto_exposure_values["manual"]
-            )
-        if self.auto_focus.isEnabled():
-            controls["auto_focus"] = V4L2_AUTO_FOCUS_MODE if cfg.AutoFocus else V4L2_MANUAL_FOCUS_MODE
+        controls = self.build_controls()
 
         if not controls:
             self.text.append("No controls to apply")
