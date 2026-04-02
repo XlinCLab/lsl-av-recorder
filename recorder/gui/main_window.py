@@ -27,6 +27,7 @@ from .run_controller import RunController
 
 class MainWindow(QMainWindow):
     log_signal = pyqtSignal(str)
+    preview_frame_signal = pyqtSignal(int, object)
 
     def __init__(self, cfg_path: Optional[str] = None):
         super().__init__()
@@ -180,6 +181,7 @@ class MainWindow(QMainWindow):
         # Preview wall
         self.preview_panel = PreviewPanel()
         self.preview_mgr = PreviewManager(self)
+        self.preview_frame_signal.connect(self.preview_mgr.on_frame)
 
         # Camera tabs
         self.cam_panels = []
@@ -424,12 +426,15 @@ class MainWindow(QMainWindow):
     def on_start(self):
         self.pull_gui_into_cfg()
         try:
+            # Stop preview workers; recording will supply frames for preview.
+            self.preview_mgr.stop_all_previews()
             lsl_streams = self._get_selected_lsl_streams()
             self.controller = RunController(
                 self.cfg,
                 status_cb=self.log,
                 lsl_streams=lsl_streams,
                 preview_release_cb=self._stop_preview_for_cam,
+                preview_frame_cb=self.preview_frame_signal.emit,
             )
             self._open_run_log()
             self.controller.start()

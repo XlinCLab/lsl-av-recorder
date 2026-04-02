@@ -2,7 +2,7 @@ import sys
 import threading
 import time
 import traceback
-from typing import Callable
+from typing import Callable, Optional
 
 import cv2
 from pylsl import local_clock
@@ -18,11 +18,24 @@ class VideoRecorder:
         output_path: str,
         status_cb: Callable = None,
         frame_cb: Callable = None,
+        preview_cb: Optional[Callable] = None,
+        preview_fps: Optional[float] = None,
     ):
         self.cam = cam_cfg
         self.output_path = output_path
         self.status_cb = status_cb
         self.frame_cb = frame_cb
+        self.preview_cb = preview_cb
+        self._preview_interval = None
+        self._next_preview_ts = None
+        if self.preview_cb and preview_fps:
+            try:
+                fps_val = float(preview_fps)
+                if fps_val > 0:
+                    self._preview_interval = 1.0 / fps_val
+            except Exception as exc:
+                self.warning(f"Error setting preview FPS: {exc}")
+                self._preview_interval = None
 
         self.cap = None
         self.writer = None
@@ -103,6 +116,17 @@ class VideoRecorder:
             )
             self._last_fps_warn_ts = now
 
+    def _maybe_emit_preview(self, frame):
+        if not self.preview_cb or self._preview_interval is None:
+            return
+        now = time.monotonic()
+        if self._next_preview_ts is None or now >= self._next_preview_ts:
+            try:
+                self.preview_cb(frame.copy())
+            except Exception as exc:
+                self.warning(f"Preview callback failed: {exc}")
+            self._next_preview_ts = now + self._preview_interval
+
     def start(self):
         if sys.platform == "darwin":
             self.cap = cv2.VideoCapture(self.cam.DeviceIndex, cv2.CAP_AVFOUNDATION)
@@ -170,6 +194,8 @@ class VideoRecorder:
                     frame = apply_color_adjustments(
                         frame, self._brightness, self._hue, self._saturation
                     )
+
+                self._maybe_emit_preview(frame)
 
                 self._read_fail_count = 0
                 now = time.perf_counter()
