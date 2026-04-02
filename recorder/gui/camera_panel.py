@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtWidgets import (QCheckBox, QComboBox, QFormLayout, QLineEdit,
                              QPushButton, QSpinBox, QTextEdit, QVBoxLayout,
                              QWidget)
@@ -22,12 +22,48 @@ from ..video.constants import (BRIGHTNESS_RANGE, DEFAULT_BRIGHTNESS,
 from ..video.devices import list_video_devices
 
 
+class _CapabilitiesThread(QThread):
+    finished_caps = pyqtSignal(dict)
+    failed = pyqtSignal(str)
+
+    def __init__(self, devnode: str, device_index: int, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self._devnode = devnode
+        self._device_index = device_index
+
+    def run(self):
+        try:
+            caps = get_camera_capabilities(self._devnode, self._device_index)
+            self.finished_caps.emit(caps)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+class _ApplyControlsThread(QThread):
+    finished_apply = pyqtSignal(dict)
+    failed = pyqtSignal(str)
+
+    def __init__(self, devnode: str, controls: dict[str, Any], parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self._devnode = devnode
+        self._controls = controls
+
+    def run(self):
+        try:
+            rep = apply_camera_controls(self._devnode, self._controls)
+            self.finished_apply.emit(rep)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
 class CameraPanel(QWidget):
     log = pyqtSignal(str)
     previewConfigChanged = pyqtSignal()
     removeRequested = pyqtSignal(object)
     applyStarted = pyqtSignal()
     applyFinished = pyqtSignal()
+    capabilitiesLoadStarted = pyqtSignal()
+    capabilitiesLoadFinished = pyqtSignal()
 
     def __init__(self, cam_cfg: VideoCamConfig, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -36,6 +72,10 @@ class CameraPanel(QWidget):
         self._modes: list[tuple[int, int, set[int]]] = []
         self._modes_by_format: dict[str, list[tuple[int, int, set[int]]]] = {}
         self._mode_support_cache: dict[tuple[int, int, int, str], bool] = {}
+        self._caps_loading = False
+        self._caps_thread: Optional[_CapabilitiesThread] = None
+        self._apply_loading = False
+        self._apply_thread: Optional[_ApplyControlsThread] = None
 
         self.enabled = QCheckBox("Enabled (starts preview)")
         self.enabled.setChecked(bool(cam_cfg.Enabled))
@@ -116,8 +156,6 @@ class CameraPanel(QWidget):
         self.fps.currentIndexChanged.connect(self._on_fps_changed)
         self.resolution.currentIndexChanged.connect(self._on_resolution_changed)
         self.pixel_format.currentIndexChanged.connect(self._on_pixel_format_changed)
-
-        self.refresh_capabilities()
 
     def _init_fps(self, fps: int) -> QComboBox:
         widget = QComboBox()
@@ -443,11 +481,20 @@ class CameraPanel(QWidget):
         self.previewConfigChanged.emit()
 
     def refresh_capabilities(self):
+        if self._caps_loading:
+            return
         dev = self.devnode.text().strip()
         idx = int(self.device_index.value())
-        current_fps = int(self.fps.currentData() or DEFAULT_CAMERA_FPS)
-        current_pf = self.pixel_format.currentText()
-        caps = get_camera_capabilities(dev, idx)
+        self._caps_loading = True
+        self.capabilitiesLoadStarted.emit()
+
+        thread = _CapabilitiesThread(dev, idx, parent=self)
+        self._caps_thread = thread
+        thread.finished_caps.connect(self._on_capabilities_ready)
+        thread.failed.connect(self._on_capabilities_error)
+        thread.start()
+
+    def _on_capabilities_ready(self, caps: dict):
         self._mode_support_cache.clear()
 
         raw_modes = caps.get("modes") or []
@@ -477,6 +524,8 @@ class CameraPanel(QWidget):
             except Exception:
                 continue
 
+        current_fps = int(self.fps.currentData() or DEFAULT_CAMERA_FPS)
+        current_pf = self.pixel_format.currentText()
         if self._modes:
             if self._modes_by_format:
                 self._set_modes_for_pixel_format(current_pf)
@@ -575,6 +624,23 @@ class CameraPanel(QWidget):
                 "manual": manual_val if manual_val is not None else V4L2_MANUAL_EXPOSURE_MODE,
             }
 
+        self._finish_capabilities_load()
+
+    def _on_capabilities_error(self, msg: str):
+        self.text.append(f"ERROR: Failed to refresh capabilities: {msg}")
+        self._finish_capabilities_load()
+
+    def _finish_capabilities_load(self):
+        self._caps_loading = False
+        self.capabilitiesLoadFinished.emit()
+        if self._caps_thread:
+            try:
+                self._caps_thread.quit()
+                self._caps_thread.wait(1000)
+            except Exception:
+                pass
+            self._caps_thread = None
+
     def to_config(self) -> VideoCamConfig:
         c = VideoCamConfig()
         c.Enabled = self.enabled.isChecked()
@@ -602,13 +668,37 @@ class CameraPanel(QWidget):
             self.text.append("No controls to apply")
             return
 
+        if self._apply_loading:
+            return
+        self._apply_loading = True
         self.applyStarted.emit()
-        rep = apply_camera_controls(dev, controls)
-        # Print summary of successfully applied and failed settings
+
+        thread = _ApplyControlsThread(dev, controls, parent=self)
+        self._apply_thread = thread
+        thread.finished_apply.connect(lambda rep: self._on_apply_done(dev, rep))
+        thread.failed.connect(self._on_apply_error)
+        thread.start()
+
+    def _on_apply_done(self, dev: str, rep: dict):
         summary = summarize_control_application(
             dev,
-            rep["applied"],
-            rep["failed"],
+            rep.get("applied", {}),
+            rep.get("failed", {}),
         )
         self.text.append(summary)
+        self._finish_apply()
+
+    def _on_apply_error(self, msg: str):
+        self.text.append(f"ERROR: Failed to apply settings: {msg}")
+        self._finish_apply()
+
+    def _finish_apply(self):
+        self._apply_loading = False
         self.applyFinished.emit()
+        if self._apply_thread:
+            try:
+                self._apply_thread.quit()
+                self._apply_thread.wait(1000)
+            except Exception:
+                pass
+            self._apply_thread = None
