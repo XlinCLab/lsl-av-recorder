@@ -96,3 +96,19 @@ def _probe_mac_supported_fps(modes: List[Tuple[int, int, list[int]]]) -> list[in
     if not modes:
         return []
     return sorted({fps for _, _, fps_values in modes for fps in fps_values})
+
+
+def probe_avfoundation_mode(
+    device: str,
+    width: int | None,
+    height: int | None,
+    fps: int,
+    pixel_format: str | None = None,
+) -> bool:
+    args = _build_mode_args(width, height, fps)
+    if pixel_format:
+        args += ["-pixel_format", pixel_format]
+    ok, text = _ffmpeg_avfoundation_probe(device, args)
+    if pixel_format:
+        return _pixel_format_probe_succeeded(text, ok)
+    return ok

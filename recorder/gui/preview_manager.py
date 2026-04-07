@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import os
 from typing import Dict
 
 from PyQt6.QtCore import QObject, Qt, QThread
 from PyQt6.QtGui import QImage, QPixmap
 
-from ..naming import video_filename
-from .camera_worker import CameraWorker, RecordParams
+from .camera_worker import CameraWorker
 
 
 class PreviewManager(QObject):
@@ -16,6 +14,31 @@ class PreviewManager(QObject):
         self.main = main_window
         self.threads: Dict[int, QThread] = {}
         self.workers: Dict[int, CameraWorker] = {}
+
+    def _finalize_stop(self, cam_index: int):
+        worker = self.workers.pop(cam_index, None)
+        thread = self.threads.pop(cam_index, None)
+        if worker:
+            worker.deleteLater()
+        if thread:
+            thread.deleteLater()
+        self.main.preview_panel.set_active_cameras(self.workers.keys())
+
+    def _request_stop(self, cam_index: int):
+        idx = int(cam_index)
+        worker = self.workers.get(idx)
+        thread = self.threads.get(idx)
+        if not thread:
+            return
+        if worker:
+            worker.stop_preview()
+        if not getattr(thread, "_stop_connected", False):
+            thread.finished.connect(lambda idx=idx: self._finalize_stop(idx))
+            thread._stop_connected = True
+        thread.quit()
+        thread.wait(1000)
+        if not thread.isRunning():
+            self._finalize_stop(idx)
 
     def start_cam_preview(self, cam_cfg):
         idx = int(cam_cfg.DeviceIndex)
@@ -29,6 +52,9 @@ class PreviewManager(QObject):
             fps=cam_cfg.FPS,
             size=(cam_cfg.Width, cam_cfg.Height),
             preview_fps=getattr(self.main.cfg.Video, "PreviewFPS", 15),
+            brightness=cam_cfg.Brightness,
+            hue=cam_cfg.Hue,
+            saturation=cam_cfg.Saturation,
         )
         thread = QThread()
         worker.moveToThread(thread)
@@ -43,32 +69,23 @@ class PreviewManager(QObject):
         self.main.preview_panel.set_active_cameras(self.workers.keys())
 
     def stop_all_previews(self):
-        for w in self.workers.values():
-            w.stop_preview()
-        for t in self.threads.values():
-            t.quit()
-            t.wait(1000)
-        self.workers.clear()
-        self.threads.clear()
+        for idx in list(self.workers.keys()):
+            self._request_stop(idx)
         self.main.preview_panel.set_active_cameras([])
 
-    def start_recording_all(self, out_dir: str, base_name: str, video_container: str, codec: str):
+    def stop_cam_preview(self, cam_index: int) -> bool:
+        idx = int(cam_index)
+        exists = idx in self.workers
+        if exists:
+            self._request_stop(idx)
+        return exists
+
+    def start_preview_all(self):
         for panel in self.main.cam_panels:
             cam_cfg = panel.to_config()
             if not cam_cfg.Enabled:
                 continue
             self.start_cam_preview(cam_cfg)
-            idx = int(cam_cfg.DeviceIndex)
-            w = self.workers.get(idx)
-            if not w:
-                continue
-            out_path = os.path.join(out_dir, video_filename(base_name, idx, cam_cfg.Label, video_container))
-            rp = RecordParams(out_path=out_path, fps=cam_cfg.FPS, size=(cam_cfg.Width, cam_cfg.Height), codec=codec)
-            w.request_start_recording(rp)
-
-    def stop_recording_all(self):
-        for w in self.workers.values():
-            w.request_stop_recording()
 
     def on_frame(self, cam_index: int, frame_bgr):
         lbl = self.main.preview_panel.ensure_label(int(cam_index))

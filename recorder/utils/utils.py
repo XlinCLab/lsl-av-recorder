@@ -35,3 +35,14 @@ def _extract_range(text: str, name: str):
     if not m:
         return None
     return (int(m.group(1)), int(m.group(2)))
+
+
+def _extract_default(text: str, name: str):
+    m = re.search(
+        rf"^\s*{name}\b.*\bdefault=(-?\d+)\b",
+        text,
+        re.MULTILINE,
+    )
+    if not m:
+        return None
+    return int(m.group(1))

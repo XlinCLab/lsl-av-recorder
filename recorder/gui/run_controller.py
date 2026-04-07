@@ -28,9 +28,13 @@ class RunController:
         cfg: AppConfig,
         status_cb: Optional[Callable[[str], None]] = None,
         lsl_streams: Optional[List[StreamInfo]] = None,
+        preview_release_cb: Optional[Callable[[VideoCamConfig], bool]] = None,
+        preview_frame_cb: Optional[Callable[[int, object], None]] = None,
     ):
         self.cfg = cfg
         self.status_cb = status_cb
+        self.preview_release_cb = preview_release_cb
+        self.preview_frame_cb = preview_frame_cb
         self._running = False
 
         # Audio and video streams
@@ -343,6 +347,10 @@ class RunController:
 
     def _initialize_video_stream(self, cam: VideoCamConfig):
         video_path = self._get_video_output_path(cam)
+        preview_cb = None
+        if self.preview_frame_cb:
+            cam_index = int(cam.DeviceIndex)
+            preview_cb = lambda frame, idx=cam_index: self.preview_frame_cb(idx, frame)
         vr = VideoRecorder(
             cam_cfg=cam,
             output_path=video_path,
@@ -350,6 +358,8 @@ class RunController:
             frame_cb=lambda ts, idx, label=cam.Label: self._on_video_frame(
                 label, ts, idx
             ),
+            preview_cb=preview_cb,
+            preview_fps=getattr(self.cfg.Video, "PreviewFPS", 15),
         )
         self.videos.append(vr)
         self.info(f"Initialized video stream for camera {cam.Label}")
@@ -386,8 +396,20 @@ class RunController:
         # NB: Start video before audio
         if self.video_enabled:
             for vr in self.videos:
-                vr.start()
-                self.info(f"Video capture started: {vr.cam.Label}")
+                started = vr.start()
+                if not started and self.preview_release_cb:
+                    self.warning(
+                        f"Video capture failed to start: {vr.cam.Label}; "
+                        "stopping preview and retrying."
+                    )
+                    released = self.preview_release_cb(vr.cam)
+                    if released:
+                        sleep(0.2)
+                        started = vr.start()
+                if started:
+                    self.info(f"Video capture started: {vr.cam.Label}")
+                else:
+                    self.error(f"Video capture failed to start: {vr.cam.Label}")
         if self.audio_enabled:
             self.audio.start()
             self.info("Audio capture started")

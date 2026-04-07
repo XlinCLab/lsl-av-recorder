@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import os
+import threading
 from datetime import datetime
 from typing import List, Optional
 
 from pylsl import StreamInfo
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox,
                              QDoubleSpinBox, QFileDialog, QFormLayout,
                              QHBoxLayout, QLabel, QLineEdit, QMainWindow,
@@ -18,6 +19,7 @@ from ..config import AppConfig, VideoCamConfig, load_cfg
 from ..lsl.labrecorder_rcs import LabRecorderRCS
 from ..naming import build_paths
 from ..video.devices import list_video_devices
+from ..video.camera_settings import apply_camera_controls
 from .camera_panel import CameraPanel
 from .preview_manager import PreviewManager
 from .preview_panel import PreviewPanel
@@ -25,12 +27,26 @@ from .run_controller import RunController
 
 
 class MainWindow(QMainWindow):
+    log_signal = pyqtSignal(str)
+    preview_frame_signal = pyqtSignal(int, object)
+
     def __init__(self, cfg_path: Optional[str] = None):
         super().__init__()
         self.setWindowTitle("LSL AV Recorder (Audio via LSL, LabRecorder XDF)")
         self._recording_active = False
         self.logbox = QTextEdit()
         self.logbox.setReadOnly(True)
+        self._show_debug = os.getenv("LSL_AV_RECORDER_DEBUG", "").strip().lower() in {
+            "1",
+            "true",
+        }
+        self.debug_logs = QCheckBox("Show debug logs")
+        self.debug_logs.setChecked(self._show_debug)
+        self.debug_logs.stateChanged.connect(self._on_debug_logs_changed)
+        self.log_signal.connect(self._append_log)
+        self._log_file = None
+        self._log_lock = threading.Lock()
+        self._log_path = None
         self.cfg: AppConfig = load_cfg(cfg_path) if cfg_path else load_cfg("example.cfg")
         self.controller: RunController = None
 
@@ -163,14 +179,18 @@ class MainWindow(QMainWindow):
         lf.addRow(self.lsl_discover_btn)
         lf.addRow(self.lsl_streams_table)
 
+        # Preview wall
+        self.preview_panel = PreviewPanel()
+        self.preview_mgr = PreviewManager(self)
+        self.preview_frame_signal.connect(self.preview_mgr.on_frame)
+        self._preview_refresh_timer = QTimer(self)
+        self._preview_refresh_timer.setSingleShot(True)
+        self._preview_refresh_timer.timeout.connect(self._do_refresh_previews_from_panels)
+
         # Camera tabs
         self.cam_panels = []
         self.max_cams = 4
         self._init_camera_tabs()
-
-        # Preview wall
-        self.preview_panel = PreviewPanel()
-        self.preview_mgr = PreviewManager(self)
         # Show camera previews if video is enabled in config
         if self.cfg.Video.Enabled:
             for panel in self.cam_panels:
@@ -183,6 +203,7 @@ class MainWindow(QMainWindow):
         left_layout.addLayout(btn_row)
         left_layout.addWidget(self.tabs)
         left_layout.addWidget(QLabel("Log"))
+        left_layout.addWidget(self.debug_logs)
         left_layout.addWidget(self.logbox)
         left.setLayout(left_layout)
 
@@ -209,6 +230,11 @@ class MainWindow(QMainWindow):
         self._update_labrecorder_controls()
 
     def _refresh_previews_from_panels(self):
+        if self._preview_refresh_timer.isActive():
+            self._preview_refresh_timer.stop()
+        self._preview_refresh_timer.start(200)
+
+    def _do_refresh_previews_from_panels(self):
         # Don't reconfigure preview workers while a run is active/recording.
         if not self.btn_start.isEnabled():
             return
@@ -222,10 +248,56 @@ class MainWindow(QMainWindow):
             if cam_cfg.Enabled:
                 self.preview_mgr.start_cam_preview(cam_cfg)
 
-    def log(self, msg: str, loglevel: str = "INFO"):
+    def _format_log_line(self, msg: str, loglevel: str) -> str:
         now = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-        msg = f"{now} {loglevel}: {msg}"
-        self.logbox.append(msg)
+        return f"{now} {loglevel}: {msg}"
+
+    def _append_log(self, line: str):
+        self.logbox.append(line)
+
+    def _write_log_line(self, line: str):
+        if not self._log_file:
+            return
+        with self._log_lock:
+            try:
+                self._log_file.write(line + "\n")
+                self._log_file.flush()
+            except Exception:
+                pass
+
+    def log(self, msg: str, loglevel: str = "INFO"):
+        if loglevel == "DEBUG" and not self._show_debug:
+            return
+        line = self._format_log_line(msg, loglevel)
+        self._write_log_line(line)
+        if QThread.currentThread() != self.thread():
+            self.log_signal.emit(line)
+            return
+        self._append_log(line)
+
+    def _on_debug_logs_changed(self, _state: int):
+        self._show_debug = self.debug_logs.isChecked()
+
+    def _open_run_log(self):
+        self._close_run_log()
+        if not self.controller:
+            return
+        try:
+            self._log_path = os.path.join(self.controller.outdir, "run.log")
+            self._log_file = open(self._log_path, "a", encoding="utf-8")
+        except Exception as exc:
+            self._log_file = None
+            self._log_path = None
+            self.log(f"Could not open run log: {exc}", loglevel="WARNING")
+
+    def _close_run_log(self):
+        if self._log_file:
+            try:
+                self._log_file.close()
+            except Exception:
+                pass
+        self._log_file = None
+        self._log_path = None
 
     def _populate_audio_devices(self):
         self.audio_device.clear()
@@ -287,7 +359,8 @@ class MainWindow(QMainWindow):
         panel = CameraPanel(cam_cfg)
         if is_default:
             panel.enabled.setChecked(True)
-        panel.previewConfigChanged.connect(self._refresh_previews_from_panels)
+        panel.applyStarted.connect(self.preview_mgr.stop_all_previews)
+        panel.applyFinished.connect(self._refresh_previews_from_panels)
         panel.removeRequested.connect(self._on_remove_camera)
         self.cam_panels.append(panel)
         self.tabs.addTab(panel, f"Camera {len(self.cam_panels)}")
@@ -361,20 +434,27 @@ class MainWindow(QMainWindow):
     def on_start(self):
         self.pull_gui_into_cfg()
         try:
+            # Stop preview workers; recording will supply frames for preview.
+            self.preview_mgr.stop_all_previews()
+            # Apply and validate settings
+            # If any settings are invalid, are unsupported, or conflict with each other,
+            # a pop-up warning will appear instead and block the recording start until 
+            # the problematic settings are fixed.
+            if not self._apply_and_validate_camera_settings():
+                self._refresh_previews_from_panels()
+                return
             lsl_streams = self._get_selected_lsl_streams()
-            self.controller = RunController(self.cfg, status_cb=self.log, lsl_streams=lsl_streams)
+            self.controller = RunController(
+                self.cfg,
+                status_cb=self.log,
+                lsl_streams=lsl_streams,
+                preview_release_cb=self._stop_preview_for_cam,
+                preview_frame_cb=self.preview_frame_signal.emit,
+            )
+            self._open_run_log()
             self.controller.start()
 
             paths = build_paths(self.cfg.Output, self.cfg.Prompts)
-
-            # Start video recording (only if video is enabled in config)
-            if self.cfg.Video.Enabled:
-                self.preview_mgr.start_recording_all(
-                    out_dir=paths["base_dir"],
-                    base_name=paths["base_name"],
-                    video_container=self.cfg.Video.Container,
-                    codec=self.cfg.Video.Codec,
-                )
 
             self.btn_start.setEnabled(False)
             self.btn_stop.setEnabled(True)
@@ -383,9 +463,43 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Start failed", str(e))
 
+    def _apply_and_validate_camera_settings(self) -> bool:
+        warnings: list[str] = []
+        for panel in self.cam_panels:
+            cam_cfg = panel.to_config()
+            if not cam_cfg.Enabled:
+                continue
+            for msg in panel.validate_settings():
+                warnings.append(f"Camera {cam_cfg.Label}: {msg}")
+            controls = panel.build_controls()
+            if not controls:
+                continue
+            rep = apply_camera_controls(cam_cfg.DevNode, controls)
+            failed = rep.get("failed", {})
+            if failed:
+                failed_items = ", ".join(f"{k}={v}" for k, v in failed.items())
+                warnings.append(f"Camera {cam_cfg.Label}: failed to apply {failed_items}")
+
+        if warnings:
+            body = "Some camera settings may not be supported:\n\n"
+            body += "\n".join(f"- {msg}" for msg in warnings)
+            body += "\n\nPlease adjust settings before starting the run."
+            QMessageBox.warning(self, "Camera settings warning", body)
+            for msg in warnings:
+                self.log(msg, loglevel="WARNING")
+            return False
+        return True
+
+    def _stop_preview_for_cam(self, cam_cfg: VideoCamConfig) -> bool:
+        cam_index = int(cam_cfg.DeviceIndex)
+        if cam_index not in self.preview_mgr.workers:
+            return False
+        self.log(f"Stopping preview for camera {cam_cfg.Label} (index {cam_index})")
+        return self.preview_mgr.stop_cam_preview(cam_index)
+
     def on_stop(self):
         try:
-            self.preview_mgr.stop_recording_all()
+            self.preview_mgr.stop_all_previews()
             self.controller.stop()
             outdir = os.path.abspath(self.controller.outdir)
             msg = f"Results written to:\n{outdir}\n\nClose the app now?"
@@ -403,6 +517,9 @@ class MainWindow(QMainWindow):
             self.btn_stop.setEnabled(False)
             self._recording_active = False
             self._update_add_camera_button()
+            if self.cfg.Video.Enabled:
+                self._refresh_previews_from_panels()
+            self._close_run_log()
 
     def on_connect_labrecorder(self):
         host = self.labrec_host.text().strip() or self.cfg.LabRecorder.Host
