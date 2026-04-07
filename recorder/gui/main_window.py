@@ -7,23 +7,50 @@ from typing import List, Optional
 
 from pylsl import StreamInfo
 from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
-from PyQt6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox,
-                             QDoubleSpinBox, QFileDialog, QFormLayout,
-                             QHBoxLayout, QLabel, QLineEdit, QMainWindow,
-                             QMessageBox, QPushButton, QSpinBox, QSplitter,
-                             QTableWidget, QTableWidgetItem, QTabWidget,
-                             QTextEdit, QVBoxLayout, QWidget)
+from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
+                             QComboBox, QDoubleSpinBox, QFileDialog,
+                             QFormLayout, QHBoxLayout, QLabel, QLineEdit,
+                             QMainWindow, QMessageBox, QProgressDialog,
+                             QPushButton, QSpinBox, QSplitter, QTableWidget,
+                             QTableWidgetItem, QTabWidget, QTextEdit,
+                             QVBoxLayout, QWidget)
 
 from ..audio.devices import default_input_device_index, list_input_devices
 from ..config import AppConfig, VideoCamConfig, load_cfg
 from ..lsl.labrecorder_rcs import LabRecorderRCS
-from ..naming import build_paths
 from ..video.devices import list_video_devices
 from ..video.camera_settings import apply_camera_controls
 from .camera_panel import CameraPanel
 from .preview_manager import PreviewManager
 from .preview_panel import PreviewPanel
 from .run_controller import RunController
+
+
+class _ApplyAllThread(QThread):
+    finished_apply = pyqtSignal(list)
+    failed = pyqtSignal(str)
+
+    def __init__(self, items: list[dict], parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self._items = items
+
+    def run(self):
+        failed_msgs: list[str] = []
+        try:
+            for item in self._items:
+                label = item.get("label", "Camera")
+                devnode = item.get("devnode", "")
+                controls = item.get("controls") or {}
+                if not controls:
+                    continue
+                rep = apply_camera_controls(devnode, controls)
+                failed = rep.get("failed", {})
+                if failed:
+                    failed_items = ", ".join(f"{k}={v}" for k, v in failed.items())
+                    failed_msgs.append(f"Camera {label}: failed to apply {failed_items}")
+            self.finished_apply.emit(failed_msgs)
+        except Exception as exc:
+            self.failed.emit(str(exc))
 
 
 class MainWindow(QMainWindow):
@@ -183,6 +210,13 @@ class MainWindow(QMainWindow):
         self.preview_panel = PreviewPanel()
         self.preview_mgr = PreviewManager(self)
         self.preview_frame_signal.connect(self.preview_mgr.on_frame)
+        self._cap_load_count = 0
+        self._cap_load_dialog: Optional[QProgressDialog] = None
+        self._apply_count = 0
+        self._apply_dialog: Optional[QProgressDialog] = None
+        self._start_progress_dialog: Optional[QProgressDialog] = None
+        self._start_apply_thread: Optional[_ApplyAllThread] = None
+        self._pending_start_warnings: list[str] = []
         self._preview_refresh_timer = QTimer(self)
         self._preview_refresh_timer.setSingleShot(True)
         self._preview_refresh_timer.timeout.connect(self._do_refresh_previews_from_panels)
@@ -299,6 +333,73 @@ class MainWindow(QMainWindow):
         self._log_file = None
         self._log_path = None
 
+    def _ensure_progress_dialog(self, title: str, message: str) -> QProgressDialog:
+        dlg = QProgressDialog(message, None, 0, 0, self)
+        dlg.setWindowTitle(title)
+        dlg.setCancelButton(None)
+        dlg.setWindowModality(Qt.WindowModality.ApplicationModal)
+        dlg.setMinimumDuration(0)
+        dlg.setAutoClose(False)
+        dlg.setAutoReset(False)
+        return dlg
+
+    def _show_caps_dialog(self):
+        if self._cap_load_dialog is None:
+            self._cap_load_dialog = self._ensure_progress_dialog(
+                "Loading", "Loading camera capabilities..."
+            )
+        self._cap_load_dialog.setLabelText("Loading camera capabilities...")
+        self._cap_load_dialog.show()
+        QApplication.processEvents()
+
+    def _hide_caps_dialog(self):
+        if self._cap_load_dialog:
+            self._cap_load_dialog.hide()
+
+    def _on_caps_load_started(self):
+        self._cap_load_count += 1
+        if self._cap_load_count == 1:
+            self._show_caps_dialog()
+
+    def _on_caps_load_finished(self):
+        self._cap_load_count = max(0, self._cap_load_count - 1)
+        if self._cap_load_count == 0:
+            self._hide_caps_dialog()
+
+    def _show_apply_dialog(self):
+        if self._apply_dialog is None:
+            self._apply_dialog = self._ensure_progress_dialog(
+                "Applying", "Applying camera settings..."
+            )
+        self._apply_dialog.setLabelText("Applying camera settings...")
+        self._apply_dialog.show()
+        QApplication.processEvents()
+
+    def _hide_apply_dialog(self):
+        if self._apply_dialog:
+            self._apply_dialog.hide()
+
+    def _on_apply_started(self):
+        self._apply_count += 1
+        if self._apply_count == 1:
+            self._show_apply_dialog()
+
+    def _on_apply_finished(self):
+        self._apply_count = max(0, self._apply_count - 1)
+        if self._apply_count == 0:
+            self._hide_apply_dialog()
+
+    def _show_start_progress(self, message: str):
+        if self._start_progress_dialog is None:
+            self._start_progress_dialog = self._ensure_progress_dialog("Working", message)
+        self._start_progress_dialog.setLabelText(message)
+        self._start_progress_dialog.show()
+        QApplication.processEvents()
+
+    def _hide_start_progress(self):
+        if self._start_progress_dialog:
+            self._start_progress_dialog.hide()
+
     def _populate_audio_devices(self):
         self.audio_device.clear()
         devs = list_input_devices()
@@ -360,11 +461,18 @@ class MainWindow(QMainWindow):
         if is_default:
             panel.enabled.setChecked(True)
         panel.applyStarted.connect(self.preview_mgr.stop_all_previews)
+        panel.applyStarted.connect(self._on_apply_started)
+        panel.applyFinished.connect(self._on_apply_finished)
         panel.applyFinished.connect(self._refresh_previews_from_panels)
+        panel.capabilitiesLoadStarted.connect(self._on_caps_load_started)
+        panel.capabilitiesLoadFinished.connect(self._on_caps_load_finished)
         panel.removeRequested.connect(self._on_remove_camera)
         self.cam_panels.append(panel)
         self.tabs.addTab(panel, f"Camera {len(self.cam_panels)}")
         self._update_add_camera_button()
+        should_probe = (not is_default) or (len(self.cam_panels) == 1)
+        if should_probe:
+            panel.refresh_capabilities()
 
     def _on_add_camera(self):
         self._add_camera_panel()
@@ -436,13 +544,91 @@ class MainWindow(QMainWindow):
         try:
             # Stop preview workers; recording will supply frames for preview.
             self.preview_mgr.stop_all_previews()
-            # Apply and validate settings
-            # If any settings are invalid, are unsupported, or conflict with each other,
-            # a pop-up warning will appear instead and block the recording start until 
-            # the problematic settings are fixed.
-            if not self._apply_and_validate_camera_settings():
-                self._refresh_previews_from_panels()
-                return
+            self._begin_start_sequence()
+        except Exception as e:
+            QMessageBox.critical(self, "Start failed", str(e))
+
+    def _begin_start_sequence(self):
+        if self._start_apply_thread and self._start_apply_thread.isRunning():
+            return
+        items, warnings = self._collect_camera_apply_items()
+        self._pending_start_warnings = warnings
+        self.btn_start.setEnabled(False)
+        if items:
+            self._show_start_progress("Applying camera settings...")
+            thread = _ApplyAllThread(items, parent=self)
+            self._start_apply_thread = thread
+            thread.finished_apply.connect(self._on_apply_all_finished)
+            thread.failed.connect(self._on_apply_all_error)
+            thread.start()
+            return
+        self._finish_start_after_apply([])
+
+    def _collect_camera_apply_items(self) -> tuple[list[dict], list[str]]:
+        items: list[dict] = []
+        warnings: list[str] = []
+        for panel in self.cam_panels:
+            cam_cfg = panel.to_config()
+            if not cam_cfg.Enabled:
+                continue
+            for msg in panel.validate_settings():
+                warnings.append(f"Camera {cam_cfg.Label}: {msg}")
+            controls = panel.build_controls()
+            items.append(
+                {
+                    "label": cam_cfg.Label,
+                    "devnode": cam_cfg.DevNode,
+                    "controls": controls,
+                }
+            )
+        return items, warnings
+
+    def _on_apply_all_finished(self, failed_msgs: list[str]):
+        self._hide_start_progress()
+        if self._start_apply_thread:
+            try:
+                self._start_apply_thread.quit()
+                self._start_apply_thread.wait(1000)
+            except Exception:
+                pass
+            self._start_apply_thread = None
+        self._finish_start_after_apply(failed_msgs)
+
+    def _on_apply_all_error(self, msg: str):
+        self._hide_start_progress()
+        if self._start_apply_thread:
+            try:
+                self._start_apply_thread.quit()
+                self._start_apply_thread.wait(1000)
+            except Exception:
+                pass
+            self._start_apply_thread = None
+        QMessageBox.critical(self, "Apply failed", msg)
+        self.log(f"Apply failed: {msg}", loglevel="ERROR")
+        self.btn_start.setEnabled(True)
+        self.btn_stop.setEnabled(False)
+        self._refresh_previews_from_panels()
+
+    def _finish_start_after_apply(self, failed_msgs: list[str]):
+        warnings = list(self._pending_start_warnings or [])
+        warnings.extend(failed_msgs or [])
+        self._pending_start_warnings = []
+        if warnings:
+            body = "Some camera settings may not be supported:\n\n"
+            body += "\n".join(f"- {msg}" for msg in warnings)
+            body += "\n\nPlease adjust settings before starting the run."
+            QMessageBox.warning(self, "Camera settings warning", body)
+            for msg in warnings:
+                self.log(msg, loglevel="WARNING")
+            self.btn_start.setEnabled(True)
+            self.btn_stop.setEnabled(False)
+            self._refresh_previews_from_panels()
+            return
+        self._start_recording()
+
+    def _start_recording(self):
+        try:
+            self._show_start_progress("Starting recording...")
             lsl_streams = self._get_selected_lsl_streams()
             self.controller = RunController(
                 self.cfg,
@@ -453,42 +639,17 @@ class MainWindow(QMainWindow):
             )
             self._open_run_log()
             self.controller.start()
-
-            paths = build_paths(self.cfg.Output, self.cfg.Prompts)
-
             self.btn_start.setEnabled(False)
             self.btn_stop.setEnabled(True)
             self._recording_active = True
             self._update_add_camera_button()
         except Exception as e:
             QMessageBox.critical(self, "Start failed", str(e))
-
-    def _apply_and_validate_camera_settings(self) -> bool:
-        warnings: list[str] = []
-        for panel in self.cam_panels:
-            cam_cfg = panel.to_config()
-            if not cam_cfg.Enabled:
-                continue
-            for msg in panel.validate_settings():
-                warnings.append(f"Camera {cam_cfg.Label}: {msg}")
-            controls = panel.build_controls()
-            if not controls:
-                continue
-            rep = apply_camera_controls(cam_cfg.DevNode, controls)
-            failed = rep.get("failed", {})
-            if failed:
-                failed_items = ", ".join(f"{k}={v}" for k, v in failed.items())
-                warnings.append(f"Camera {cam_cfg.Label}: failed to apply {failed_items}")
-
-        if warnings:
-            body = "Some camera settings may not be supported:\n\n"
-            body += "\n".join(f"- {msg}" for msg in warnings)
-            body += "\n\nPlease adjust settings before starting the run."
-            QMessageBox.warning(self, "Camera settings warning", body)
-            for msg in warnings:
-                self.log(msg, loglevel="WARNING")
-            return False
-        return True
+            self.btn_start.setEnabled(True)
+            self.btn_stop.setEnabled(False)
+            self._refresh_previews_from_panels()
+        finally:
+            self._hide_start_progress()
 
     def _stop_preview_for_cam(self, cam_cfg: VideoCamConfig) -> bool:
         cam_index = int(cam_cfg.DeviceIndex)
