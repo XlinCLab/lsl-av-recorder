@@ -247,8 +247,8 @@ class MainWindow(QMainWindow):
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(left)
         splitter.addWidget(self.preview_panel)
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 2)
+        splitter.setStretchFactor(0, 2)
+        splitter.setStretchFactor(1, 3)
 
         root = QWidget()
         root_layout = QVBoxLayout()
