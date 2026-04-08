@@ -44,7 +44,12 @@ def _load_cached_capabilities(cache_key: str) -> Dict[str, Any] | None:
     return caps
 
 
-def _store_cached_capabilities(cache_key: str, caps: Dict[str, Any]) -> None:
+def _store_cached_capabilities(
+    cache_key: str,
+    caps: Dict[str, Any],
+    os_name: str,
+    device_name: str,
+) -> None:
     try:
         CAMERA_CAPS_CACHE.parent.mkdir(parents=True, exist_ok=True)
     except Exception:
@@ -57,6 +62,13 @@ def _store_cached_capabilities(cache_key: str, caps: Dict[str, Any]) -> None:
             data = {}
     if not isinstance(data, dict):
         data = {}
+    # Remove older entries for the same device on this OS (different commit hash).
+    for key in list(data.keys()):
+        if key == cache_key:
+            continue
+        parts = str(key).split("|", 2)
+        if len(parts) == 3 and parts[0] == os_name and parts[2] == device_name:
+            data.pop(key, None)
     data[cache_key] = {"caps": caps}
     try:
         CAMERA_CAPS_CACHE.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
@@ -232,7 +244,7 @@ def get_camera_capabilities(
         caps = _mac_camera_capabilities(devnode, device_index)
     else:
         raise OSError(f"Unsupported OS: {sys.platform}")
-    _store_cached_capabilities(cache_key, caps)
+    _store_cached_capabilities(cache_key, caps, os_name, name_key)
     return caps
 
 
