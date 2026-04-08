@@ -48,6 +48,7 @@ class VideoCamConfig:
     Enabled: bool = False
     DeviceIndex: int = 0
     DevNode: str = "/dev/video0"
+    DeviceName: Optional[str] = None
     Label: str = "Cam"
     FPS: int = DEFAULT_CAMERA_FPS
     Width: int = DEFAULT_WIDTH
@@ -164,6 +165,7 @@ def load_cfg(path: str) -> AppConfig:
         vc.Enabled = _get_bool(cp, sec, "Enabled", vc.Enabled)
         vc.DeviceIndex = cp.getint(sec, "DeviceIndex", fallback=vc.DeviceIndex)
         vc.DevNode = cp.get(sec, "DevNode", fallback=vc.DevNode)
+        vc.DeviceName = cp.get(sec, "DeviceName", fallback=vc.DeviceName)
         vc.Label = cp.get(sec, "Label", fallback=vc.Label)
         vc.FPS = cp.getint(sec, "FPS", fallback=vc.FPS)
         vc.Width = cp.getint(sec, "Width", fallback=vc.Width)

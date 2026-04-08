@@ -145,7 +145,8 @@ class CameraPanel(QWidget):
         self.setLayout(layout)
 
         self._video_devices: list[dict[str, Any]] = []
-        self._populate_video_devices(cam_cfg.DeviceIndex, cam_cfg.DevNode)
+        self._device_name: Optional[str] = cam_cfg.DeviceName
+        self._populate_video_devices(cam_cfg.DeviceIndex, cam_cfg.DevNode, cam_cfg.DeviceName)
 
         self.btn_refresh_devices.clicked.connect(self.refresh_video_devices)
         self.btn_refresh_caps.clicked.connect(self.refresh_capabilities)
@@ -409,7 +410,12 @@ class CameraPanel(QWidget):
         self._set_fps_choices(fps_values, selected)
         self.fps.setEnabled(True)
 
-    def _populate_video_devices(self, preferred_index: int, preferred_devnode: str):
+    def _populate_video_devices(
+        self,
+        preferred_index: int,
+        preferred_devnode: str,
+        preferred_name: Optional[str],
+    ):
         self.device_name.clear()
         self._video_devices = list_video_devices()
 
@@ -420,9 +426,10 @@ class CameraPanel(QWidget):
                 dev,
             )
             if selected_row < 0:
+                name_matches = bool(preferred_name) and str(dev.get("name")) == str(preferred_name)
                 devnode_matches = preferred_devnode and str(dev.get("devnode")) == str(preferred_devnode)
                 index_matches = int(dev.get("index", -1)) == int(preferred_index)
-                if devnode_matches or index_matches:
+                if name_matches or devnode_matches or index_matches:
                     selected_row = row
 
         if self.device_name.count() == 0:
@@ -441,6 +448,7 @@ class CameraPanel(QWidget):
             return
         idx = int(dev.get("index", self.device_index.value()))
         devnode = str(dev.get("devnode") or self.devnode.text().strip())
+        self._device_name = str(dev.get("name") or self._device_name or "").strip() or None
         self.device_index.blockSignals(True)
         self.device_index.setValue(idx)
         self.device_index.blockSignals(False)
@@ -458,10 +466,12 @@ class CameraPanel(QWidget):
         if isinstance(dev, dict):
             preferred_index = int(dev.get("index", self.device_index.value()))
             preferred_devnode = str(dev.get("devnode") or self.devnode.text().strip())
+            preferred_name = str(dev.get("name") or self._device_name or "").strip() or None
         else:
             preferred_index = int(self.device_index.value())
             preferred_devnode = self.devnode.text().strip()
-        self._populate_video_devices(preferred_index, preferred_devnode)
+            preferred_name = self._device_name
+        self._populate_video_devices(preferred_index, preferred_devnode, preferred_name)
 
     def _on_fps_changed(self):
         self._update_resolution_choices_for_selected_fps(prefer_current=False)
@@ -646,6 +656,14 @@ class CameraPanel(QWidget):
         c.Enabled = self.enabled.isChecked()
         c.DeviceIndex = int(self.device_index.value())
         c.DevNode = self.devnode.text().strip()
+        c.DeviceName = self._device_name
+        if IS_MAC and c.DeviceName:
+            devices = list_video_devices()
+            for dev in devices:
+                if str(dev.get("name")) == c.DeviceName:
+                    c.DeviceIndex = int(dev.get("index", c.DeviceIndex))
+                    c.DevNode = str(dev.get("devnode") or c.DevNode)
+                    break
         c.Label = self.label.text().strip()
         c.FPS = int(self.fps.currentData() or DEFAULT_CAMERA_FPS)
         width, height = self._selected_resolution()
