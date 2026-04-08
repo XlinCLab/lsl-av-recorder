@@ -275,6 +275,8 @@ def get_camera_capabilities(
                 progress_cb(100, "Loaded cached capabilities.")
             except Exception:
                 pass
+        cached = dict(cached)
+        cached["_from_cache"] = True
         return cached
 
     if IS_LINUX:

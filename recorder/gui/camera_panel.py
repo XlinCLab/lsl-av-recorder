@@ -88,6 +88,7 @@ class CameraPanel(QWidget):
         self._mode_support_cache: dict[tuple[int, int, int, str], bool] = {}
         self._caps_loading = False
         self._caps_thread: Optional[_CapabilitiesThread] = None
+        self._caps_from_cache = False
         self._apply_loading = False
         self._apply_thread: Optional[_ApplyControlsThread] = None
 
@@ -384,6 +385,8 @@ class CameraPanel(QWidget):
     def _is_mode_supported(self, width: int, height: int, fps: int, pixel_format: str) -> bool:
         if not IS_MAC:
             return True
+        if self._caps_from_cache:
+            return True
         key = (int(width), int(height), int(fps), str(pixel_format).upper())
         cached = self._mode_support_cache.get(key)
         if cached is not None:
@@ -526,6 +529,8 @@ class CameraPanel(QWidget):
         thread.start()
 
     def _on_capabilities_ready(self, caps: dict):
+        self.setUpdatesEnabled(False)
+        self._caps_from_cache = bool(caps.pop("_from_cache", False))
         self._mode_support_cache.clear()
 
         raw_modes = caps.get("modes") or []
@@ -655,6 +660,7 @@ class CameraPanel(QWidget):
                 "manual": manual_val if manual_val is not None else V4L2_MANUAL_EXPOSURE_MODE,
             }
 
+        self.setUpdatesEnabled(True)
         self._finish_capabilities_load()
 
     def _on_capabilities_error(self, msg: str):

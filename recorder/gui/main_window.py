@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from datetime import datetime
 from typing import List, Optional
 
@@ -212,6 +213,8 @@ class MainWindow(QMainWindow):
         self.preview_frame_signal.connect(self.preview_mgr.on_frame)
         self._cap_load_count = 0
         self._cap_load_dialog: Optional[QProgressDialog] = None
+        self._cap_dialog_shown_at: Optional[float] = None
+        self._cap_dialog_min_ms = 600
         self._apply_count = 0
         self._apply_dialog: Optional[QProgressDialog] = None
         self._start_progress_dialog: Optional[QProgressDialog] = None
@@ -352,11 +355,21 @@ class MainWindow(QMainWindow):
         self._cap_load_dialog.setRange(0, 100)
         self._cap_load_dialog.setValue(0)
         self._cap_load_dialog.show()
+        self._cap_dialog_shown_at = time.monotonic()
         QApplication.processEvents()
 
     def _hide_caps_dialog(self):
         if self._cap_load_dialog:
-            self._cap_load_dialog.hide()
+            if self._cap_dialog_shown_at is None:
+                self._cap_load_dialog.hide()
+                return
+            elapsed_ms = (time.monotonic() - self._cap_dialog_shown_at) * 1000.0
+            remaining = max(0, int(self._cap_dialog_min_ms - elapsed_ms))
+            if remaining > 0:
+                QTimer.singleShot(remaining, self._cap_load_dialog.hide)
+            else:
+                self._cap_load_dialog.hide()
+            self._cap_dialog_shown_at = None
 
     def _on_caps_load_started(self):
         self._cap_load_count += 1
