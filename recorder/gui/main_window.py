@@ -18,8 +18,8 @@ from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
 from ..audio.devices import default_input_device_index, list_input_devices
 from ..config import AppConfig, VideoCamConfig, load_cfg
 from ..lsl.labrecorder_rcs import LabRecorderRCS
-from ..video.devices import list_video_devices
 from ..video.camera_settings import apply_camera_controls
+from ..video.devices import list_video_devices
 from .camera_panel import CameraPanel
 from .preview_manager import PreviewManager
 from .preview_panel import PreviewPanel
@@ -349,6 +349,8 @@ class MainWindow(QMainWindow):
                 "Loading", "Loading camera capabilities..."
             )
         self._cap_load_dialog.setLabelText("Loading camera capabilities...")
+        self._cap_load_dialog.setRange(0, 100)
+        self._cap_load_dialog.setValue(0)
         self._cap_load_dialog.show()
         QApplication.processEvents()
 
@@ -365,6 +367,14 @@ class MainWindow(QMainWindow):
         self._cap_load_count = max(0, self._cap_load_count - 1)
         if self._cap_load_count == 0:
             self._hide_caps_dialog()
+
+    def _on_caps_load_progress(self, pct: int, msg: str):
+        if self._cap_load_dialog is None:
+            self._show_caps_dialog()
+        if msg:
+            self._cap_load_dialog.setLabelText(msg)
+        self._cap_load_dialog.setRange(0, 100)
+        self._cap_load_dialog.setValue(max(0, min(100, int(pct))))
 
     def _show_apply_dialog(self):
         if self._apply_dialog is None:
@@ -466,6 +476,7 @@ class MainWindow(QMainWindow):
         panel.applyFinished.connect(self._refresh_previews_from_panels)
         panel.capabilitiesLoadStarted.connect(self._on_caps_load_started)
         panel.capabilitiesLoadFinished.connect(self._on_caps_load_finished)
+        panel.capabilitiesLoadProgress.connect(self._on_caps_load_progress)
         panel.removeRequested.connect(self._on_remove_camera)
         self.cam_panels.append(panel)
         self.tabs.addTab(panel, f"Camera {len(self.cam_panels)}")

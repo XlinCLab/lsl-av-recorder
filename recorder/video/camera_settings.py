@@ -208,19 +208,49 @@ def _pick_v4l2_menu_value(menu: dict[str, int], prefer_auto: bool) -> int | None
     return next(iter(menu.values()))
 
 
-def _mac_camera_capabilities(devnode: str, device_index: int | None) -> Dict[str, Any]:
+def _mac_camera_capabilities(
+    devnode: str,
+    device_index: int | None,
+    progress_cb=None,
+) -> Dict[str, Any]:
     caps = _empty_capabilities()
     device = str(device_index) if device_index is not None else reformat_devnode_for_ffmpeg(devnode)
+    if progress_cb:
+        try:
+            progress_cb(5, "Probing supported modes...")
+        except Exception:
+            pass
     modes = _get_supported_modes(device)
+    if progress_cb:
+        try:
+            progress_cb(20, "Probing pixel formats...")
+        except Exception:
+            pass
     caps["modes"] = [
         {"width": w, "height": h, "fps": fps_values}
         for w, h, fps_values in modes
     ]
-    caps["pixel_formats"] = _probe_mac_supported_ui_formats(device, modes)
+    def _format_progress(done: int, total: int, fmt: str) -> None:
+        if not total:
+            return
+        pct = 20 + int(80 * (done / total))
+        msg = f"Probing pixel formats ({done}/{total}): {fmt}"
+        progress_cb(pct, msg)
+
+    caps["pixel_formats"] = _probe_mac_supported_ui_formats(
+        device,
+        modes,
+        progress_cb=_format_progress if progress_cb else None,
+    )
     caps["fps"] = _probe_mac_supported_fps(modes)
     caps["brightness_range"] = BRIGHTNESS_RANGE
     caps["hue_range"] = HUE_RANGE
     caps["saturation_range"] = SATURATION_RANGE
+    if progress_cb:
+        try:
+            progress_cb(100, "Finalizing...")
+        except Exception:
+            pass
     return caps
 
 
@@ -229,6 +259,7 @@ def get_camera_capabilities(
     device_index: int | None = None,
     *,
     device_name: str | None = None,
+    progress_cb=None,
 ) -> Dict[str, Any]:
     os_name = sys.platform
     git_hash = get_commit_hash(_project_root())
@@ -236,14 +267,24 @@ def get_camera_capabilities(
     cache_key = _capabilities_cache_key(os_name, git_hash, name_key)
     cached = _load_cached_capabilities(cache_key)
     if cached is not None:
+        if progress_cb:
+            try:
+                progress_cb(100, "Loaded cached capabilities.")
+            except Exception:
+                pass
         return cached
 
     if IS_LINUX:
         caps = _linux_camera_capabilities(devnode)
     elif IS_MAC:
-        caps = _mac_camera_capabilities(devnode, device_index)
+        caps = _mac_camera_capabilities(devnode, device_index, progress_cb=progress_cb)
     else:
         raise OSError(f"Unsupported OS: {sys.platform}")
+    if progress_cb:
+        try:
+            progress_cb(100, "Finalizing...")
+        except Exception:
+            pass
     _store_cached_capabilities(cache_key, caps, os_name, name_key)
     return caps
 

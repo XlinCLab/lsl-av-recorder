@@ -25,6 +25,7 @@ from ..video.devices import list_video_devices
 class _CapabilitiesThread(QThread):
     finished_caps = pyqtSignal(dict)
     failed = pyqtSignal(str)
+    progress = pyqtSignal(int, str)
 
     def __init__(
         self,
@@ -44,6 +45,7 @@ class _CapabilitiesThread(QThread):
                 self._devnode,
                 self._device_index,
                 device_name=self._device_name,
+                progress_cb=lambda pct, msg: self.progress.emit(int(pct), str(msg)),
             )
             self.finished_caps.emit(caps)
         except Exception as exc:
@@ -75,6 +77,7 @@ class CameraPanel(QWidget):
     applyFinished = pyqtSignal()
     capabilitiesLoadStarted = pyqtSignal()
     capabilitiesLoadFinished = pyqtSignal()
+    capabilitiesLoadProgress = pyqtSignal(int, str)
 
     def __init__(self, cam_cfg: VideoCamConfig, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -519,6 +522,7 @@ class CameraPanel(QWidget):
         self._caps_thread = thread
         thread.finished_caps.connect(self._on_capabilities_ready)
         thread.failed.connect(self._on_capabilities_error)
+        thread.progress.connect(self._on_capabilities_progress)
         thread.start()
 
     def _on_capabilities_ready(self, caps: dict):
@@ -657,13 +661,16 @@ class CameraPanel(QWidget):
         self.text.append(f"ERROR: Failed to refresh capabilities: {msg}")
         self._finish_capabilities_load()
 
+    def _on_capabilities_progress(self, pct: int, msg: str):
+        self.capabilitiesLoadProgress.emit(int(pct), str(msg))
+
     def _finish_capabilities_load(self):
         self._caps_loading = False
         self.capabilitiesLoadFinished.emit()
         if self._caps_thread:
             try:
                 self._caps_thread.quit()
-                self._caps_thread.wait(1000)
+                self._caps_thread.deleteLater()
             except Exception:
                 pass
             self._caps_thread = None
@@ -733,7 +740,7 @@ class CameraPanel(QWidget):
         if self._apply_thread:
             try:
                 self._apply_thread.quit()
-                self._apply_thread.wait(1000)
+                self._apply_thread.deleteLater()
             except Exception:
                 pass
             self._apply_thread = None
