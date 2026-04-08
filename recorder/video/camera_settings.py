@@ -71,7 +71,10 @@ def _store_cached_capabilities(
             data.pop(key, None)
     data[cache_key] = {"caps": caps}
     try:
-        CAMERA_CAPS_CACHE.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+        CAMERA_CAPS_CACHE.write_text(
+            json.dumps(data, indent=2, sort_keys=True, ensure_ascii=False),
+            encoding="utf-8",
+        )
     except Exception:
         return
 
