@@ -4,8 +4,8 @@ from typing import Any, Optional
 
 from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtWidgets import (QCheckBox, QComboBox, QFormLayout, QLineEdit,
-                             QPushButton, QSpinBox, QTextEdit, QVBoxLayout,
-                             QWidget)
+                             QMessageBox, QPushButton, QSpinBox, QTextEdit,
+                             QVBoxLayout, QWidget)
 
 from ..config import VideoCamConfig
 from ..video.camera_settings import (apply_camera_controls,
@@ -836,6 +836,15 @@ class CameraPanel(QWidget):
             rep.get("failed", {}),
         )
         self.text.append(summary)
+        failed = rep.get("failed", {})
+        if failed:
+            failed_items = "\n".join(f"• {k} = {v}" for k, v in failed.items())
+            body = (
+                "Some camera settings could not be applied.\n\n"
+                "Please adjust these values and try again:\n"
+                f"{failed_items}"
+            )
+            QMessageBox.warning(self, "Camera Settings Warning", body)
         self._finish_apply()
 
     def _on_apply_error(self, msg: str):
