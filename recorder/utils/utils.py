@@ -1,9 +1,12 @@
 import logging
 import re
 import subprocess
+from datetime import datetime, timezone
+from pathlib import Path
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
+
 
 def run_capture_cmd(
     cmd: list[str],
@@ -46,3 +49,22 @@ def _extract_default(text: str, name: str):
     if not m:
         return None
     return int(m.group(1))
+
+
+def get_commit_hash(root: Path) -> str:
+    """Retrieve the git commit hash for the current project, with the current date as fallback."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        sha = (result.stdout or "").strip()
+        if re.match(r"[0-9a-fA-F]{7,40}$", sha):
+            return sha[:12]
+        return "unknown"
+    except Exception:
+        logger.warning("Could not retrive git commit hash, using current date instead.")
+        return datetime.now(timezone.utc).strftime("%Y%m%d")

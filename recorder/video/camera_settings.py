@@ -1,15 +1,18 @@
+import json
 import logging
 import re
 import sys
 from typing import Any, Dict
 
-from ..utils.utils import _extract_default, _extract_range, run_capture_cmd
-from ..video.constants import (BRIGHTNESS_RANGE, DEFAULT_CAMERA_FPS,
-                               DEVNODE_PATTERN, FFMPEG_UNSUPPORTED_CONTROLS,
-                               HUE_RANGE, IS_LINUX, IS_MAC,
-                               MAC_PIXEL_FORMAT_MAP, SATURATION_RANGE,
-                               V4L2_AUTO_EXPOSURE_MODE, V4L2_CONTROL_MAP,
-                               V4L2_MANUAL_EXPOSURE_MODE)
+from ..utils.constants import _project_root
+from ..utils.utils import (_extract_default, _extract_range, get_commit_hash,
+                           run_capture_cmd)
+from ..video.constants import (BRIGHTNESS_RANGE, CAMERA_CAPS_CACHE,
+                               DEFAULT_CAMERA_FPS, DEVNODE_PATTERN,
+                               FFMPEG_UNSUPPORTED_CONTROLS, HUE_RANGE,
+                               IS_LINUX, IS_MAC, MAC_PIXEL_FORMAT_MAP,
+                               SATURATION_RANGE, V4L2_AUTO_EXPOSURE_MODE,
+                               V4L2_CONTROL_MAP, V4L2_MANUAL_EXPOSURE_MODE)
 from ..video.ffmpeg_utils import (_get_supported_modes,
                                   _probe_mac_supported_fps,
                                   _probe_mac_supported_ui_formats,
@@ -17,6 +20,48 @@ from ..video.ffmpeg_utils import (_get_supported_modes,
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
+
+
+def _capabilities_cache_key(os_name: str, git_hash: str, device_name: str) -> str:
+    return f"{os_name}|{git_hash}|{device_name}"
+
+
+def _load_cached_capabilities(cache_key: str) -> Dict[str, Any] | None:
+    if not CAMERA_CAPS_CACHE.exists():
+        return None
+    try:
+        data = json.loads(CAMERA_CAPS_CACHE.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    entry = data.get(cache_key)
+    if not isinstance(entry, dict):
+        return None
+    caps = entry.get("caps")
+    if not isinstance(caps, dict):
+        return None
+    return caps
+
+
+def _store_cached_capabilities(cache_key: str, caps: Dict[str, Any]) -> None:
+    try:
+        CAMERA_CAPS_CACHE.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        return
+    data: Dict[str, Any] = {}
+    if CAMERA_CAPS_CACHE.exists():
+        try:
+            data = json.loads(CAMERA_CAPS_CACHE.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+    if not isinstance(data, dict):
+        data = {}
+    data[cache_key] = {"caps": caps}
+    try:
+        CAMERA_CAPS_CACHE.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+    except Exception:
+        return
 
 
 def _empty_capabilities() -> Dict[str, Any]:
@@ -167,14 +212,28 @@ def _mac_camera_capabilities(devnode: str, device_index: int | None) -> Dict[str
     return caps
 
 
-def get_camera_capabilities(devnode: str,
-                            device_index: int | None = None
-                            ) -> Dict[str, Any]:
+def get_camera_capabilities(
+    devnode: str,
+    device_index: int | None = None,
+    *,
+    device_name: str | None = None,
+) -> Dict[str, Any]:
+    os_name = sys.platform
+    git_hash = get_commit_hash(_project_root())
+    name_key = (device_name or devnode or "unknown").strip()
+    cache_key = _capabilities_cache_key(os_name, git_hash, name_key)
+    cached = _load_cached_capabilities(cache_key)
+    if cached is not None:
+        return cached
+
     if IS_LINUX:
-        return _linux_camera_capabilities(devnode)
-    if IS_MAC:
-        return _mac_camera_capabilities(devnode, device_index)
-    raise OSError(f"Unsupported OS: {sys.platform}")
+        caps = _linux_camera_capabilities(devnode)
+    elif IS_MAC:
+        caps = _mac_camera_capabilities(devnode, device_index)
+    else:
+        raise OSError(f"Unsupported OS: {sys.platform}")
+    _store_cached_capabilities(cache_key, caps)
+    return caps
 
 
 def reformat_devnode_for_ffmpeg(devnode: str) -> str:

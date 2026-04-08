@@ -26,14 +26,25 @@ class _CapabilitiesThread(QThread):
     finished_caps = pyqtSignal(dict)
     failed = pyqtSignal(str)
 
-    def __init__(self, devnode: str, device_index: int, parent: Optional[QWidget] = None):
+    def __init__(
+        self,
+        devnode: str,
+        device_index: int,
+        device_name: Optional[str],
+        parent: Optional[QWidget] = None,
+    ):
         super().__init__(parent)
         self._devnode = devnode
         self._device_index = device_index
+        self._device_name = device_name
 
     def run(self):
         try:
-            caps = get_camera_capabilities(self._devnode, self._device_index)
+            caps = get_camera_capabilities(
+                self._devnode,
+                self._device_index,
+                device_name=self._device_name,
+            )
             self.finished_caps.emit(caps)
         except Exception as exc:
             self.failed.emit(str(exc))
@@ -495,10 +506,16 @@ class CameraPanel(QWidget):
             return
         dev = self.devnode.text().strip()
         idx = int(self.device_index.value())
+        dev_info = self.device_name.currentData()
+        device_name = None
+        if isinstance(dev_info, dict):
+            device_name = str(dev_info.get("name") or "").strip() or None
+        if not device_name:
+            device_name = self._device_name
         self._caps_loading = True
         self.capabilitiesLoadStarted.emit()
 
-        thread = _CapabilitiesThread(dev, idx, parent=self)
+        thread = _CapabilitiesThread(dev, idx, device_name, parent=self)
         self._caps_thread = thread
         thread.finished_caps.connect(self._on_capabilities_ready)
         thread.failed.connect(self._on_capabilities_error)
