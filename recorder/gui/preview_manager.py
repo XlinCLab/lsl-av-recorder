@@ -15,30 +15,31 @@ class PreviewManager(QObject):
         self.threads: Dict[int, QThread] = {}
         self.workers: Dict[int, CameraWorker] = {}
 
-    def _finalize_stop(self, cam_index: int):
-        worker = self.workers.pop(cam_index, None)
-        thread = self.threads.pop(cam_index, None)
-        if worker:
-            worker.deleteLater()
-        if thread:
-            thread.deleteLater()
-        self.main.preview_panel.set_active_cameras(self.workers.keys())
-
     def _request_stop(self, cam_index: int):
         idx = int(cam_index)
-        worker = self.workers.get(idx)
-        thread = self.threads.get(idx)
+        # Pop immediately so a new preview can be registered for the same index.
+        worker = self.workers.pop(idx, None)
+        thread = self.threads.pop(idx, None)
+        self.main.preview_panel.set_active_cameras(self.workers.keys())
         if not thread:
             return
         if worker:
             worker.stop_preview()
-        if not getattr(thread, "_stop_connected", False):
-            thread.finished.connect(lambda idx=idx: self._finalize_stop(idx))
-            thread._stop_connected = True
+        # Capture specific objects so the finished handler never touches the dict
+        # (which may already hold a new worker/thread for the same index by the
+        # time the signal fires, causing the new thread to be erroneously deleted)
+        _w, _t = worker, thread
+
+        def _cleanup():
+            if _w:
+                _w.deleteLater()
+            _t.deleteLater()
+
+        thread.finished.connect(_cleanup)
         thread.quit()
-        thread.wait(1000)
-        if not thread.isRunning():
-            self._finalize_stop(idx)
+        # Wait briefly so the old camera releases its device before a new capture
+        # for the same index tries to open it.
+        thread.wait(2000)
 
     def start_cam_preview(self, cam_cfg):
         idx = int(cam_cfg.DeviceIndex)
