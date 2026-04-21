@@ -69,6 +69,7 @@ def _build_mode_args(width: int | None, height: int | None, fps: int) -> list[st
 def _probe_mac_supported_ui_formats(
     device: str,
     modes: List[Tuple[int, int, list[int]]] | None = None,
+    progress_cb=None,
 ) -> list[str]:
     modes = modes if modes is not None else _get_supported_modes(device)
     mode_probe_args: list[list[str]] = []
@@ -80,7 +81,8 @@ def _probe_mac_supported_ui_formats(
         mode_probe_args.append(_build_mode_args(None, None, DEFAULT_CAMERA_FPS))
 
     supported: list[str] = []
-    for ui_fmt, ff_fmt in MAC_PIXEL_FORMAT_MAP.items():
+    total_formats = max(1, len(MAC_PIXEL_FORMAT_MAP))
+    for idx, (ui_fmt, ff_fmt) in enumerate(MAC_PIXEL_FORMAT_MAP.items(), start=1):
         for mode_args in mode_probe_args:
             ok, text = _ffmpeg_avfoundation_probe(
                 device,
@@ -89,6 +91,11 @@ def _probe_mac_supported_ui_formats(
             if _pixel_format_probe_succeeded(text, ok):
                 supported.append(ui_fmt)
                 break
+        if progress_cb:
+            try:
+                progress_cb(idx, total_formats, ui_fmt)
+            except Exception:
+                pass
     return sorted(set(supported))
 
 

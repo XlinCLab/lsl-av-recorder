@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from datetime import datetime
 from typing import List, Optional
 
@@ -18,8 +19,8 @@ from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
 from ..audio.devices import default_input_device_index, list_input_devices
 from ..config import AppConfig, VideoCamConfig, load_cfg
 from ..lsl.labrecorder_rcs import LabRecorderRCS
-from ..video.devices import list_video_devices
 from ..video.camera_settings import apply_camera_controls
+from ..video.devices import list_video_devices
 from .camera_panel import CameraPanel
 from .preview_manager import PreviewManager
 from .preview_panel import PreviewPanel
@@ -212,6 +213,8 @@ class MainWindow(QMainWindow):
         self.preview_frame_signal.connect(self.preview_mgr.on_frame)
         self._cap_load_count = 0
         self._cap_load_dialog: Optional[QProgressDialog] = None
+        self._cap_dialog_shown_at: Optional[float] = None
+        self._cap_dialog_min_ms = 600
         self._apply_count = 0
         self._apply_dialog: Optional[QProgressDialog] = None
         self._start_progress_dialog: Optional[QProgressDialog] = None
@@ -244,8 +247,8 @@ class MainWindow(QMainWindow):
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(left)
         splitter.addWidget(self.preview_panel)
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 2)
+        splitter.setStretchFactor(0, 2)
+        splitter.setStretchFactor(1, 3)
 
         root = QWidget()
         root_layout = QVBoxLayout()
@@ -349,12 +352,24 @@ class MainWindow(QMainWindow):
                 "Loading", "Loading camera capabilities..."
             )
         self._cap_load_dialog.setLabelText("Loading camera capabilities...")
+        self._cap_load_dialog.setRange(0, 100)
+        self._cap_load_dialog.setValue(0)
         self._cap_load_dialog.show()
+        self._cap_dialog_shown_at = time.monotonic()
         QApplication.processEvents()
 
     def _hide_caps_dialog(self):
         if self._cap_load_dialog:
-            self._cap_load_dialog.hide()
+            if self._cap_dialog_shown_at is None:
+                self._cap_load_dialog.hide()
+                return
+            elapsed_ms = (time.monotonic() - self._cap_dialog_shown_at) * 1000.0
+            remaining = max(0, int(self._cap_dialog_min_ms - elapsed_ms))
+            if remaining > 0:
+                QTimer.singleShot(remaining, self._cap_load_dialog.hide)
+            else:
+                self._cap_load_dialog.hide()
+            self._cap_dialog_shown_at = None
 
     def _on_caps_load_started(self):
         self._cap_load_count += 1
@@ -365,6 +380,14 @@ class MainWindow(QMainWindow):
         self._cap_load_count = max(0, self._cap_load_count - 1)
         if self._cap_load_count == 0:
             self._hide_caps_dialog()
+
+    def _on_caps_load_progress(self, pct: int, msg: str):
+        if self._cap_load_dialog is None:
+            self._show_caps_dialog()
+        if msg:
+            self._cap_load_dialog.setLabelText(msg)
+        self._cap_load_dialog.setRange(0, 100)
+        self._cap_load_dialog.setValue(max(0, min(100, int(pct))))
 
     def _show_apply_dialog(self):
         if self._apply_dialog is None:
@@ -466,6 +489,7 @@ class MainWindow(QMainWindow):
         panel.applyFinished.connect(self._refresh_previews_from_panels)
         panel.capabilitiesLoadStarted.connect(self._on_caps_load_started)
         panel.capabilitiesLoadFinished.connect(self._on_caps_load_finished)
+        panel.capabilitiesLoadProgress.connect(self._on_caps_load_progress)
         panel.removeRequested.connect(self._on_remove_camera)
         self.cam_panels.append(panel)
         self.tabs.addTab(panel, f"Camera {len(self.cam_panels)}")

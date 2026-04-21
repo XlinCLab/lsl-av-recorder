@@ -1,6 +1,11 @@
 import re
 import sys
 
+from ..utils.constants import _cache_path
+
+# Path to JSON file in project .cache directory where camera device capabilities are saved
+CAMERA_CAPS_CACHE = _cache_path() / "camera_capabilities.json"
+
 # Detect operating system
 IS_MAC = sys.platform == "darwin"
 IS_LINUX = sys.platform.startswith("linux")

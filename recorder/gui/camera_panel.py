@@ -4,8 +4,8 @@ from typing import Any, Optional
 
 from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtWidgets import (QCheckBox, QComboBox, QFormLayout, QLineEdit,
-                             QPushButton, QSpinBox, QTextEdit, QVBoxLayout,
-                             QWidget)
+                             QMessageBox, QPushButton, QSpinBox, QTextEdit,
+                             QVBoxLayout, QWidget)
 
 from ..config import VideoCamConfig
 from ..video.camera_settings import (apply_camera_controls,
@@ -25,15 +25,28 @@ from ..video.devices import list_video_devices
 class _CapabilitiesThread(QThread):
     finished_caps = pyqtSignal(dict)
     failed = pyqtSignal(str)
+    progress = pyqtSignal(int, str)
 
-    def __init__(self, devnode: str, device_index: int, parent: Optional[QWidget] = None):
+    def __init__(
+        self,
+        devnode: str,
+        device_index: int,
+        device_name: Optional[str],
+        parent: Optional[QWidget] = None,
+    ):
         super().__init__(parent)
         self._devnode = devnode
         self._device_index = device_index
+        self._device_name = device_name
 
     def run(self):
         try:
-            caps = get_camera_capabilities(self._devnode, self._device_index)
+            caps = get_camera_capabilities(
+                self._devnode,
+                self._device_index,
+                device_name=self._device_name,
+                progress_cb=lambda pct, msg: self.progress.emit(int(pct), str(msg)),
+            )
             self.finished_caps.emit(caps)
         except Exception as exc:
             self.failed.emit(str(exc))
@@ -56,6 +69,63 @@ class _ApplyControlsThread(QThread):
             self.failed.emit(str(exc))
 
 
+class _ValidateModeThread(QThread):
+    validated = pyqtSignal(object)
+
+    def __init__(
+        self,
+        devnode: str,
+        device_index: int,
+        pixel_format: str,
+        modes: list[tuple[int, int, set[int]]],
+        current_resolution: tuple[int, int],
+        current_fps: int,
+        parent: Optional[QWidget] = None,
+    ):
+        super().__init__(parent)
+        self._devnode = devnode
+        self._device_index = device_index
+        self._pixel_format = pixel_format
+        self._modes = [(int(w), int(h), {int(f) for f in fps}) for w, h, fps in modes]
+        self._current_resolution = (int(current_resolution[0]), int(current_resolution[1]))
+        self._current_fps = int(current_fps)
+
+    def _supports(self, w: int, h: int, fps: int) -> bool:
+        return probe_mac_mode_support(
+            devnode=self._devnode,
+            device_index=self._device_index,
+            width=int(w),
+            height=int(h),
+            fps=int(fps),
+            pixel_format=str(self._pixel_format),
+        )
+
+    def run(self):
+        if not IS_MAC or not self._modes:
+            self.validated.emit(None)
+            return
+        cw, ch = self._current_resolution
+        cfps = self._current_fps
+        try:
+            if self._supports(cw, ch, cfps):
+                self.validated.emit((cw, ch, cfps))
+                return
+            for mw, mh, fps_values in self._modes:
+                if mw == cw and mh == ch:
+                    for f in sorted(fps_values):
+                        if self._supports(mw, mh, f):
+                            self.validated.emit((mw, mh, f))
+                            return
+            for mw, mh, fps_values in self._modes:
+                for f in sorted(fps_values):
+                    if self._supports(mw, mh, f):
+                        self.validated.emit((mw, mh, f))
+                        return
+        except Exception:
+            pass
+        self.validated.emit(None)
+
+
 class CameraPanel(QWidget):
     log = pyqtSignal(str)
     previewConfigChanged = pyqtSignal()
@@ -64,6 +134,7 @@ class CameraPanel(QWidget):
     applyFinished = pyqtSignal()
     capabilitiesLoadStarted = pyqtSignal()
     capabilitiesLoadFinished = pyqtSignal()
+    capabilitiesLoadProgress = pyqtSignal(int, str)
 
     def __init__(self, cam_cfg: VideoCamConfig, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -74,6 +145,8 @@ class CameraPanel(QWidget):
         self._mode_support_cache: dict[tuple[int, int, int, str], bool] = {}
         self._caps_loading = False
         self._caps_thread: Optional[_CapabilitiesThread] = None
+        self._caps_from_cache = False
+        self._caps_validation_thread: Optional[_ValidateModeThread] = None
         self._apply_loading = False
         self._apply_thread: Optional[_ApplyControlsThread] = None
 
@@ -145,7 +218,8 @@ class CameraPanel(QWidget):
         self.setLayout(layout)
 
         self._video_devices: list[dict[str, Any]] = []
-        self._populate_video_devices(cam_cfg.DeviceIndex, cam_cfg.DevNode)
+        self._device_name: Optional[str] = cam_cfg.DeviceName
+        self._populate_video_devices(cam_cfg.DeviceIndex, cam_cfg.DevNode, cam_cfg.DeviceName)
 
         self.btn_refresh_devices.clicked.connect(self.refresh_video_devices)
         self.btn_refresh_caps.clicked.connect(self.refresh_capabilities)
@@ -346,6 +420,8 @@ class CameraPanel(QWidget):
         return []
 
     def _set_modes_for_pixel_format(self, pixel_format: str) -> bool:
+        if not self._modes_by_format:
+            return True
         fmt = str(pixel_format).upper()
         if not fmt:
             return False
@@ -353,21 +429,13 @@ class CameraPanel(QWidget):
         if fmt_modes:
             self._modes = fmt_modes
             return True
-        if self._modes_by_format:
-            # Fallback to first available format if current is unsupported.
-            first_fmt = sorted(self._modes_by_format.keys())[0]
-            self._modes = self._modes_by_format[first_fmt]
-            self.pixel_format.blockSignals(True)
-            idx = self.pixel_format.findText(first_fmt)
-            if idx >= 0:
-                self.pixel_format.setCurrentIndex(idx)
-            self.pixel_format.blockSignals(False)
-            return True
         self._modes = []
         return False
 
     def _is_mode_supported(self, width: int, height: int, fps: int, pixel_format: str) -> bool:
         if not IS_MAC:
+            return True
+        if self._caps_from_cache:
             return True
         key = (int(width), int(height), int(fps), str(pixel_format).upper())
         cached = self._mode_support_cache.get(key)
@@ -409,7 +477,12 @@ class CameraPanel(QWidget):
         self._set_fps_choices(fps_values, selected)
         self.fps.setEnabled(True)
 
-    def _populate_video_devices(self, preferred_index: int, preferred_devnode: str):
+    def _populate_video_devices(
+        self,
+        preferred_index: int,
+        preferred_devnode: str,
+        preferred_name: Optional[str],
+    ):
         self.device_name.clear()
         self._video_devices = list_video_devices()
 
@@ -420,9 +493,10 @@ class CameraPanel(QWidget):
                 dev,
             )
             if selected_row < 0:
+                name_matches = bool(preferred_name) and str(dev.get("name")) == str(preferred_name)
                 devnode_matches = preferred_devnode and str(dev.get("devnode")) == str(preferred_devnode)
                 index_matches = int(dev.get("index", -1)) == int(preferred_index)
-                if devnode_matches or index_matches:
+                if name_matches or devnode_matches or index_matches:
                     selected_row = row
 
         if self.device_name.count() == 0:
@@ -441,6 +515,7 @@ class CameraPanel(QWidget):
             return
         idx = int(dev.get("index", self.device_index.value()))
         devnode = str(dev.get("devnode") or self.devnode.text().strip())
+        self._device_name = str(dev.get("name") or self._device_name or "").strip() or None
         self.device_index.blockSignals(True)
         self.device_index.setValue(idx)
         self.device_index.blockSignals(False)
@@ -458,10 +533,12 @@ class CameraPanel(QWidget):
         if isinstance(dev, dict):
             preferred_index = int(dev.get("index", self.device_index.value()))
             preferred_devnode = str(dev.get("devnode") or self.devnode.text().strip())
+            preferred_name = str(dev.get("name") or self._device_name or "").strip() or None
         else:
             preferred_index = int(self.device_index.value())
             preferred_devnode = self.devnode.text().strip()
-        self._populate_video_devices(preferred_index, preferred_devnode)
+            preferred_name = self._device_name
+        self._populate_video_devices(preferred_index, preferred_devnode, preferred_name)
 
     def _on_fps_changed(self):
         self._update_resolution_choices_for_selected_fps(prefer_current=False)
@@ -485,16 +562,25 @@ class CameraPanel(QWidget):
             return
         dev = self.devnode.text().strip()
         idx = int(self.device_index.value())
+        dev_info = self.device_name.currentData()
+        device_name = None
+        if isinstance(dev_info, dict):
+            device_name = str(dev_info.get("name") or "").strip() or None
+        if not device_name:
+            device_name = self._device_name
         self._caps_loading = True
         self.capabilitiesLoadStarted.emit()
 
-        thread = _CapabilitiesThread(dev, idx, parent=self)
+        thread = _CapabilitiesThread(dev, idx, device_name, parent=self)
         self._caps_thread = thread
         thread.finished_caps.connect(self._on_capabilities_ready)
         thread.failed.connect(self._on_capabilities_error)
+        thread.progress.connect(self._on_capabilities_progress)
         thread.start()
 
     def _on_capabilities_ready(self, caps: dict):
+        self.setUpdatesEnabled(False)
+        self._caps_from_cache = bool(caps.pop("_from_cache", False))
         self._mode_support_cache.clear()
 
         raw_modes = caps.get("modes") or []
@@ -624,11 +710,67 @@ class CameraPanel(QWidget):
                 "manual": manual_val if manual_val is not None else V4L2_MANUAL_EXPOSURE_MODE,
             }
 
+        self.setUpdatesEnabled(True)
         self._finish_capabilities_load()
+        self._kickoff_cached_validation()
+
+    def _kickoff_cached_validation(self):
+        if not IS_MAC or not self._caps_from_cache or not self._modes:
+            return
+        if self._caps_validation_thread and self._caps_validation_thread.isRunning():
+            return
+        devnode = self.devnode.text().strip()
+        device_index = int(self.device_index.value())
+        pixel_format = self.pixel_format.currentText().strip()
+        current_res = self._selected_resolution()
+        current_fps = int(self.fps.currentData() or DEFAULT_CAMERA_FPS)
+        thread = _ValidateModeThread(
+            devnode=devnode,
+            device_index=device_index,
+            pixel_format=pixel_format,
+            modes=self._modes,
+            current_resolution=current_res,
+            current_fps=current_fps,
+            parent=self,
+        )
+        self._caps_validation_thread = thread
+        thread.validated.connect(self._apply_validated_mode)
+        thread.start()
+
+    def _apply_validated_mode(self, result):
+        if self._caps_validation_thread:
+            try:
+                self._caps_validation_thread.quit()
+                self._caps_validation_thread.deleteLater()
+            except Exception:
+                pass
+            self._caps_validation_thread = None
+        if not result:
+            return
+        width, height, fps = result
+        existing = [
+            int(self.fps.itemData(i))
+            for i in range(self.fps.count())
+            if self.fps.itemData(i) is not None
+        ]
+        self.fps.blockSignals(True)
+        self._set_fps_choices([int(fps)] + existing, int(fps))
+        self.fps.blockSignals(False)
+        compatible = []
+        for w, h, _fps_values in self._modes:
+            if fps in self._fps_for_resolution((w, h)):
+                compatible.append((w, h))
+        self.resolution.blockSignals(True)
+        self._set_resolution_choices(compatible or [(width, height)], selected_resolution=(width, height))
+        self.resolution.blockSignals(False)
+        self.previewConfigChanged.emit()
 
     def _on_capabilities_error(self, msg: str):
         self.text.append(f"ERROR: Failed to refresh capabilities: {msg}")
         self._finish_capabilities_load()
+
+    def _on_capabilities_progress(self, pct: int, msg: str):
+        self.capabilitiesLoadProgress.emit(int(pct), str(msg))
 
     def _finish_capabilities_load(self):
         self._caps_loading = False
@@ -636,7 +778,7 @@ class CameraPanel(QWidget):
         if self._caps_thread:
             try:
                 self._caps_thread.quit()
-                self._caps_thread.wait(1000)
+                self._caps_thread.deleteLater()
             except Exception:
                 pass
             self._caps_thread = None
@@ -646,6 +788,14 @@ class CameraPanel(QWidget):
         c.Enabled = self.enabled.isChecked()
         c.DeviceIndex = int(self.device_index.value())
         c.DevNode = self.devnode.text().strip()
+        c.DeviceName = self._device_name
+        if IS_MAC and c.DeviceName:
+            devices = list_video_devices()
+            for dev in devices:
+                if str(dev.get("name")) == c.DeviceName:
+                    c.DeviceIndex = int(dev.get("index", c.DeviceIndex))
+                    c.DevNode = str(dev.get("devnode") or c.DevNode)
+                    break
         c.Label = self.label.text().strip()
         c.FPS = int(self.fps.currentData() or DEFAULT_CAMERA_FPS)
         width, height = self._selected_resolution()
@@ -686,6 +836,15 @@ class CameraPanel(QWidget):
             rep.get("failed", {}),
         )
         self.text.append(summary)
+        failed = rep.get("failed", {})
+        if failed:
+            failed_items = "\n".join(f"• {k} = {v}" for k, v in failed.items())
+            body = (
+                "Some camera settings could not be applied.\n\n"
+                "Please adjust these values and try again:\n"
+                f"{failed_items}"
+            )
+            QMessageBox.warning(self, "Camera Settings Warning", body)
         self._finish_apply()
 
     def _on_apply_error(self, msg: str):
@@ -698,7 +857,7 @@ class CameraPanel(QWidget):
         if self._apply_thread:
             try:
                 self._apply_thread.quit()
-                self._apply_thread.wait(1000)
+                self._apply_thread.deleteLater()
             except Exception:
                 pass
             self._apply_thread = None
