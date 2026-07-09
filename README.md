@@ -144,11 +144,12 @@ Uses `ffmpeg` AVFoundation probing:
 Uses `ffmpeg` DirectShow (`dshow`) probing:
 - Device list from `ffmpeg -f dshow -list_devices true`
 - Supported pixel formats, resolutions, and FPS ranges from `ffmpeg -f dshow -list_options true`
-- Camera control application (resolution/FPS/pixel format selection via "Apply settings",
-  brightness/hue/saturation, auto-exposure/auto-focus) is **not yet implemented** on Windows;
-  attempting to apply settings raises a clear "not yet supported" error rather than failing
-  silently. Cameras still record using the resolution/FPS selected in the GUI, since those are
-  applied directly by OpenCV (`cv2.CAP_DSHOW`) when recording starts.
+- There is no DirectShow pre-flight application/validation step yet (the "Apply settings"
+  button and the settings pass that runs automatically on **Start** are no-ops that report
+  success without touching the device). Resolution and FPS are still applied for real by
+  OpenCV (`cv2.CAP_DSHOW`) when recording starts.
+- Brightness/hue/saturation and auto-exposure/auto-focus are **not yet supported** on Windows
+  at all; those controls are disabled in the GUI (capability probing reports them unsupported).
 
 ## Configuration Files (.cfg)
 Configuration files are INI-style and expected to be saved as `.cfg` files.
@@ -237,7 +238,8 @@ XDF flow:
 - `XDFWriter` writes file header, stream headers, boundary/sample chunks, and stream footers.
 
 ## Notes and Current Limitations
-- Windows support covers device enumeration, capability probing, and recording; camera control
-  application (brightness/hue/saturation, auto-exposure/auto-focus, and the "Apply settings"
-  pre-flight check) is not yet implemented on Windows — see [Windows](#windows) above.
+- Windows support covers device enumeration, capability probing, and recording. 
+  There is no pre-flight settings validation (resolution/FPS/pixel format are trusted as-is and applied by
+  OpenCV at recording start), and brightness/hue/saturation/auto-exposure/auto-focus controls
+  are not yet supported at all — see [Windows](#windows) above.
 - Preview/live reconfiguration is intentionally conservative while recording is active.

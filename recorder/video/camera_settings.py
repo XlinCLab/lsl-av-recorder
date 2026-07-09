@@ -393,9 +393,13 @@ def set_frame_rate(devnode: str, fps: float) -> bool:
         ]
 
     elif IS_WINDOWS:
-        raise NotImplementedError(
-            "Camera control application is not yet supported on Windows."
+        # No DirectShow pre-flight application/validation is implemented yet.
+        # FPS is applied directly by OpenCV (CAP_DSHOW) when the capture opens for recording.
+        logger.warning(
+            "Frame rate pre-flight application is not yet implemented on Windows; "
+            "it will be applied when recording starts."
         )
+        return True
 
     _, error = run_capture_cmd(cmd)
     return error is None
@@ -509,9 +513,17 @@ def set_camera_controls(devnode: str, control_settings: dict) -> dict:
             successful_settings.update(color_controls)
 
     elif IS_WINDOWS:
-        raise NotImplementedError(
-            "Camera control application is not yet supported on Windows."
+        # No DirectShow pre-flight application/validation is implemented yet.
+        # Width/height/pixel_format are applied directly by OpenCV (CAP_DSHOW) when the
+        # capture opens for recording; fine-grained controls (brightness/hue/saturation,
+        # auto-exposure/auto-focus) are not yet supported at all on Windows. 
+        # Accept everything here rather than blocking Start, since the GUI already disables
+        # controls that `get_camera_capabilities` reports as unsupported.
+        logger.warning(
+            "Camera control pre-flight application is not yet implemented on Windows; "
+            "width/height/pixel_format will be applied when recording starts."
         )
+        successful_settings.update(settings_to_apply)
 
     else:
         raise ValueError(f"Unsupported OS: {sys.platform}")
