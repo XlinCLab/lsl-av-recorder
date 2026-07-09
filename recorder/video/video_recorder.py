@@ -9,6 +9,7 @@ from pylsl import local_clock
 
 from .color_adjust import apply_color_adjustments
 from .constants import DEFAULT_BRIGHTNESS, DEFAULT_HUE, DEFAULT_SATURATION
+from .dshow_capture import fourcc_to_str
 
 
 class VideoRecorder:
@@ -178,6 +179,19 @@ class VideoRecorder:
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.cam.Height)
         self.cap.set(cv2.CAP_PROP_FPS, self.cam.FPS)
 
+        if sys.platform.startswith("win"):
+            pixel_format = str(getattr(self.cam, "PixelFormat", "") or "")[:4]
+            if len(pixel_format) == 4:
+                # cv2's CAP_PROP_FOURCC support on the DirectShow backend is
+                # unreliable and driver-dependent (the DirectShow-level
+                # pre-configuration above doesn't reliably carry over to a
+                # separately-opened cv2.VideoCapture on every driver). 
+                # Some UVC drivers reportedly only honor CAP_PROP_FOURCC when set *after*
+                # FPS, first in lowercase then uppercase -- try that too as a
+                # second layer. See https://github.com/opencv/opencv/issues/9084
+                self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*pixel_format.lower()))
+                self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*pixel_format.upper()))
+
         reported_fps = float(self.cap.get(cv2.CAP_PROP_FPS) or 0.0)
         if reported_fps > 0 and abs(reported_fps - float(self.cam.FPS)) > 0.1:
             self.warning(
@@ -187,6 +201,10 @@ class VideoRecorder:
         self._reported_fps = reported_fps if reported_fps > 0 else None
         if self._reported_fps is not None:
             self.info(f"Camera reported FPS: {reported_fps:.3f}")
+        if sys.platform.startswith("win"):
+            actual_fourcc = int(self.cap.get(cv2.CAP_PROP_FOURCC) or 0)
+            if actual_fourcc:
+                self.info(f"Camera negotiated pixel format: {fourcc_to_str(actual_fourcc)!r}")
 
         requested_fps = float(self.cam.FPS or 0.0)
         if requested_fps > 0:

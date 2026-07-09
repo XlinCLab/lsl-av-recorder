@@ -13,7 +13,7 @@ from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
 from ..video.color_adjust import apply_color_adjustments
 from ..video.constants import (DEFAULT_BRIGHTNESS, DEFAULT_HUE,
                                DEFAULT_SATURATION)
-from ..video.dshow_capture import set_windows_camera_format
+from ..video.dshow_capture import fourcc_to_str, set_windows_camera_format
 
 
 @dataclass
@@ -130,6 +130,22 @@ class CameraWorker(QObject):
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(self.w))
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, float(self.h))
         self.cap.set(cv2.CAP_PROP_FPS, float(self.fps))
+
+        if sys.platform.startswith("win"):
+            pixel_format = str(self.pixel_format or "")[:4]
+            if len(pixel_format) == 4:
+                # cv2's CAP_PROP_FOURCC support on the DirectShow backend is
+                # unreliable and driver-dependent (the DirectShow-level
+                # pre-configuration above doesn't reliably carry over to a
+                # separately-opened cv2.VideoCapture on every driver). Some UVC
+                # drivers reportedly only honor CAP_PROP_FOURCC when set *after*
+                # FPS, first in lowercase then uppercase -- try that too as a
+                # second layer. See https://github.com/opencv/opencv/issues/9084
+                self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*pixel_format.lower()))
+                self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*pixel_format.upper()))
+            actual_fourcc = int(self.cap.get(cv2.CAP_PROP_FOURCC) or 0)
+            if actual_fourcc:
+                self.status.emit(f"Camera negotiated pixel format: {fourcc_to_str(actual_fourcc)!r}")
 
     def _close_cap(self):
         if self.cap:

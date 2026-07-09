@@ -16,6 +16,13 @@ from contextlib import contextmanager
 from typing import Any, Dict, List
 
 
+def fourcc_to_str(fourcc: int) -> str:
+    """Decode a cv2 FOURCC integer (as returned by cap.get(cv2.CAP_PROP_FOURCC))
+    back into its 4-character code, e.g. for logging the pixel format a capture
+    device actually negotiated."""
+    return "".join(chr((int(fourcc) >> (8 * i)) & 0xFF) for i in range(4))
+
+
 @contextmanager
 def _com_session():
     """Ensure COM is initialized on the calling thread for the duration of the block.

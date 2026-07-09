@@ -548,6 +548,7 @@ class MainWindow(QMainWindow):
         panel.applyStarted.connect(self._on_apply_started)
         panel.applyFinished.connect(self._on_apply_finished)
         panel.applyFinished.connect(self._refresh_previews_from_panels)
+        panel.previewConfigChanged.connect(self._refresh_previews_from_panels)
         panel.capabilitiesLoadStarted.connect(self._on_caps_load_started)
         panel.capabilitiesLoadFinished.connect(self._on_caps_load_finished)
         panel.capabilitiesLoadProgress.connect(self._on_caps_load_progress)
