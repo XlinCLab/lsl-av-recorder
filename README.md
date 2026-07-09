@@ -146,8 +146,9 @@ Talks to DirectShow directly via COM (through `pygrabber`). Devices are addresse
   (`VideoInput.get_formats()`), per (pixel format, resolution) combination
 - There is no DirectShow pre-flight application/validation step yet (the "Apply settings"
   button and the settings pass that runs automatically on **Start** are no-ops that report
-  success without touching the device). Resolution and FPS are still applied for real by
-  OpenCV (`cv2.CAP_DSHOW`) when recording starts.
+  success without touching the device). Resolution, FPS, and pixel format are still applied
+  for real when recording/preview starts, via OpenCV (`cv2.CAP_DSHOW` +
+  `cv2.CAP_PROP_FOURCC`/`FRAME_WIDTH`/`FRAME_HEIGHT`/`FPS`).
 - Brightness/hue/saturation and auto-exposure/auto-focus are **not yet supported** on Windows
   at all (would require wrapping `IAMVideoProcAmp`/`IAMCameraControl`, which `pygrabber` does
   not expose); those controls are disabled in the GUI (capability probing reports them

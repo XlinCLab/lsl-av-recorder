@@ -39,6 +39,7 @@ class CameraWorker(QObject):
         brightness: Optional[int] = None,
         hue: Optional[int] = None,
         saturation: Optional[int] = None,
+        pixel_format: Optional[str] = None,
     ):
         super().__init__()
         self.cam_index = int(cam_index)
@@ -50,6 +51,7 @@ class CameraWorker(QObject):
         self.brightness = brightness
         self.hue = hue
         self.saturation = saturation
+        self.pixel_format = pixel_format
         # Color (brightness, hue, saturation) adjustments for MacOS only
         # On Linux, color settings are controllable via V4L2
         self._apply_color_adjustments = (
@@ -96,6 +98,15 @@ class CameraWorker(QObject):
             raise RuntimeError(
                 f"Could not open camera index={self.cam_index} ({self.devnode})"
             )
+
+        # DirectShow negotiates a default pixel format on open, which is often an
+        # uncompressed one that can't sustain higher frame rates at larger
+        # resolutions; explicitly select the configured format so the requested
+        # FPS is actually achievable rather than silently capped by the driver.
+        if sys.platform.startswith("win"):
+            pixel_format = str(self.pixel_format or "")[:4]
+            if len(pixel_format) == 4:
+                self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*pixel_format.upper()))
 
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(self.w))
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, float(self.h))

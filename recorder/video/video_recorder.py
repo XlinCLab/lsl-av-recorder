@@ -145,6 +145,16 @@ class VideoRecorder:
                 pass
             self.cap = None
             return False
+
+        # DirectShow negotiates a default pixel format on open, which is often an
+        # uncompressed one that can't sustain higher frame rates at larger
+        # resolutions; explicitly select the configured format so the requested
+        # FPS is actually achievable rather than silently capped by the driver.
+        if sys.platform.startswith("win"):
+            pixel_format = str(getattr(self.cam, "PixelFormat", "") or "")[:4]
+            if len(pixel_format) == 4:
+                self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*pixel_format.upper()))
+
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.cam.Width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.cam.Height)
         self.cap.set(cv2.CAP_PROP_FPS, self.cam.FPS)
