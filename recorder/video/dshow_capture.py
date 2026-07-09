@@ -110,3 +110,59 @@ def get_windows_camera_capabilities(device_index: int) -> Dict[str, Any]:
         formats = graph.get_input_device().get_formats()
         del graph  # release COM references before CoUninitialize runs
     return _build_capabilities_from_formats(formats)
+
+
+def _find_format_index(
+    formats: List[Dict[str, Any]],
+    width: int,
+    height: int,
+    pixel_format: str,
+    fps: float | None = None,
+) -> int | None:
+    candidates = [
+        fmt
+        for fmt in formats
+        if int(fmt["width"]) == int(width)
+        and int(fmt["height"]) == int(height)
+        and str(fmt["media_type_str"]).upper() == str(pixel_format).upper()
+    ]
+    if not candidates:
+        return None
+    if fps:
+        for fmt in candidates:
+            if fmt["min_framerate"] <= fps <= fmt["max_framerate"]:
+                return int(fmt["index"])
+    return int(candidates[0]["index"])
+
+
+def set_windows_camera_format(
+    device_index: int,
+    width: int,
+    height: int,
+    pixel_format: str,
+    fps: float | None = None,
+) -> bool:
+    """Configure the DirectShow capture pin's format directly via IAMStreamConfig,
+    before OpenCV opens the device -- mirroring how `v4l2-ctl` pre-configures the
+    device on Linux ahead of `cv2.VideoCapture`.
+
+    Note: `fps` is only used to pick between multiple stream-caps entries that
+    share the same resolution/pixel format but report different frame-rate ranges;
+    the rate actually applied is whichever nominal rate is embedded in the matched
+    entry's media type (typically that entry's maximum), not necessarily the exact
+    requested value.
+    """
+    with _com_session():
+        from pygrabber.dshow_graph import FilterGraph
+
+        graph = FilterGraph()
+        graph.add_video_input_device(device_index)
+        video_input = graph.get_input_device()
+        formats = video_input.get_formats()
+        match_index = _find_format_index(formats, width, height, pixel_format, fps)
+        if match_index is None:
+            del graph
+            return False
+        video_input.set_format(match_index)
+        del graph  # release COM references before CoUninitialize runs
+    return True

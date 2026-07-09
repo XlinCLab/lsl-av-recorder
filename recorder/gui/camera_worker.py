@@ -13,6 +13,7 @@ from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
 from ..video.color_adjust import apply_color_adjustments
 from ..video.constants import (DEFAULT_BRIGHTNESS, DEFAULT_HUE,
                                DEFAULT_SATURATION)
+from ..video.dshow_capture import set_windows_camera_format
 
 
 @dataclass
@@ -83,7 +84,34 @@ class CameraWorker(QObject):
         )
         self.outlet = StreamOutlet(info, chunk_size=0, max_buffered=360)
 
+    def _configure_windows_format(self):
+        # DirectShow negotiates a default pixel format on open (often an
+        # uncompressed one that can't sustain higher frame rates at larger
+        # resolutions). cv2's own CAP_PROP_FOURCC support for the DSHOW backend is
+        # unreliable (long-standing OpenCV issue, especially for MJPG), so the
+        # format is set directly via DirectShow's IAMStreamConfig before OpenCV
+        # opens the device -- mirroring how v4l2-ctl pre-configures the device on
+        # Linux ahead of cv2.VideoCapture.
+        pixel_format = str(self.pixel_format or "")
+        if not pixel_format:
+            return
+        try:
+
+            ok = set_windows_camera_format(
+                self.cam_index, self.w, self.h, pixel_format, float(self.fps) or None
+            )
+            if not ok:
+                self.status.emit(
+                    f"WARNING: Could not pre-configure DirectShow format {pixel_format} "
+                    f"{self.w}x{self.h}; falling back to driver default."
+                )
+        except Exception as exc:
+            self.status.emit(f"WARNING: Failed to pre-configure DirectShow format: {exc}")
+
     def _open_cap(self):
+        if sys.platform.startswith("win"):
+            self._configure_windows_format()
+
         if sys.platform == "darwin":  # MacOS
             self.cap = cv2.VideoCapture(self.cam_index, cv2.CAP_AVFOUNDATION)
         elif sys.platform.startswith("linux"):
@@ -98,15 +126,6 @@ class CameraWorker(QObject):
             raise RuntimeError(
                 f"Could not open camera index={self.cam_index} ({self.devnode})"
             )
-
-        # DirectShow negotiates a default pixel format on open, which is often an
-        # uncompressed one that can't sustain higher frame rates at larger
-        # resolutions; explicitly select the configured format so the requested
-        # FPS is actually achievable rather than silently capped by the driver.
-        if sys.platform.startswith("win"):
-            pixel_format = str(self.pixel_format or "")[:4]
-            if len(pixel_format) == 4:
-                self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*pixel_format.upper()))
 
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(self.w))
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, float(self.h))

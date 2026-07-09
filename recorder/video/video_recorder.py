@@ -127,7 +127,35 @@ class VideoRecorder:
                 self.warning(f"Preview callback failed: {exc}")
             self._next_preview_ts = now + self._preview_interval
 
+    def _configure_windows_format(self):
+        # DirectShow negotiates a default pixel format on open (often an
+        # uncompressed one that can't sustain higher frame rates at larger
+        # resolutions). cv2's own CAP_PROP_FOURCC support for the DSHOW backend is
+        # unreliable (long-standing OpenCV issue, especially for MJPG), so the
+        # format is set directly via DirectShow's IAMStreamConfig before OpenCV
+        # opens the device -- mirroring how v4l2-ctl pre-configures the device on
+        # Linux ahead of cv2.VideoCapture.
+        pixel_format = str(getattr(self.cam, "PixelFormat", "") or "")
+        if not pixel_format:
+            return
+        try:
+            from .dshow_capture import set_windows_camera_format
+
+            ok = set_windows_camera_format(
+                int(self.cam.DeviceIndex), int(self.cam.Width), int(self.cam.Height),
+                pixel_format, float(self.cam.FPS or 0) or None,
+            )
+            if not ok:
+                self.warning(
+                    f"Could not pre-configure DirectShow format {pixel_format} "
+                    f"{self.cam.Width}x{self.cam.Height}; falling back to driver default."
+                )
+        except Exception as exc:
+            self.warning(f"Failed to pre-configure DirectShow format: {exc}")
+
     def start(self):
+        if sys.platform.startswith("win"):
+            self._configure_windows_format()
         if sys.platform == "darwin":
             self.cap = cv2.VideoCapture(self.cam.DeviceIndex, cv2.CAP_AVFOUNDATION)
         elif sys.platform.startswith("linux"):
@@ -145,15 +173,6 @@ class VideoRecorder:
                 pass
             self.cap = None
             return False
-
-        # DirectShow negotiates a default pixel format on open, which is often an
-        # uncompressed one that can't sustain higher frame rates at larger
-        # resolutions; explicitly select the configured format so the requested
-        # FPS is actually achievable rather than silently capped by the driver.
-        if sys.platform.startswith("win"):
-            pixel_format = str(getattr(self.cam, "PixelFormat", "") or "")[:4]
-            if len(pixel_format) == 4:
-                self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*pixel_format.upper()))
 
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.cam.Width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.cam.Height)
