@@ -16,6 +16,9 @@ def list_input_devices() -> List[Dict[str, Any]]:
 def default_input_device_index():
     try:
         di = sd.default.device[0]
-        return di if di is not None else None
+        # PortAudio uses -1 (rather than None) to signal "no default device",
+        # which notably happens on some Windows machines with no configured
+        # default recording device.
+        return di if di is not None and di >= 0 else None
     except Exception:
         return None

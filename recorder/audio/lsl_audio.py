@@ -32,6 +32,33 @@ def _dtype_format(bitdepth: int) -> str:
     return "int16" if bitdepth == 16 else "float32"
 
 
+def _resolve_input_device(requested: Optional[Union[int, str]]):
+    """Resolve the input device to hand to sounddevice, falling back away from an
+    unusable default (-1) rather than letting PortAudio raise a cryptic error."""
+    if requested is not None:
+        return requested
+    try:
+        default_idx = sd.default.device[0]
+    except Exception:
+        default_idx = None
+    if default_idx is not None and default_idx >= 0:
+        return default_idx
+    # No usable default input device (seen on some Windows machines with no
+    # configured default recording device); fall back to the first device
+    # that supports input.
+    try:
+        devices = sd.query_devices()
+    except Exception:
+        devices = []
+    for i, d in enumerate(devices):
+        if d.get("max_input_channels", 0) > 0:
+            return i
+    raise RuntimeError(
+        "No audio input device is available. Select a specific input device in the "
+        "Audio tab, or disable audio recording."
+    )
+
+
 class AudioLSLStreamer:
     def __init__(self, s: AudioStreamSettings, sample_cb: Callable, status_cb: Optional[Callable[[str], None]] = None):
         self.s = s
@@ -78,7 +105,7 @@ class AudioLSLStreamer:
                 self.sample_cb(timestamps, x)
 
         self.stream = sd.InputStream(
-            device=self.s.device,
+            device=_resolve_input_device(self.s.device),
             samplerate=self.s.samplerate,
             channels=self.s.channels,
             dtype=dtype,
