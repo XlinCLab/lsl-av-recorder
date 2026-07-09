@@ -27,12 +27,19 @@ Desktop GUI recorder for synchronized audio/video stream recording and XDF writi
 - OS-specific camera dependency:
   - Linux: `v4l-utils` (`v4l2-ctl`)
   - macOS: `ffmpeg` (AVFoundation input)
+  - Windows: `ffmpeg` (DirectShow input)
 
 ## Installation
-Use the setup script:
+Use the setup script for your platform:
 
+Linux and MacOS:
 ```bash
 ./setup.sh
+```
+
+Windows:
+```powershell
+.\setup.ps1
 ```
 
 `setup.sh` does the following:
@@ -44,6 +51,19 @@ Use the setup script:
 - Installs package with:
   - `pip install -U pip`
   - `pip install -e .`
+
+`setup.ps1` does the following:
+- checks/installs `ffmpeg` via `winget`
+- downloads the latest LabRecorder Windows release
+- creates `.venv`
+- installs package with:
+  - `pip install -U pip`
+  - `pip install -e .`
+
+If PowerShell blocks script execution, run once as Administrator:
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+```
 
 ## Running the App
 Start the GUI:
