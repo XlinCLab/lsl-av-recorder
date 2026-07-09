@@ -13,8 +13,8 @@ from ..video.constants import (BRIGHTNESS_RANGE, CAMERA_CAPS_CACHE,
                                IS_LINUX, IS_MAC, IS_WINDOWS, PIXEL_FORMAT_MAP,
                                SATURATION_RANGE, V4L2_AUTO_EXPOSURE_MODE,
                                V4L2_CONTROL_MAP, V4L2_MANUAL_EXPOSURE_MODE)
-from ..video.ffmpeg_utils import (_ffmpeg_dshow_list_options,
-                                  _get_supported_modes, _parse_dshow_options,
+from ..video.dshow_capture import get_windows_camera_capabilities
+from ..video.ffmpeg_utils import (_get_supported_modes,
                                   _probe_mac_supported_fps,
                                   _probe_mac_supported_ui_formats,
                                   probe_avfoundation_mode)
@@ -258,44 +258,9 @@ def _mac_camera_capabilities(
     return caps
 
 
-def _windows_camera_capabilities(devnode: str) -> Dict[str, Any]:
-    caps = _empty_capabilities()
-    _, text = _ffmpeg_dshow_list_options(devnode)
-    entries = _parse_dshow_options(text)
-
-    mode_fps: dict[tuple[int, int], set[int]] = {}
-    mode_fps_by_format: dict[str, dict[tuple[int, int], set[int]]] = {}
-    pixel_formats: set[str] = set()
-    for entry in entries:
-        mode = (entry["width"], entry["height"])
-        mode_fps.setdefault(mode, set()).update(entry["fps"])
-        ui_fmt = next(
-            (ui for ui, ff in PIXEL_FORMAT_MAP.items() if ff == entry["format"]),
-            entry["format"].upper(),
-        )
-        pixel_formats.add(ui_fmt)
-        mode_fps_by_format.setdefault(ui_fmt, {}).setdefault(mode, set()).update(entry["fps"])
-
-    caps["pixel_formats"] = sorted(pixel_formats)
-    caps["fps"] = sorted({f for fps_values in mode_fps.values() for f in fps_values})
-    caps["modes"] = [
-        {"width": w, "height": h, "fps": sorted(fps_values)}
-        for (w, h), fps_values in sorted(mode_fps.items())
-        if fps_values
-    ]
-    if mode_fps_by_format:
-        caps["modes_by_format"] = {
-            fmt: [
-                {"width": w, "height": h, "fps": sorted(fps_values)}
-                for (w, h), fps_values in sorted(modes.items())
-                if fps_values
-            ]
-            for fmt, modes in mode_fps_by_format.items()
-        }
-    # Brightness/hue/saturation and auto-exposure/auto-focus are not exposed by ffmpeg's dshow probing; 
-    # camera control application is not yet implemented on Windows
-    # (see set_camera_controls/set_frame_rate), so these stay at their unsupported defaults.
-    return caps
+def _windows_camera_capabilities(devnode: str, device_index: int | None) -> Dict[str, Any]:
+    index = device_index if device_index is not None else int(devnode)
+    return get_windows_camera_capabilities(index)
 
 
 def get_camera_capabilities(
@@ -325,7 +290,7 @@ def get_camera_capabilities(
     elif IS_MAC:
         caps = _mac_camera_capabilities(devnode, device_index, progress_cb=progress_cb)
     elif IS_WINDOWS:
-        caps = _windows_camera_capabilities(devnode)
+        caps = _windows_camera_capabilities(devnode, device_index)
     else:
         raise OSError(f"Unsupported OS: {sys.platform}")
     if progress_cb:

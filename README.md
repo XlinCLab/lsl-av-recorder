@@ -27,7 +27,7 @@ Desktop GUI recorder for synchronized audio/video stream recording and XDF writi
 - OS-specific camera dependency:
   - Linux: `v4l-utils` (`v4l2-ctl`)
   - macOS: `ffmpeg` (AVFoundation input)
-  - Windows: `ffmpeg` (DirectShow input)
+  - Windows: `pygrabber` (DirectShow via COM; installed automatically via pip)
 
 ## Installation
 Use the setup script for your platform:
@@ -53,7 +53,6 @@ Windows:
   - `pip install -e .`
 
 `setup.ps1` does the following:
-- checks/installs `ffmpeg` via `winget`
 - downloads the latest LabRecorder Windows release
 - creates `.venv`
 - installs package with:
@@ -141,15 +140,18 @@ Uses `ffmpeg` AVFoundation probing:
 - Auto-exposure / auto-focus are treated as unsupported
 
 ### Windows
-Uses `ffmpeg` DirectShow (`dshow`) probing:
-- Device list from `ffmpeg -f dshow -list_devices true`
-- Supported pixel formats, resolutions, and FPS ranges from `ffmpeg -f dshow -list_options true`
+Talks to DirectShow directly via COM (through `pygrabber`). Devices are addressed by their DirectShow enumeration index instead, the same index `cv2.VideoCapture(index, cv2.CAP_DSHOW)` uses to open the camera for recording:
+- Device list from `ICreateDevEnum`/`IEnumMoniker` (`FilterGraph.get_input_devices()`)
+- Supported pixel formats, resolutions, and FPS ranges from `IAMStreamConfig::GetStreamCaps`
+  (`VideoInput.get_formats()`), per (pixel format, resolution) combination
 - There is no DirectShow pre-flight application/validation step yet (the "Apply settings"
   button and the settings pass that runs automatically on **Start** are no-ops that report
   success without touching the device). Resolution and FPS are still applied for real by
   OpenCV (`cv2.CAP_DSHOW`) when recording starts.
 - Brightness/hue/saturation and auto-exposure/auto-focus are **not yet supported** on Windows
-  at all; those controls are disabled in the GUI (capability probing reports them unsupported).
+  at all (would require wrapping `IAMVideoProcAmp`/`IAMCameraControl`, which `pygrabber` does
+  not expose); those controls are disabled in the GUI (capability probing reports them
+  unsupported).
 
 ## Configuration Files (.cfg)
 Configuration files are INI-style and expected to be saved as `.cfg` files.

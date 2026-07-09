@@ -4,8 +4,9 @@
     Windows setup script for lsl-av-recorder. Mirrors setup.sh.
 
 .DESCRIPTION
-    Installs ffmpeg (DirectShow camera tooling) and LabRecorder via winget/GitHub,
-    then creates a Python virtual environment and installs the package.
+    Installs LabRecorder via GitHub, then creates a Python virtual environment
+    and installs the package (which pulls in pygrabber for DirectShow-based
+    camera enumeration/capability probing on Windows).
 
 .NOTES
     Run from an elevated or regular PowerShell prompt in the repo root:
@@ -19,17 +20,6 @@ $ErrorActionPreference = "Stop"
 function Test-CommandExists {
     param([string]$Name)
     return [bool](Get-Command $Name -ErrorAction SilentlyContinue)
-}
-
-# --- ffmpeg (DirectShow device enumeration/probing) ---
-if (Test-CommandExists "ffmpeg") {
-    Write-Host "ffmpeg already installed"
-} elseif (Test-CommandExists "winget") {
-    Write-Host "Installing ffmpeg via winget..."
-    winget install --id Gyan.FFmpeg -e --source winget --accept-package-agreements --accept-source-agreements
-    Write-Host "ffmpeg installed. You may need to restart your shell for PATH changes to take effect."
-} else {
-    Write-Warning "winget not found. Please install ffmpeg manually (https://ffmpeg.org/download.html) and ensure it is on PATH."
 }
 
 # --- liblsl ---
