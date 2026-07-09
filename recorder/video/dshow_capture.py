@@ -16,13 +16,6 @@ from contextlib import contextmanager
 from typing import Any, Dict, List
 
 
-def fourcc_to_str(fourcc: int) -> str:
-    """Decode a cv2 FOURCC integer (as returned by cap.get(cv2.CAP_PROP_FOURCC))
-    back into its 4-character code, e.g. for logging the pixel format a capture
-    device actually negotiated."""
-    return "".join(chr((int(fourcc) >> (8 * i)) & 0xFF) for i in range(4))
-
-
 @contextmanager
 def _com_session():
     """Ensure COM is initialized on the calling thread for the duration of the block.
@@ -119,6 +112,17 @@ def get_windows_camera_capabilities(device_index: int) -> Dict[str, Any]:
     return _build_capabilities_from_formats(formats)
 
 
+def summarize_formats(formats: List[Dict[str, Any]], limit: int = 20) -> str:
+    """Render a stream-caps list as a short, log-friendly summary of the unique
+    (pixel format, resolution) combinations actually found on the device."""
+    if not formats:
+        return "none found (device may be busy/unreachable)"
+    combos = sorted({f"{f['media_type_str']} {f['width']}x{f['height']}" for f in formats})
+    shown = combos[:limit]
+    suffix = f", ... ({len(combos) - limit} more)" if len(combos) > limit else ""
+    return ", ".join(shown) + suffix
+
+
 def _find_format_index(
     formats: List[Dict[str, Any]],
     width: int,
@@ -148,7 +152,7 @@ def set_windows_camera_format(
     height: int,
     pixel_format: str,
     fps: float | None = None,
-) -> bool:
+) -> tuple[bool, List[Dict[str, Any]]]:
     """Configure the DirectShow capture pin's format directly via IAMStreamConfig,
     before OpenCV opens the device -- mirroring how `v4l2-ctl` pre-configures the
     device on Linux ahead of `cv2.VideoCapture`.
@@ -158,6 +162,10 @@ def set_windows_camera_format(
     the rate actually applied is whichever nominal rate is embedded in the matched
     entry's media type (typically that entry's maximum), not necessarily the exact
     requested value.
+
+    Returns (success, formats), where `formats` is the full stream-caps list found
+    for the device at call time -- so a failed match can be logged with what was
+    actually available, without a second probe.
     """
     with _com_session():
         from pygrabber.dshow_graph import FilterGraph
@@ -169,7 +177,7 @@ def set_windows_camera_format(
         match_index = _find_format_index(formats, width, height, pixel_format, fps)
         if match_index is None:
             del graph
-            return False
+            return False, formats
         video_input.set_format(match_index)
         del graph  # release COM references before CoUninitialize runs
-    return True
+    return True, formats
