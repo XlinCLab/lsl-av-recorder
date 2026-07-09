@@ -57,3 +57,7 @@ FFMPEG_UNSUPPORTED_CONTROLS = (
     "auto_focus",
 )
 FFMPEG_PROBE_DURATION_SEC = 0.1
+# Hard cap on how long a single ffmpeg probe subprocess may run before being killed:
+# AVFoundation can hang on some device/mode/pixel-format combinations
+# instead of erroring out quickly, so probing needs a timeout to avoid stalling indefinitely.
+FFMPEG_PROBE_TIMEOUT_SEC = 5
