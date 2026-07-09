@@ -10,10 +10,11 @@ from ..utils.utils import (_extract_default, _extract_range, get_commit_hash,
 from ..video.constants import (BRIGHTNESS_RANGE, CAMERA_CAPS_CACHE,
                                DEFAULT_CAMERA_FPS, DEVNODE_PATTERN,
                                FFMPEG_UNSUPPORTED_CONTROLS, HUE_RANGE,
-                               IS_LINUX, IS_MAC, MAC_PIXEL_FORMAT_MAP,
+                               IS_LINUX, IS_MAC, IS_WINDOWS, PIXEL_FORMAT_MAP,
                                SATURATION_RANGE, V4L2_AUTO_EXPOSURE_MODE,
                                V4L2_CONTROL_MAP, V4L2_MANUAL_EXPOSURE_MODE)
-from ..video.ffmpeg_utils import (_get_supported_modes,
+from ..video.ffmpeg_utils import (_ffmpeg_dshow_list_options,
+                                  _get_supported_modes, _parse_dshow_options,
                                   _probe_mac_supported_fps,
                                   _probe_mac_supported_ui_formats,
                                   probe_avfoundation_mode)
@@ -257,6 +258,46 @@ def _mac_camera_capabilities(
     return caps
 
 
+def _windows_camera_capabilities(devnode: str) -> Dict[str, Any]:
+    caps = _empty_capabilities()
+    _, text = _ffmpeg_dshow_list_options(devnode)
+    entries = _parse_dshow_options(text)
+
+    mode_fps: dict[tuple[int, int], set[int]] = {}
+    mode_fps_by_format: dict[str, dict[tuple[int, int], set[int]]] = {}
+    pixel_formats: set[str] = set()
+    for entry in entries:
+        mode = (entry["width"], entry["height"])
+        mode_fps.setdefault(mode, set()).update(entry["fps"])
+        ui_fmt = next(
+            (ui for ui, ff in PIXEL_FORMAT_MAP.items() if ff == entry["format"]),
+            entry["format"].upper(),
+        )
+        pixel_formats.add(ui_fmt)
+        mode_fps_by_format.setdefault(ui_fmt, {}).setdefault(mode, set()).update(entry["fps"])
+
+    caps["pixel_formats"] = sorted(pixel_formats)
+    caps["fps"] = sorted({f for fps_values in mode_fps.values() for f in fps_values})
+    caps["modes"] = [
+        {"width": w, "height": h, "fps": sorted(fps_values)}
+        for (w, h), fps_values in sorted(mode_fps.items())
+        if fps_values
+    ]
+    if mode_fps_by_format:
+        caps["modes_by_format"] = {
+            fmt: [
+                {"width": w, "height": h, "fps": sorted(fps_values)}
+                for (w, h), fps_values in sorted(modes.items())
+                if fps_values
+            ]
+            for fmt, modes in mode_fps_by_format.items()
+        }
+    # Brightness/hue/saturation and auto-exposure/auto-focus are not exposed by ffmpeg's dshow probing; 
+    # camera control application is not yet implemented on Windows
+    # (see set_camera_controls/set_frame_rate), so these stay at their unsupported defaults.
+    return caps
+
+
 def get_camera_capabilities(
     devnode: str,
     device_index: int | None = None,
@@ -283,6 +324,8 @@ def get_camera_capabilities(
         caps = _linux_camera_capabilities(devnode)
     elif IS_MAC:
         caps = _mac_camera_capabilities(devnode, device_index, progress_cb=progress_cb)
+    elif IS_WINDOWS:
+        caps = _windows_camera_capabilities(devnode)
     else:
         raise OSError(f"Unsupported OS: {sys.platform}")
     if progress_cb:
@@ -320,7 +363,7 @@ def probe_mac_mode_support(
     device = str(device_index) if device_index is not None else reformat_devnode_for_ffmpeg(devnode)
     ff_pf = None
     if pixel_format:
-        ff_pf = MAC_PIXEL_FORMAT_MAP.get(str(pixel_format).upper(), str(pixel_format).lower())
+        ff_pf = PIXEL_FORMAT_MAP.get(str(pixel_format).upper(), str(pixel_format).lower())
     return probe_avfoundation_mode(device, width, height, fps, ff_pf)
 
 
@@ -348,7 +391,12 @@ def set_frame_rate(devnode: str, fps: float) -> bool:
             "-f", "null",
             "-"
         ]
-    
+
+    elif IS_WINDOWS:
+        raise NotImplementedError(
+            "Camera control application is not yet supported on Windows."
+        )
+
     _, error = run_capture_cmd(cmd)
     return error is None
 
@@ -423,7 +471,7 @@ def set_camera_controls(devnode: str, control_settings: dict) -> dict:
 
         mac_pixel_format = None
         if "pixel_format" in settings_to_apply:
-            mac_pixel_format = MAC_PIXEL_FORMAT_MAP.get(
+            mac_pixel_format = PIXEL_FORMAT_MAP.get(
                 str(settings_to_apply["pixel_format"]).upper(),
                 str(settings_to_apply["pixel_format"]).lower(),
             )
@@ -459,6 +507,11 @@ def set_camera_controls(devnode: str, control_settings: dict) -> dict:
             successful_settings.update(settings_to_apply)
         if color_controls:
             successful_settings.update(color_controls)
+
+    elif IS_WINDOWS:
+        raise NotImplementedError(
+            "Camera control application is not yet supported on Windows."
+        )
 
     else:
         raise ValueError(f"Unsupported OS: {sys.platform}")

@@ -140,6 +140,16 @@ Uses `ffmpeg` AVFoundation probing:
 - Brightness/saturation/hue are applied via `ffmpeg` filter chain
 - Auto-exposure / auto-focus are treated as unsupported
 
+### Windows
+Uses `ffmpeg` DirectShow (`dshow`) probing:
+- Device list from `ffmpeg -f dshow -list_devices true`
+- Supported pixel formats, resolutions, and FPS ranges from `ffmpeg -f dshow -list_options true`
+- Camera control application (resolution/FPS/pixel format selection via "Apply settings",
+  brightness/hue/saturation, auto-exposure/auto-focus) is **not yet implemented** on Windows;
+  attempting to apply settings raises a clear "not yet supported" error rather than failing
+  silently. Cameras still record using the resolution/FPS selected in the GUI, since those are
+  applied directly by OpenCV (`cv2.CAP_DSHOW`) when recording starts.
+
 ## Configuration Files (.cfg)
 Configuration files are INI-style and expected to be saved as `.cfg` files.
 
@@ -227,5 +237,7 @@ XDF flow:
 - `XDFWriter` writes file header, stream headers, boundary/sample chunks, and stream footers.
 
 ## Notes and Current Limitations
-- The app is currently implemented for Linux/macOS camera tooling paths.
+- Windows support covers device enumeration, capability probing, and recording; camera control
+  application (brightness/hue/saturation, auto-exposure/auto-focus, and the "Apply settings"
+  pre-flight check) is not yet implemented on Windows — see [Windows](#windows) above.
 - Preview/live reconfiguration is intentionally conservative while recording is active.

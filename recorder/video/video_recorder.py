@@ -133,6 +133,8 @@ class VideoRecorder:
         elif sys.platform.startswith("linux"):
             source = self.cam.DevNode if getattr(self.cam, "DevNode", "") else self.cam.DeviceIndex
             self.cap = cv2.VideoCapture(source, cv2.CAP_V4L2)
+        elif sys.platform.startswith("win"):
+            self.cap = cv2.VideoCapture(self.cam.DeviceIndex, cv2.CAP_DSHOW)
         else:
             self.cap = cv2.VideoCapture(self.cam.DeviceIndex)
         if not self.cap.isOpened():

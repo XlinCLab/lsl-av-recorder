@@ -87,7 +87,9 @@ class CameraWorker(QObject):
         elif sys.platform.startswith("linux"):
             source = self.devnode if self.devnode else self.cam_index
             self.cap = cv2.VideoCapture(source, cv2.CAP_V4L2)
-        else:  # Windows
+        elif sys.platform.startswith("win"):  # Windows
+            self.cap = cv2.VideoCapture(self.cam_index, cv2.CAP_DSHOW)
+        else:
             self.cap = cv2.VideoCapture(self.cam_index)
 
         if not self.cap.isOpened():

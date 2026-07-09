@@ -33,7 +33,8 @@ DEFAULT_PREVIEW_FPS = 15
 # Pixel format
 DEFAULT_PIXEL_FORMAT = "YUYV"
 # UI -> AVFoundation pixel format mapping for macOS ffmpeg
-MAC_PIXEL_FORMAT_MAP = {
+# UI -> DirectShow pixel/codec format mapping for Windows ffmpeg
+PIXEL_FORMAT_MAP = {
     "YUYV": "yuyv422",
     "UYVY": "uyvy422",
     "NV12": "nv12",

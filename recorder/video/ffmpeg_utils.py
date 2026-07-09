@@ -3,7 +3,7 @@ import subprocess
 from typing import List, Tuple
 
 from ..video.constants import (DEFAULT_CAMERA_FPS, FFMPEG_PROBE_DURATION_SEC,
-                               FFMPEG_PROBE_TIMEOUT_SEC, MAC_PIXEL_FORMAT_MAP)
+                               FFMPEG_PROBE_TIMEOUT_SEC, PIXEL_FORMAT_MAP)
 
 
 def _ffmpeg_avfoundation_probe(device: str, extra_args: list[str]) -> tuple[bool, str]:
@@ -90,9 +90,9 @@ def _probe_mac_supported_ui_formats(
     # Report progress per individual probe attempt (format x mode), not just
     # once per pixel format, since a single format can require looping over
     # many mode/fps combinations before it can be marked supported or not.
-    total_probes = max(1, len(MAC_PIXEL_FORMAT_MAP) * len(mode_probe_args))
+    total_probes = max(1, len(PIXEL_FORMAT_MAP) * len(mode_probe_args))
     completed = 0
-    for ui_fmt, ff_fmt in MAC_PIXEL_FORMAT_MAP.items():
+    for ui_fmt, ff_fmt in PIXEL_FORMAT_MAP.items():
         for mode_args in mode_probe_args:
             ok, text = _ffmpeg_avfoundation_probe(
                 device,
@@ -130,3 +130,50 @@ def probe_avfoundation_mode(
     if pixel_format:
         return _pixel_format_probe_succeeded(text, ok)
     return ok
+
+
+# DirectShow reports one line per supported (format, resolution) pair, e.g.:
+#   vcodec=mjpeg  min s=640x480 fps=5 max s=640x480 fps=30
+#   pixel_format=yuyv422  min s=640x480 fps=5 max s=640x480 fps=30
+_DSHOW_OPTION_RE = re.compile(
+    r"(?:vcodec|pixel_format)=(?P<fmt>\S+)\s+"
+    r"min\s+s=(?P<minw>\d+)x(?P<minh>\d+)\s+fps=(?P<minfps>[\d.]+)\s+"
+    r"max\s+s=(?P<maxw>\d+)x(?P<maxh>\d+)\s+fps=(?P<maxfps>[\d.]+)"
+)
+
+
+def _ffmpeg_dshow_list_options(device: str) -> tuple[bool, str]:
+    cmd = [
+        "ffmpeg",
+        "-v", "warning",
+        "-f", "dshow",
+        "-list_options", "true",
+        "-i", f"video={device}",
+    ]
+    proc = subprocess.run(cmd, check=False, capture_output=True, text=True)
+    text = (proc.stdout or "") + (proc.stderr or "")
+    return proc.returncode == 0, text
+
+
+def _parse_dshow_options(text: str) -> List[dict]:
+    """Parse `ffmpeg -f dshow -list_options true` output into per-mode entries."""
+    entries: List[dict] = []
+    for line in text.splitlines():
+        m = _DSHOW_OPTION_RE.search(line)
+        if not m:
+            continue
+        fps_values = sorted(
+            {int(round(float(m.group("minfps")))), int(round(float(m.group("maxfps"))))}
+        )
+        fps_values = [f for f in fps_values if f > 0]
+        sizes = {(int(m.group("minw")), int(m.group("minh"))), (int(m.group("maxw")), int(m.group("maxh")))}
+        for width, height in sizes:
+            entries.append(
+                {
+                    "format": m.group("fmt").lower(),
+                    "width": width,
+                    "height": height,
+                    "fps": fps_values,
+                }
+            )
+    return entries
