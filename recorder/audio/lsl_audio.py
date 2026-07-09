@@ -32,30 +32,59 @@ def _dtype_format(bitdepth: int) -> str:
     return "int16" if bitdepth == 16 else "float32"
 
 
-def _resolve_input_device(requested: Optional[Union[int, str]]):
-    """Resolve the input device to hand to sounddevice, falling back away from an
-    unusable default (-1) rather than letting PortAudio raise a cryptic error."""
+def _resolve_input_device(
+    requested: Optional[Union[int, str]],
+    samplerate: int,
+    channels: int,
+    dtype: str,
+):
+    """Resolve the input device to hand to sounddevice.
+
+    A device index can be enumerated by PortAudio yet still fail to actually open
+    (seen on Windows, where some MME/WASAPI entries are stale or don't support the
+    requested sample rate/channels). Rather than pick a device by index alone and let
+    PortAudio raise a cryptic error at stream-open time, validate candidates with
+    `check_input_settings` first and pick the first one that actually works.
+    """
     if requested is not None:
+        try:
+            sd.check_input_settings(device=requested, samplerate=samplerate, channels=channels, dtype=dtype)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Configured audio input device (device={requested!r}) is not usable "
+                f"with samplerate={samplerate}, channels={channels}: {exc}"
+            ) from exc
         return requested
+
+    candidates: list[int] = []
     try:
         default_idx = sd.default.device[0]
     except Exception:
         default_idx = None
     if default_idx is not None and default_idx >= 0:
-        return default_idx
-    # No usable default input device (seen on some Windows machines with no
-    # configured default recording device); fall back to the first device
-    # that supports input.
+        candidates.append(default_idx)
     try:
         devices = sd.query_devices()
     except Exception:
         devices = []
     for i, d in enumerate(devices):
-        if d.get("max_input_channels", 0) > 0:
-            return i
+        if d.get("max_input_channels", 0) > 0 and i not in candidates:
+            candidates.append(i)
+
+    last_error: Optional[Exception] = None
+    for idx in candidates:
+        try:
+            sd.check_input_settings(device=idx, samplerate=samplerate, channels=channels, dtype=dtype)
+            return idx
+        except Exception as exc:
+            last_error = exc
+            continue
+
+    detail = f" (last error: {last_error})" if last_error else ""
     raise RuntimeError(
-        "No audio input device is available. Select a specific input device in the "
-        "Audio tab, or disable audio recording."
+        "No usable audio input device was found for the configured sample rate/channels. "
+        "Select a specific input device in the Audio tab, adjust the sample rate/channels, "
+        f"or disable audio recording.{detail}"
     )
 
 
@@ -105,7 +134,7 @@ class AudioLSLStreamer:
                 self.sample_cb(timestamps, x)
 
         self.stream = sd.InputStream(
-            device=_resolve_input_device(self.s.device),
+            device=_resolve_input_device(self.s.device, self.s.samplerate, self.s.channels, dtype),
             samplerate=self.s.samplerate,
             channels=self.s.channels,
             dtype=dtype,
