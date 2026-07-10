@@ -1,4 +1,5 @@
-"""Windows video device enumeration and capability probing via DirectShow.
+"""Windows video device enumeration, capability probing, and frame capture via
+DirectShow.
 
 Talks to DirectShow directly through COM (via the `pygrabber` package) rather than
 shelling out to ffmpeg's dshow input. ffmpeg's dshow device-address parsing turned
@@ -7,13 +8,22 @@ containing spaces or characters like `&`/`#`/`{}` -- i.e. almost every real came
 could not be addressed at all, making device enumeration and capability probing
 silently return nothing. Talking to DirectShow's COM interfaces directly sidesteps
 that string-parsing layer entirely: devices are addressed by their enumeration
-index, matching what `cv2.VideoCapture(index, cv2.CAP_DSHOW)` already uses to open
+index, matching what `cv2.VideoCapture(index, cv2.CAP_DSHOW)` used to use to open
 the camera for recording.
+
+Frame capture also happens through this module now (`WindowsDShowVideoCapture`)
+rather than `cv2.VideoCapture(..., cv2.CAP_DSHOW)`. Configuring the device's format
+via `IAMStreamConfig::SetFormat` on one (temporary) filter graph and then opening a
+*separate* graph via `cv2.VideoCapture` does not reliably carry the configured
+format over on some drivers -- the device silently falls back to its default (often
+a low-fps uncompressed) mode regardless of what was requested. Capturing frames
+through the SAME graph that has the format applied avoids that handoff entirely.
 """
 from __future__ import annotations
 
+import threading
 from contextlib import contextmanager
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
 
 @contextmanager
@@ -146,38 +156,192 @@ def _find_format_index(
     return int(candidates[0]["index"])
 
 
-def set_windows_camera_format(
-    device_index: int,
-    width: int,
-    height: int,
-    pixel_format: str,
-    fps: float | None = None,
-) -> tuple[bool, List[Dict[str, Any]]]:
-    """Configure the DirectShow capture pin's format directly via IAMStreamConfig,
-    before OpenCV opens the device -- mirroring how `v4l2-ctl` pre-configures the
-    device on Linux ahead of `cv2.VideoCapture`.
+def _make_frame_callback(on_frame: Callable[[Any], None]):
+    """Build an ISampleGrabberCB COM callback object that forwards *every*
+    delivered buffer to `on_frame` as a BGR uint8 numpy array.
 
-    Note: `fps` is only used to pick between multiple stream-caps entries that
-    share the same resolution/pixel format but report different frame-rate ranges;
-    the rate actually applied is whichever nominal rate is embedded in the matched
-    entry's media type (typically that entry's maximum), not necessarily the exact
-    requested value.
-
-    Returns (success, formats), where `formats` is the full stream-caps list found
-    for the device at call time -- so a failed match can be logged with what was
-    actually available, without a second probe.
+    Defined inside a function so the COM/numpy imports stay lazy (this module
+    must stay importable on non-Windows platforms). pygrabber's own
+    SampleGrabberCallback only fires on an explicit grab_frame() request (it's
+    built for periodic snapshots); continuous video capture needs every frame.
     """
-    with _com_session():
-        from pygrabber.dshow_graph import FilterGraph
+    from comtypes import COMObject
+    import numpy as np
+    from pygrabber.dshow_core import qedit
 
-        graph = FilterGraph()
-        graph.add_video_input_device(device_index)
-        video_input = graph.get_input_device()
-        formats = video_input.get_formats()
-        match_index = _find_format_index(formats, width, height, pixel_format, fps)
-        if match_index is None:
-            del graph
-            return False, formats
-        video_input.set_format(match_index)
-        del graph  # release COM references before CoUninitialize runs
-    return True, formats
+    class _ContinuousFrameCallback(COMObject):
+        _com_interfaces_ = [qedit.ISampleGrabberCB]
+
+        def __init__(self):
+            self.width = 0
+            self.height = 0
+            super().__init__()
+
+        def SampleCB(self, this, SampleTime, pSample):
+            return 0
+
+        def BufferCB(self, this, SampleTime, pBuffer, BufferLen):
+            if self.width and self.height:
+                try:
+                    img = np.ctypeslib.as_array(pBuffer, shape=(self.height, self.width, 3))
+                    # DirectShow RGB24 buffers are stored bottom-up; flip to
+                    # top-down and reverse channels (RGB -> BGR) to match cv2's
+                    # convention. Copy out before returning -- DirectShow reuses
+                    # this buffer for the next frame.
+                    img = np.ascontiguousarray(np.flip(img, axis=0)[:, :, ::-1])
+                    on_frame(img)
+                except Exception:
+                    pass
+            return 0
+
+    return _ContinuousFrameCallback()
+
+
+class WindowsDShowVideoCapture:
+    """Continuous video capture on Windows via a persistent DirectShow filter
+    graph (through `pygrabber`), used in place of `cv2.VideoCapture(..., CAP_DSHOW)`.
+
+    Implements the small subset of cv2.VideoCapture's interface this app actually
+    uses (isOpened/read/get/set/release) so it can be swapped in as a drop-in
+    replacement for `self.cap` on Windows.
+
+    Known caveats (untested on real hardware beyond initial verification):
+    - The SampleGrabber callback is invoked directly by DirectShow's internal
+      capture thread. This works in pygrabber's own shipped examples without an
+      explicit Windows message pump, but if frames never arrive, COM apartment
+      marshaling is the first thing to investigate.
+    - `IGraphBuilder.Connect()` is expected to preserve the source pin's
+      explicitly-selected format (set via IAMStreamConfig::SetFormat) and insert
+      a decoder filter to bridge to the sample grabber's requested RGB24 output
+      (e.g. Windows' built-in MJPEG decoder) -- this is standard DirectShow
+      behavior but depends on an appropriate decoder being registered.
+    """
+
+    def __init__(
+        self,
+        device_index: int,
+        width: int,
+        height: int,
+        pixel_format: Optional[str] = None,
+        fps: Optional[float] = None,
+        log_cb: Optional[Callable[[str, str], None]] = None,
+    ):
+        self._opened = False
+        self._graph = None
+        self._callback = None
+        self._com_initialized = False
+        self._frame_lock = threading.Lock()
+        self._latest_frame = None
+        self._frame_available = threading.Event()
+        self.actual_width = int(width)
+        self.actual_height = int(height)
+        self._log_cb = log_cb
+
+        import comtypes
+
+        comtypes.CoInitialize()
+        self._com_initialized = True
+        try:
+            from pygrabber.dshow_graph import FilterGraph, FilterType
+
+            graph = FilterGraph()
+            graph.add_video_input_device(device_index)
+
+            if pixel_format:
+                video_input = graph.get_input_device()
+                formats = video_input.get_formats()
+                match_index = _find_format_index(formats, width, height, pixel_format, fps)
+                if match_index is not None:
+                    video_input.set_format(match_index)
+                else:
+                    self._log(
+                        "WARNING",
+                        f"Could not select DirectShow format {pixel_format} "
+                        f"{width}x{height}; falling back to driver default. "
+                        f"Formats actually available: {summarize_formats(formats)}",
+                    )
+
+            # Reuse pygrabber's own boilerplate (adds the filter, requests RGB24
+            # output) then swap in our continuous callback in place of its
+            # grab-on-request one.
+            graph.add_sample_grabber(lambda frame: None)
+            sample_grabber = graph.filters[FilterType.sample_grabber]
+            callback = _make_frame_callback(self._on_frame)
+            sample_grabber.set_callback(callback, 1)
+
+            graph.add_null_render()
+            graph.prepare_preview_graph()
+
+            self.actual_width, self.actual_height = sample_grabber.get_resolution()
+            callback.width, callback.height = self.actual_width, self.actual_height
+            self._callback = callback  # keep alive for the graph's lifetime
+
+            graph.run()
+            self._graph = graph
+            self._opened = True
+        except Exception:
+            self.release()
+            raise
+
+    def _log(self, level: str, msg: str):
+        if self._log_cb:
+            try:
+                self._log_cb(msg, level)
+            except Exception:
+                pass
+
+    def _on_frame(self, frame):
+        with self._frame_lock:
+            self._latest_frame = frame
+        self._frame_available.set()
+
+    def isOpened(self) -> bool:
+        return self._opened
+
+    def read(self, timeout: float = 1.0):
+        if not self._opened:
+            return False, None
+        if not self._frame_available.wait(timeout):
+            return False, None
+        with self._frame_lock:
+            frame = self._latest_frame
+            self._frame_available.clear()
+        if frame is None:
+            return False, None
+        return True, frame
+
+    def get(self, prop_id) -> float:
+        import cv2
+
+        if prop_id == cv2.CAP_PROP_FRAME_WIDTH:
+            return float(self.actual_width)
+        if prop_id == cv2.CAP_PROP_FRAME_HEIGHT:
+            return float(self.actual_height)
+        return 0.0
+
+    def set(self, prop_id, value) -> bool:
+        # Resolution/FPS/pixel format are all configured once at construction
+        # via the DirectShow stream config; there's nothing to change afterward.
+        return False
+
+    def release(self):
+        if self._graph is not None:
+            try:
+                self._graph.stop()
+            except Exception:
+                pass
+            try:
+                self._graph.remove_filters()
+            except Exception:
+                pass
+            self._graph = None
+        self._callback = None
+        if self._com_initialized:
+            import comtypes
+
+            try:
+                comtypes.CoUninitialize()
+            except Exception:
+                pass
+            self._com_initialized = False
+        self._opened = False

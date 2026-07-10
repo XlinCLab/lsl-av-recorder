@@ -127,44 +127,26 @@ class VideoRecorder:
                 self.warning(f"Preview callback failed: {exc}")
             self._next_preview_ts = now + self._preview_interval
 
-    def _configure_windows_format(self):
-        # DirectShow negotiates a default pixel format on open (often an
-        # uncompressed one that can't sustain higher frame rates at larger
-        # resolutions). cv2's own CAP_PROP_FOURCC support for the DSHOW backend is
-        # unreliable (long-standing OpenCV issue, especially for MJPG), so the
-        # format is set directly via DirectShow's IAMStreamConfig before OpenCV
-        # opens the device -- mirroring how v4l2-ctl pre-configures the device on
-        # Linux ahead of cv2.VideoCapture.
-        pixel_format = str(getattr(self.cam, "PixelFormat", "") or "")
-        if not pixel_format:
-            return
-        try:
-            from .dshow_capture import (set_windows_camera_format,
-                                        summarize_formats)
-
-            ok, formats = set_windows_camera_format(
-                int(self.cam.DeviceIndex), int(self.cam.Width), int(self.cam.Height),
-                pixel_format, float(self.cam.FPS or 0) or None,
-            )
-            if not ok:
-                self.warning(
-                    f"Could not pre-configure DirectShow format {pixel_format} "
-                    f"{self.cam.Width}x{self.cam.Height}; falling back to driver default. "
-                    f"Formats actually available: {summarize_formats(formats)}"
-                )
-        except Exception as exc:
-            self.warning(f"Failed to pre-configure DirectShow format: {exc}")
-
     def start(self):
-        if sys.platform.startswith("win"):
-            self._configure_windows_format()
         if sys.platform == "darwin":
             self.cap = cv2.VideoCapture(self.cam.DeviceIndex, cv2.CAP_AVFOUNDATION)
         elif sys.platform.startswith("linux"):
             source = self.cam.DevNode if getattr(self.cam, "DevNode", "") else self.cam.DeviceIndex
             self.cap = cv2.VideoCapture(source, cv2.CAP_V4L2)
         elif sys.platform.startswith("win"):
-            self.cap = cv2.VideoCapture(self.cam.DeviceIndex, cv2.CAP_DSHOW)
+            from .dshow_capture import WindowsDShowVideoCapture
+
+            try:
+                self.cap = WindowsDShowVideoCapture(
+                    int(self.cam.DeviceIndex), int(self.cam.Width), int(self.cam.Height),
+                    str(getattr(self.cam, "PixelFormat", "") or "") or None,
+                    float(self.cam.FPS or 0) or None,
+                    log_cb=self.log,
+                )
+            except Exception as exc:
+                self.error(f"Could not open DirectShow capture: {exc}")
+                self.cap = None
+                return False
         else:
             self.cap = cv2.VideoCapture(self.cam.DeviceIndex)
         if not self.cap.isOpened():

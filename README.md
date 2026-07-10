@@ -140,15 +140,24 @@ Uses `ffmpeg` AVFoundation probing:
 - Auto-exposure / auto-focus are treated as unsupported
 
 ### Windows
-Talks to DirectShow directly via COM (through `pygrabber`). Devices are addressed by their DirectShow enumeration index instead, the same index `cv2.VideoCapture(index, cv2.CAP_DSHOW)` uses to open the camera for recording:
+Talks to DirectShow directly via COM (through `pygrabber`), for both capability discovery
+and actual frame capture. Devices are addressed by their DirectShow enumeration index:
 - Device list from `ICreateDevEnum`/`IEnumMoniker` (`FilterGraph.get_input_devices()`)
 - Supported pixel formats, resolutions, and FPS ranges from `IAMStreamConfig::GetStreamCaps`
   (`VideoInput.get_formats()`), per (pixel format, resolution) combination
-- There is no DirectShow pre-flight application/validation step yet (the "Apply settings"
-  button and the settings pass that runs automatically on **Start** are no-ops that report
-  success without touching the device). Resolution, FPS, and pixel format are still applied
-  for real when recording/preview starts, via OpenCV (`cv2.CAP_DSHOW` +
-  `cv2.CAP_PROP_FOURCC`/`FRAME_WIDTH`/`FRAME_HEIGHT`/`FPS`).
+- **Frame capture** (`WindowsDShowVideoCapture` in `recorder/video/dshow_capture.py`) builds
+  one persistent DirectShow filter graph per camera: the video source (format selected via
+  `IAMStreamConfig::SetFormat`) feeds a `SampleGrabber` filter (requesting RGB24, with
+  DirectShow auto-inserting a decoder such as its built-in MJPEG decoder as needed) into a
+  null renderer. This replaces `cv2.VideoCapture(..., cv2.CAP_DSHOW)`, because configuring
+  the format on one filter graph and then opening a *separate* graph via `cv2.VideoCapture`
+  does not reliably carry the format over on all drivers — capture stayed at the device's
+  low-fps uncompressed default regardless of what was requested. Capturing frames through
+  the same graph that has the format applied avoids that handoff.
+- There is no separate "Apply settings" pre-flight step for resolution/FPS/pixel format on
+  Windows (the button and the settings pass that runs automatically on **Start** are no-ops
+  that report success without touching the device) — these are applied once, for real, when
+  the DirectShow graph is built at recording/preview start.
 - Brightness/hue/saturation and auto-exposure/auto-focus are **not yet supported** on Windows
   at all (would require wrapping `IAMVideoProcAmp`/`IAMCameraControl`, which `pygrabber` does
   not expose); those controls are disabled in the GUI (capability probing reports them

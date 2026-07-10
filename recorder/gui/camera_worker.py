@@ -13,7 +13,6 @@ from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
 from ..video.color_adjust import apply_color_adjustments
 from ..video.constants import (DEFAULT_BRIGHTNESS, DEFAULT_HUE,
                                DEFAULT_SATURATION)
-from ..video.dshow_capture import set_windows_camera_format, summarize_formats
 
 
 @dataclass
@@ -84,41 +83,20 @@ class CameraWorker(QObject):
         )
         self.outlet = StreamOutlet(info, chunk_size=0, max_buffered=360)
 
-    def _configure_windows_format(self):
-        # DirectShow negotiates a default pixel format on open (often an
-        # uncompressed one that can't sustain higher frame rates at larger
-        # resolutions). cv2's own CAP_PROP_FOURCC support for the DSHOW backend is
-        # unreliable (long-standing OpenCV issue, especially for MJPG), so the
-        # format is set directly via DirectShow's IAMStreamConfig before OpenCV
-        # opens the device -- mirroring how v4l2-ctl pre-configures the device on
-        # Linux ahead of cv2.VideoCapture.
-        pixel_format = str(self.pixel_format or "")
-        if not pixel_format:
-            return
-        try:
-            ok, formats = set_windows_camera_format(
-                self.cam_index, self.w, self.h, pixel_format, float(self.fps) or None
-            )
-            if not ok:
-                self.status.emit(
-                    f"WARNING: Could not pre-configure DirectShow format {pixel_format} "
-                    f"{self.w}x{self.h}; falling back to driver default. "
-                    f"Formats actually available: {summarize_formats(formats)}"
-                )
-        except Exception as exc:
-            self.status.emit(f"WARNING: Failed to pre-configure DirectShow format: {exc}")
-
     def _open_cap(self):
-        if sys.platform.startswith("win"):
-            self._configure_windows_format()
-
         if sys.platform == "darwin":  # MacOS
             self.cap = cv2.VideoCapture(self.cam_index, cv2.CAP_AVFOUNDATION)
         elif sys.platform.startswith("linux"):
             source = self.devnode if self.devnode else self.cam_index
             self.cap = cv2.VideoCapture(source, cv2.CAP_V4L2)
         elif sys.platform.startswith("win"):  # Windows
-            self.cap = cv2.VideoCapture(self.cam_index, cv2.CAP_DSHOW)
+            from ..video.dshow_capture import WindowsDShowVideoCapture
+
+            self.cap = WindowsDShowVideoCapture(
+                self.cam_index, self.w, self.h, self.pixel_format or None,
+                float(self.fps) or None,
+                log_cb=lambda msg, level="WARNING": self.status.emit(f"{level}: {msg}"),
+            )
         else:
             self.cap = cv2.VideoCapture(self.cam_index)
 
