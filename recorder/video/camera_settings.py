@@ -258,9 +258,11 @@ def _mac_camera_capabilities(
     return caps
 
 
-def _windows_camera_capabilities(devnode: str, device_index: int | None) -> Dict[str, Any]:
+def _windows_camera_capabilities(
+    devnode: str, device_index: int | None, progress_cb=None
+) -> Dict[str, Any]:
     index = device_index if device_index is not None else int(devnode)
-    return get_windows_camera_capabilities(index)
+    return get_windows_camera_capabilities(index, progress_cb=progress_cb)
 
 
 def get_camera_capabilities(
@@ -290,7 +292,7 @@ def get_camera_capabilities(
     elif IS_MAC:
         caps = _mac_camera_capabilities(devnode, device_index, progress_cb=progress_cb)
     elif IS_WINDOWS:
-        caps = _windows_camera_capabilities(devnode, device_index)
+        caps = _windows_camera_capabilities(devnode, device_index, progress_cb=progress_cb)
     else:
         raise OSError(f"Unsupported OS: {sys.platform}")
     if progress_cb:

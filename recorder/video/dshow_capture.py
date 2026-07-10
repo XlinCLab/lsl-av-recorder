@@ -22,6 +22,7 @@ through the SAME graph that has the format applied avoids that handoff entirely.
 from __future__ import annotations
 
 import threading
+import time
 from contextlib import contextmanager
 from typing import Any, Callable, Dict, List, Optional
 
@@ -111,7 +112,106 @@ def _build_capabilities_from_formats(formats: List[Dict[str, Any]]) -> Dict[str,
     return caps
 
 
-def get_windows_camera_capabilities(device_index: int) -> Dict[str, Any]:
+# Common, human-recognizable frame rates to snap noisy measurements to, so
+# repeated probes of the same device converge on a stable, reproducible value
+# instead of e.g. 29.1 vs 30.6 depending on measurement jitter.
+_COMMON_FPS_VALUES = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20, 24, 25, 30, 50, 60, 90, 120]
+
+
+def _snap_to_common_fps(value: float) -> int:
+    return min(_COMMON_FPS_VALUES, key=lambda f: abs(f - value))
+
+
+def _measure_achievable_fps(
+    device_index: int,
+    width: int,
+    height: int,
+    pixel_format: str,
+    target_fps: float,
+    duration: float = 1.0,
+) -> Optional[float]:
+    """Briefly open a real capture at the given format/resolution/fps and
+    measure the actual delivered frame rate.
+
+    DirectShow's IAMStreamConfig::GetStreamCaps has been observed to declare an
+    optimistic maximum (e.g. 60fps) that the device doesn't actually sustain in
+    practice (measured ~30fps) -- capability probing shouldn't just trust that
+    declaration, the same way macOS probing doesn't just trust AVFoundation's
+    self-reported modes without confirming each one actually opens.
+    """
+    try:
+        cap = WindowsDShowVideoCapture(device_index, width, height, pixel_format, target_fps)
+    except Exception:
+        return None
+    try:
+        if not cap.isOpened():
+            return None
+        cap.read(timeout=1.5)  # discard first frame; graph is still warming up
+        count = 0
+        start = time.monotonic()
+        while time.monotonic() - start < duration:
+            ok, _ = cap.read(timeout=0.5)
+            if ok:
+                count += 1
+        elapsed = time.monotonic() - start
+        if elapsed <= 0 or count == 0:
+            return None
+        return count / elapsed
+    finally:
+        cap.release()
+
+
+def _verify_max_framerates(
+    device_index: int,
+    formats: List[Dict[str, Any]],
+    progress_cb: Optional[Callable[[int, str], None]] = None,
+) -> List[Dict[str, Any]]:
+    """Correct each unique (pixel format, resolution) combination's declared
+    maximum fps against what's actually measured, clamping it down if the
+    driver's declaration is optimistic -- so the GUI never offers, and users
+    never select, a rate the camera can't really sustain."""
+    unique_combos: dict[tuple[str, int, int], float] = {}
+    for fmt in formats:
+        key = (str(fmt["media_type_str"]).upper(), int(fmt["width"]), int(fmt["height"]))
+        unique_combos[key] = max(unique_combos.get(key, 0.0), float(fmt["max_framerate"]))
+
+    corrections: dict[tuple[str, int, int], float] = {}
+    total = len(unique_combos)
+    for i, ((pf, w, h), declared_max) in enumerate(unique_combos.items(), start=1):
+        if progress_cb:
+            try:
+                progress_cb(
+                    int(100 * i / max(1, total)),
+                    f"Verifying achievable FPS ({i}/{total}): {pf} {w}x{h}",
+                )
+            except Exception:
+                pass
+        measured = _measure_achievable_fps(device_index, w, h, pf, declared_max)
+        if measured is None:
+            continue
+        snapped = _snap_to_common_fps(measured)
+        # Only correct on a real, substantial gap -- not measurement noise
+        # around the declared value.
+        if snapped < declared_max * 0.7:
+            corrections[(pf, w, h)] = float(snapped)
+
+    if not corrections:
+        return formats
+
+    corrected_formats = []
+    for fmt in formats:
+        key = (str(fmt["media_type_str"]).upper(), int(fmt["width"]), int(fmt["height"]))
+        if key in corrections:
+            fmt = dict(fmt)
+            fmt["max_framerate"] = min(float(fmt["max_framerate"]), corrections[key])
+        corrected_formats.append(fmt)
+    return corrected_formats
+
+
+def get_windows_camera_capabilities(
+    device_index: int,
+    progress_cb: Optional[Callable[[int, str], None]] = None,
+) -> Dict[str, Any]:
     with _com_session():
         from pygrabber.dshow_graph import FilterGraph
 
@@ -119,6 +219,8 @@ def get_windows_camera_capabilities(device_index: int) -> Dict[str, Any]:
         graph.add_video_input_device(device_index)
         formats = graph.get_input_device().get_formats()
         del graph  # release COM references before CoUninitialize runs
+
+    formats = _verify_max_framerates(device_index, formats, progress_cb=progress_cb)
     return _build_capabilities_from_formats(formats)
 
 
@@ -154,6 +256,28 @@ def _find_format_index(
             if fmt["min_framerate"] <= fps <= fmt["max_framerate"]:
                 return int(fmt["index"])
     return int(candidates[0]["index"])
+
+
+def _set_format_with_fps(video_input, format_index: int, fps: Optional[float]) -> None:
+    """Select a DirectShow stream-caps entry by index, overwriting the media
+    type's embedded frame interval with the exact requested fps first.
+
+    `VideoInput.set_format()` (pygrabber) calls `SetFormat` with the media type
+    exactly as returned by `GetStreamCaps`, whose embedded `avg_time_per_frame`
+    is that entry's own nominal rate -- observed in practice to be the entry's
+    declared *maximum* -- not necessarily the fps actually requested. Without
+    overwriting it, every rate within an entry's declared [min, max] range ends
+    up recording at that same default instead of the one actually selected.
+    """
+    from ctypes import POINTER, cast
+    from pygrabber.dshow_core import IAMStreamConfig, VIDEOINFOHEADER
+
+    stream_config = video_input.get_out().QueryInterface(IAMStreamConfig)
+    media_type, _ = stream_config.GetStreamCaps(format_index)
+    if fps:
+        header = cast(media_type.contents.pbFormat, POINTER(VIDEOINFOHEADER))
+        header.contents.avg_time_per_frame = int(round(10_000_000 / fps))
+    stream_config.SetFormat(media_type)
 
 
 def _make_frame_callback(on_frame: Callable[[Any], None]):
@@ -252,7 +376,7 @@ class WindowsDShowVideoCapture:
                 formats = video_input.get_formats()
                 match_index = _find_format_index(formats, width, height, pixel_format, fps)
                 if match_index is not None:
-                    video_input.set_format(match_index)
+                    _set_format_with_fps(video_input, match_index, fps)
                 else:
                     self._log(
                         "WARNING",

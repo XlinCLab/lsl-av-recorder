@@ -144,7 +144,19 @@ Talks to DirectShow directly via COM (through `pygrabber`), for both capability 
 and actual frame capture. Devices are addressed by their DirectShow enumeration index:
 - Device list from `ICreateDevEnum`/`IEnumMoniker` (`FilterGraph.get_input_devices()`)
 - Supported pixel formats, resolutions, and FPS ranges from `IAMStreamConfig::GetStreamCaps`
-  (`VideoInput.get_formats()`), per (pixel format, resolution) combination
+  (`VideoInput.get_formats()`), per (pixel format, resolution) combination. The declared
+  maximum FPS for each combination is not trusted as-is: a brief real capture is opened at
+  that rate and the actual delivered frame rate is measured, clamping the reported maximum
+  down if the driver's declaration turns out to be optimistic (e.g. a declared 60fps mode
+  that only sustains ~30fps in practice) — mirroring how macOS probing doesn't trust
+  AVFoundation's self-reported modes without confirming each one actually opens. This makes
+  capability refresh noticeably slower (comparable to macOS's own probing cost) but keeps the
+  GUI from ever offering a rate the camera can't really deliver.
+- Selecting a specific FPS overwrites the matched stream-caps entry's embedded frame interval
+  (`avg_time_per_frame`) before applying it — `IAMStreamConfig::GetStreamCaps` returns a media
+  type whose embedded rate is that entry's own nominal default (observed to be its declared
+  maximum), so without this every FPS within an entry's declared range would otherwise end up
+  recording at that same default instead of the one actually selected.
 - **Frame capture** (`WindowsDShowVideoCapture` in `recorder/video/dshow_capture.py`) builds
   one persistent DirectShow filter graph per camera: the video source (format selected via
   `IAMStreamConfig::SetFormat`) feeds a `SampleGrabber` filter (requesting RGB24, with
