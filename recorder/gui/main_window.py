@@ -225,11 +225,6 @@ class MainWindow(QMainWindow):
         self.cam_panels = []
         self.max_cams = 4
         self._init_camera_tabs()
-        # Show camera previews if video is enabled in config
-        if self.cfg.Video.Enabled:
-            for panel in self.cam_panels:
-                if panel.enabled.isChecked():
-                    self.preview_mgr.start_cam_preview(panel.to_config())
 
         left = QWidget()
         left_layout = QVBoxLayout()
@@ -278,6 +273,9 @@ class MainWindow(QMainWindow):
 
         self.preview_mgr.stop_all_previews()
         for panel in self.cam_panels:
+            # Skip a panel whose own capability probe is still running
+            if getattr(panel, "_caps_loading", False):
+                continue
             cam_cfg = panel.to_config()
             if cam_cfg.Enabled:
                 self.preview_mgr.start_cam_preview(cam_cfg)
