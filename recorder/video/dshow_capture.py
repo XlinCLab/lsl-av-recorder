@@ -130,8 +130,8 @@ def _measure_achievable_fps(
     target_fps: float,
     warmup: float = 2.0,
     duration: float = 2.0,
-    retries: int = 4,
-    retry_delay: float = 1.5,
+    retries: int = 2,
+    retry_delay: float = 1.0,
 ) -> Optional[float]:
     """Briefly open a real capture at the given format/resolution/fps and
     measure the actual delivered frame rate.
@@ -240,20 +240,6 @@ def get_windows_camera_capabilities(
         graph.add_video_input_device(device_index)
         formats = graph.get_input_device().get_formats()
         del graph  # release COM references before CoUninitialize runs
-
-    # Give the device a moment to fully release from whatever just had it
-    # open (typically the live preview, stopped right before this runs) --
-    # observed in practice as exactly the currently-configured resolution
-    # silently failing to open for measurement (and so keeping its
-    # optimistic declared max uncorrected) while every other resolution
-    # measures fine, since only that one is contending with a not-yet-freed
-    # handle. A single short per-attempt retry wasn't always enough.
-    if progress_cb:
-        try:
-            progress_cb(0, "Waiting for device to release from preview...")
-        except Exception:
-            pass
-    time.sleep(2.0)
 
     formats = _verify_max_framerates(device_index, formats, progress_cb=progress_cb)
     return _build_capabilities_from_formats(formats)
