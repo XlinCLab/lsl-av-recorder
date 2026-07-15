@@ -362,10 +362,6 @@ def set_frame_rate(devnode: str, fps: float) -> bool:
     elif IS_WINDOWS:
         # No DirectShow pre-flight application/validation is implemented yet.
         # FPS is applied directly by OpenCV (CAP_DSHOW) when the capture opens for recording.
-        logger.warning(
-            "Frame rate pre-flight application is not yet implemented on Windows; "
-            "it will be applied when recording starts."
-        )
         return True
 
     _, error = run_capture_cmd(cmd)
@@ -486,10 +482,6 @@ def set_camera_controls(devnode: str, control_settings: dict) -> dict:
         # auto-exposure/auto-focus) are not yet supported at all on Windows. 
         # Accept everything here rather than blocking Start, since the GUI already disables
         # controls that `get_camera_capabilities` reports as unsupported.
-        logger.warning(
-            "Camera control pre-flight application is not yet implemented on Windows; "
-            "width/height/pixel_format will be applied when recording starts."
-        )
         successful_settings.update(settings_to_apply)
 
     else:
