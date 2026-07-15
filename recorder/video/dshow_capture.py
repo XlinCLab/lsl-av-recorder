@@ -128,7 +128,10 @@ def _measure_achievable_fps(
     height: int,
     pixel_format: str,
     target_fps: float,
-    duration: float = 1.0,
+    warmup: float = 2.0,
+    duration: float = 2.0,
+    retries: int = 2,
+    retry_delay: float = 1.0,
 ) -> Optional[float]:
     """Briefly open a real capture at the given format/resolution/fps and
     measure the actual delivered frame rate.
@@ -138,27 +141,44 @@ def _measure_achievable_fps(
     practice (measured ~30fps) -- capability probing shouldn't just trust that
     declaration, the same way macOS probing doesn't just trust AVFoundation's
     self-reported modes without confirming each one actually opens.
+
+    `warmup` is discarded (not counted) before measuring: auto-exposure/
+    bandwidth throttling can take a moment to kick in, and an initial burst of
+    buffered frames right after opening could otherwise inflate the measurement.
+
+    Retries on failure to open or deliver any frames: the device may still be
+    releasing from whatever previously had it open (e.g. the live preview,
+    typically at whatever resolution/format was just in use) by the time the
+    first combination is probed -- observed in practice as exactly the
+    currently-configured resolution silently keeping its optimistic declared
+    max uncorrected, while every other resolution corrected fine.
     """
-    try:
-        cap = WindowsDShowVideoCapture(device_index, width, height, pixel_format, target_fps)
-    except Exception:
-        return None
-    try:
-        if not cap.isOpened():
-            return None
-        cap.read(timeout=1.5)  # discard first frame; graph is still warming up
-        count = 0
-        start = time.monotonic()
-        while time.monotonic() - start < duration:
-            ok, _ = cap.read(timeout=0.5)
-            if ok:
-                count += 1
-        elapsed = time.monotonic() - start
-        if elapsed <= 0 or count == 0:
-            return None
-        return count / elapsed
-    finally:
-        cap.release()
+    for attempt in range(retries):
+        if attempt > 0:
+            time.sleep(retry_delay)
+        try:
+            cap = WindowsDShowVideoCapture(device_index, width, height, pixel_format, target_fps)
+        except Exception:
+            continue
+        try:
+            if not cap.isOpened():
+                continue
+            warmup_end = time.monotonic() + warmup
+            while time.monotonic() < warmup_end:
+                cap.read(timeout=0.5)
+            count = 0
+            start = time.monotonic()
+            while time.monotonic() - start < duration:
+                ok, _ = cap.read(timeout=0.5)
+                if ok:
+                    count += 1
+            elapsed = time.monotonic() - start
+            if elapsed <= 0 or count == 0:
+                continue
+            return count / elapsed
+        finally:
+            cap.release()
+    return None
 
 
 def _verify_max_framerates(
@@ -190,9 +210,10 @@ def _verify_max_framerates(
         if measured is None:
             continue
         snapped = _snap_to_common_fps(measured)
-        # Only correct on a real, substantial gap -- not measurement noise
-        # around the declared value.
-        if snapped < declared_max * 0.7:
+        # Only correct on a real gap, not measurement noise around the
+        # declared value -- but tight enough to still catch a partial (not
+        # just total) shortfall, e.g. a declared 60fps that only reaches ~50.
+        if snapped < declared_max * 0.85:
             corrections[(pf, w, h)] = float(snapped)
 
     if not corrections:
