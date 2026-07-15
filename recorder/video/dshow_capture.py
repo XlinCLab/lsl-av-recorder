@@ -62,6 +62,24 @@ def list_windows_video_devices() -> List[Dict[str, Any]]:
     return _build_device_list(names)
 
 
+def _normalize_formats(formats: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Fix up pygrabber's `min_framerate`/`max_framerate` fields, which are
+    computed as `10_000_000 / MinFrameInterval` and `10_000_000 /
+    MaxFrameInterval` respectively. Since frame *rate* is inversely related to
+    frame *interval*, dividing by the smallest interval gives the *highest*
+    achievable rate -- so `min_framerate` actually holds the highest rate and
+    `max_framerate` the lowest, the reverse of what the names suggest."""
+    normalized = []
+    for fmt in formats:
+        lo = min(float(fmt["min_framerate"]), float(fmt["max_framerate"]))
+        hi = max(float(fmt["min_framerate"]), float(fmt["max_framerate"]))
+        fmt = dict(fmt)
+        fmt["min_framerate"] = lo
+        fmt["max_framerate"] = hi
+        normalized.append(fmt)
+    return normalized
+
+
 def _build_capabilities_from_formats(formats: List[Dict[str, Any]]) -> Dict[str, Any]:
     caps: Dict[str, Any] = {
         "pixel_formats": [],
@@ -254,7 +272,7 @@ def get_windows_camera_capabilities(
 
         graph = FilterGraph()
         graph.add_video_input_device(device_index)
-        formats = graph.get_input_device().get_formats()
+        formats = _normalize_formats(graph.get_input_device().get_formats())
         del graph  # release COM references before CoUninitialize runs
 
     formats = _verify_max_framerates(device_index, formats, progress_cb=progress_cb)
@@ -413,7 +431,7 @@ class WindowsDShowVideoCapture:
 
             if pixel_format:
                 video_input = graph.get_input_device()
-                formats = video_input.get_formats()
+                formats = _normalize_formats(video_input.get_formats())
                 match_index = _find_format_index(formats, width, height, pixel_format, fps)
                 if match_index is not None:
                     _set_format_with_fps(video_input, match_index, fps)
