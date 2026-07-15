@@ -308,11 +308,14 @@ def _make_frame_callback(on_frame: Callable[[Any], None]):
             if self.width and self.height:
                 try:
                     img = np.ctypeslib.as_array(pBuffer, shape=(self.height, self.width, 3))
-                    # DirectShow RGB24 buffers are stored bottom-up; flip to
-                    # top-down and reverse channels (RGB -> BGR) to match cv2's
-                    # convention. Copy out before returning -- DirectShow reuses
-                    # this buffer for the next frame.
-                    img = np.ascontiguousarray(np.flip(img, axis=0)[:, :, ::-1])
+                    # DirectShow's "RGB24" buffers are stored bottom-up AND in
+                    # BGR byte order in memory (the classic Windows DIB/bitmap
+                    # convention) -- which already matches cv2's own BGR
+                    # convention, so only the vertical flip is needed, not a
+                    # channel reversal (that would swap red/blue). Copy out
+                    # before returning -- DirectShow reuses this buffer for the
+                    # next frame.
+                    img = np.ascontiguousarray(np.flip(img, axis=0))
                     on_frame(img)
                 except Exception:
                     pass
