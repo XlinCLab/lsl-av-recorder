@@ -21,10 +21,14 @@ through the SAME graph that has the format applied avoids that handoff entirely.
 """
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from contextlib import contextmanager
 from typing import Any, Callable, Dict, List, Optional
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
+logger = logging.getLogger(__name__)
 
 
 @contextmanager
@@ -208,17 +212,29 @@ def _verify_max_framerates(
                 pass
         measured = _measure_achievable_fps(device_index, w, h, pf, declared_max)
         if measured is None:
+            logger.info(
+                f"FPS verify: {pf} {w}x{h} declared_max={declared_max} "
+                "-> measurement FAILED (device busy/unreachable), leaving declared value as-is"
+            )
             continue
         snapped = _snap_to_common_fps(measured)
         # Only correct on a real gap, not measurement noise around the
         # declared value -- but tight enough to still catch a partial (not
         # just total) shortfall, e.g. a declared 60fps that only reaches ~50.
-        if snapped < declared_max * 0.85:
+        will_correct = snapped < declared_max * 0.85
+        logger.info(
+            f"FPS verify: {pf} {w}x{h} declared_max={declared_max} "
+            f"measured={measured:.2f} snapped={snapped} "
+            f"-> {'CORRECTING to ' + str(snapped) if will_correct else 'keeping declared value (within tolerance)'}"
+        )
+        if will_correct:
             corrections[(pf, w, h)] = float(snapped)
 
     if not corrections:
+        logger.info("FPS verify: no corrections applied to any (format, resolution) combination")
         return formats
 
+    logger.info(f"FPS verify: applying corrections to {len(corrections)} combination(s): {corrections}")
     corrected_formats = []
     for fmt in formats:
         key = (str(fmt["media_type_str"]).upper(), int(fmt["width"]), int(fmt["height"]))
