@@ -93,8 +93,11 @@ class CameraWorker(QObject):
             from ..video.dshow_capture import WindowsDShowVideoCapture
 
             self.cap = WindowsDShowVideoCapture(
-                self.cam_index, self.w, self.h, self.pixel_format or None,
-                float(self.fps) or None,
+                device_index=self.cam_index,
+                width=self.w,
+                height=self.h,
+                pixel_format=self.pixel_format or None,
+                fps=float(self.fps) or None,
                 log_cb=lambda msg, level="WARNING": self.status.emit(f"{level}: {msg}"),
             )
         else:
