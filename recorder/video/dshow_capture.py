@@ -1,24 +1,5 @@
-"""Windows video device enumeration, capability probing, and frame capture via
-DirectShow.
+"""Windows video device enumeration, capability probing, and frame capture with DirectShow via COM."""
 
-Talks to DirectShow directly through COM (via the `pygrabber` package) rather than
-shelling out to ffmpeg's dshow input. ffmpeg's dshow device-address parsing turned
-out to have a bug (at least as of ffmpeg 8.1.2) where any device name or path
-containing spaces or characters like `&`/`#`/`{}` -- i.e. almost every real camera --
-could not be addressed at all, making device enumeration and capability probing
-silently return nothing. Talking to DirectShow's COM interfaces directly sidesteps
-that string-parsing layer entirely: devices are addressed by their enumeration
-index, matching what `cv2.VideoCapture(index, cv2.CAP_DSHOW)` used to use to open
-the camera for recording.
-
-Frame capture also happens through this module now (`WindowsDShowVideoCapture`)
-rather than `cv2.VideoCapture(..., cv2.CAP_DSHOW)`. Configuring the device's format
-via `IAMStreamConfig::SetFormat` on one (temporary) filter graph and then opening a
-*separate* graph via `cv2.VideoCapture` does not reliably carry the configured
-format over on some drivers -- the device silently falls back to its default (often
-a low-fps uncompressed) mode regardless of what was requested. Capturing frames
-through the SAME graph that has the format applied avoids that handoff entirely.
-"""
 from __future__ import annotations
 
 import logging
