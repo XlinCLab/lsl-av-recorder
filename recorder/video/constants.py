@@ -50,6 +50,10 @@ V4L2_AUTO_EXPOSURE_MODE = 0
 V4L2_MANUAL_EXPOSURE_MODE = 1
 V4L2_AUTO_FOCUS_MODE = 1
 V4L2_MANUAL_FOCUS_MODE = 0
+AUTO_VALUE_BY_CONTROL = {
+    "auto_exposure": V4L2_AUTO_EXPOSURE_MODE,
+    "auto_focus": V4L2_AUTO_FOCUS_MODE,
+}
 
 # Other ffmpeg parameters
 # Camera controls not supported via ffmpeg

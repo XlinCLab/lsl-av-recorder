@@ -7,13 +7,13 @@ from typing import Any, Dict
 from ..utils.constants import _project_root
 from ..utils.utils import (_extract_default, _extract_range, get_commit_hash,
                            run_capture_cmd)
-from ..video.constants import (BRIGHTNESS_RANGE, CAMERA_CAPS_CACHE,
-                               DEFAULT_CAMERA_FPS, DEVNODE_PATTERN,
-                               FFMPEG_UNSUPPORTED_CONTROLS, HUE_RANGE,
-                               IS_LINUX, IS_MAC, IS_WINDOWS, PIXEL_FORMAT_MAP,
-                               SATURATION_RANGE, V4L2_AUTO_EXPOSURE_MODE,
-                               V4L2_AUTO_FOCUS_MODE, V4L2_CONTROL_MAP,
-                               V4L2_MANUAL_EXPOSURE_MODE)
+from ..video.constants import (AUTO_VALUE_BY_CONTROL, BRIGHTNESS_RANGE,
+                               CAMERA_CAPS_CACHE, DEFAULT_CAMERA_FPS,
+                               DEVNODE_PATTERN, FFMPEG_UNSUPPORTED_CONTROLS,
+                               HUE_RANGE, IS_LINUX, IS_MAC, IS_WINDOWS,
+                               PIXEL_FORMAT_MAP, SATURATION_RANGE,
+                               V4L2_AUTO_EXPOSURE_MODE, V4L2_AUTO_FOCUS_MODE,
+                               V4L2_CONTROL_MAP, V4L2_MANUAL_EXPOSURE_MODE)
 from ..video.dshow_capture import (get_windows_camera_capabilities,
                                    set_windows_camera_controls)
 from ..video.ffmpeg_utils import (_get_supported_modes,
@@ -538,6 +538,14 @@ def apply_camera_controls(devnode: str, controls: Dict[str, Any]) -> Dict[str, A
     return {"devnode": devnode, "applied": applied, "failed": failed}
 
 
+def format_control_value(key: str, value) -> str:
+    """Format auto-exposure and auto-focus settings as 'ON' vs. 'OFF' rather
+    than 0 vs. 1, which have opposite meanings for auto-focus and auto-exposure."""
+    if key in AUTO_VALUE_BY_CONTROL:
+        return "ON" if value == AUTO_VALUE_BY_CONTROL[key] else "OFF"
+    return str(value)
+
+
 def summarize_control_application(devnode: str,
                                   applied: dict,
                                   failed: dict
@@ -545,7 +553,7 @@ def summarize_control_application(devnode: str,
     """Generate a summary string of camera setting application results."""
     summary = [f"devnode: {devnode}"]
     for k, v in applied.items():
-        summary.append(f"INFO: Successfully set {k}={v}")
+        summary.append(f"INFO: Successfully set {k}={format_control_value(k, v)}")
     for k, v in failed.items():
-        summary.append(f"ERROR: Failed to set {k}={v}")
+        summary.append(f"ERROR: Failed to set {k}={format_control_value(k, v)}")
     return '\n'.join(summary)
