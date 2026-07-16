@@ -80,6 +80,7 @@ To load a different config in normal GUI use:
 
 ## Camera Controls and Capability Detection
 Capability discovery is platform-specific and depending on the platform, some camera controls may not be supported.
+On MacOS and Windows, device capabilities are probed and/or tested empirically on first use, which may take up to a few minutes. These device capabilities are then cached and reused for future sessions, such that this capability probing/test step only runs once per device. This probe additionally runs again when the application version has changed from the version in the cache.
 
 ### Linux
 Uses `v4l2-ctl` to control camera settings:
