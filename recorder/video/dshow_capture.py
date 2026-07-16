@@ -10,7 +10,9 @@ from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 
-from ..video.constants import COMMON_FPS_VALUES
+from ..video.constants import (CAMERA_CONTROL_FLAGS_AUTO,
+                               CAMERA_CONTROL_FLAGS_MANUAL, COMMON_FPS_VALUES,
+                               VIDEO_PROC_AMP_FLAGS_MANUAL)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
@@ -281,11 +283,6 @@ class VideoProcAmpProperty:
 class CameraControlProperty:
     Exposure = 4
     Focus = 6
-
-
-VIDEO_PROC_AMP_FLAGS_MANUAL = 0x0002
-CAMERA_CONTROL_FLAGS_AUTO = 0x0001
-CAMERA_CONTROL_FLAGS_MANUAL = 0x0002
 
 
 def _get_dshow_control_interfaces():

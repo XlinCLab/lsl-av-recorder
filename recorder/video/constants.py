@@ -59,6 +59,15 @@ AUTO_VALUE_BY_CONTROL = {
     "auto_focus": V4L2_AUTO_FOCUS_MODE,
 }
 
+# DirectShow (Windows) VideoProcAmp/CameraControl flag values, from the Windows
+# SDK's strmif.h, passed to IAMVideoProcAmp::Set (brightness/hue/saturation)
+# and IAMCameraControl::Set/GetRange (exposure/focus) to say whether a value 
+# is being driven manually or automatically.
+# The two "Manual" values happen to share the same number (0x0002) but come from separate SDK enums.
+VIDEO_PROC_AMP_FLAGS_MANUAL = 0x0002
+CAMERA_CONTROL_FLAGS_AUTO = 0x0001
+CAMERA_CONTROL_FLAGS_MANUAL = 0x0002
+
 # Other ffmpeg parameters
 # Camera controls not supported via ffmpeg
 FFMPEG_UNSUPPORTED_CONTROLS = (
