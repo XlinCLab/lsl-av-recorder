@@ -180,7 +180,13 @@ def _measure_achievable_fps(
         if attempt > 0:
             time.sleep(retry_delay)
         try:
-            cap = WindowsDShowVideoCapture(device_index, width, height, pixel_format, target_fps)
+            cap = WindowsDShowVideoCapture(
+                device_index=device_index,
+                width=width,
+                height=height,
+                pixel_format=pixel_format,
+                fps=target_fps,
+            )
         except Exception:
             continue
         try:

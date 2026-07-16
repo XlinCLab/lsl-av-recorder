@@ -138,9 +138,11 @@ class VideoRecorder:
 
             try:
                 self.cap = WindowsDShowVideoCapture(
-                    int(self.cam.DeviceIndex), int(self.cam.Width), int(self.cam.Height),
-                    str(getattr(self.cam, "PixelFormat", "") or "") or None,
-                    float(self.cam.FPS or 0) or None,
+                    device_index=int(self.cam.DeviceIndex),
+                    width=int(self.cam.Width),
+                    height=int(self.cam.Height),
+                    pixel_format=str(getattr(self.cam, "PixelFormat", "") or "") or None,
+                    fps=float(self.cam.FPS or 0) or None,
                     log_cb=self.log,
                 )
             except Exception as exc:
