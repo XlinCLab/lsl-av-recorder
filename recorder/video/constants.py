@@ -59,6 +59,17 @@ AUTO_VALUE_BY_CONTROL = {
     "auto_focus": V4L2_AUTO_FOCUS_MODE,
 }
 
+# DirectShow (Windows) VideoProcAmp/CameraControl property IDs, from the Windows SDK's strmif.h. 
+# Passed as the `Property` argument to IAMVideoProcAmp::GetRange/Set/Get (brightness/hue/saturation)
+# and IAMCameraControl::GetRange/Set/Get (exposure/focus).
+# Values are non-contiguous because they're fixed IDs from each interface's full property enum 
+# (which also covers e.g. Contrast, Iris, Zoom), not local indices.
+VIDEO_PROC_AMP_BRIGHTNESS = 0
+VIDEO_PROC_AMP_HUE = 2
+VIDEO_PROC_AMP_SATURATION = 3
+CAMERA_CONTROL_EXPOSURE = 4
+CAMERA_CONTROL_FOCUS = 6
+
 # DirectShow (Windows) VideoProcAmp/CameraControl flag values, from the Windows
 # SDK's strmif.h, passed to IAMVideoProcAmp::Set (brightness/hue/saturation)
 # and IAMCameraControl::Set/GetRange (exposure/focus) to say whether a value 

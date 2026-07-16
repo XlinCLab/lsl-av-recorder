@@ -10,9 +10,13 @@ from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 
-from ..video.constants import (CAMERA_CONTROL_FLAGS_AUTO,
-                               CAMERA_CONTROL_FLAGS_MANUAL, COMMON_FPS_VALUES,
-                               VIDEO_PROC_AMP_FLAGS_MANUAL)
+from ..video.constants import (CAMERA_CONTROL_EXPOSURE,
+                               CAMERA_CONTROL_FLAGS_AUTO,
+                               CAMERA_CONTROL_FLAGS_MANUAL,
+                               CAMERA_CONTROL_FOCUS, COMMON_FPS_VALUES,
+                               VIDEO_PROC_AMP_BRIGHTNESS,
+                               VIDEO_PROC_AMP_FLAGS_MANUAL,
+                               VIDEO_PROC_AMP_HUE, VIDEO_PROC_AMP_SATURATION)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
@@ -272,19 +276,6 @@ def get_windows_camera_capabilities(
     return caps
 
 
-# DirectShow property IDs and auto/manual flag values (from the Windows SDK's
-# strmif.h -- stable, documented constants, not something a driver can vary).
-class VideoProcAmpProperty:
-    Brightness = 0
-    Hue = 2
-    Saturation = 3
-
-
-class CameraControlProperty:
-    Exposure = 4
-    Focus = 6
-
-
 def _get_dshow_control_interfaces():
     """Lazily define the (IAMVideoProcAmp, IAMCameraControl) COM interfaces,
     which `pygrabber` doesn't wrap. Both are queried directly off the capture
@@ -387,11 +378,11 @@ def _query_control_capabilities(device_index: int, retries: int = 2, retry_delay
 
                 try:
                     video_proc_amp = video_input.instance.QueryInterface(IAMVideoProcAmp)
-                    rng, default = _query_video_proc_amp_range(video_proc_amp, VideoProcAmpProperty.Brightness)
+                    rng, default = _query_video_proc_amp_range(video_proc_amp, VIDEO_PROC_AMP_BRIGHTNESS)
                     result["brightness_range"], result["brightness_default"] = rng, default
-                    rng, default = _query_video_proc_amp_range(video_proc_amp, VideoProcAmpProperty.Hue)
+                    rng, default = _query_video_proc_amp_range(video_proc_amp, VIDEO_PROC_AMP_HUE)
                     result["hue_range"], result["hue_default"] = rng, default
-                    rng, default = _query_video_proc_amp_range(video_proc_amp, VideoProcAmpProperty.Saturation)
+                    rng, default = _query_video_proc_amp_range(video_proc_amp, VIDEO_PROC_AMP_SATURATION)
                     result["saturation_range"], result["saturation_default"] = rng, default
                 except Exception:
                     logger.info(f"Camera controls: IAMVideoProcAmp not available on device {device_index}")
@@ -399,10 +390,10 @@ def _query_control_capabilities(device_index: int, retries: int = 2, retry_delay
                 try:
                     camera_control = video_input.instance.QueryInterface(IAMCameraControl)
                     result["supports_auto_exposure"] = _query_camera_control_auto_support(
-                        camera_control, CameraControlProperty.Exposure
+                        camera_control, CAMERA_CONTROL_EXPOSURE
                     )
                     result["supports_auto_focus"] = _query_camera_control_auto_support(
-                        camera_control, CameraControlProperty.Focus
+                        camera_control, CAMERA_CONTROL_FOCUS
                     )
                 except Exception:
                     logger.info(f"Camera controls: IAMCameraControl not available on device {device_index}")
@@ -451,9 +442,9 @@ def set_windows_camera_controls(
                     try:
                         video_proc_amp = video_input.instance.QueryInterface(IAMVideoProcAmp)
                         for key, prop in (
-                            ("brightness", VideoProcAmpProperty.Brightness),
-                            ("hue", VideoProcAmpProperty.Hue),
-                            ("saturation", VideoProcAmpProperty.Saturation),
+                            ("brightness", VIDEO_PROC_AMP_BRIGHTNESS),
+                            ("hue", VIDEO_PROC_AMP_HUE),
+                            ("saturation", VIDEO_PROC_AMP_SATURATION),
                         ):
                             value = {"brightness": brightness, "hue": hue, "saturation": saturation}[key]
                             if value is None:
@@ -467,8 +458,8 @@ def set_windows_camera_controls(
                         logger.warning(f"IAMVideoProcAmp not available on device {device_index}: {exc}")
 
                 for key, prop, requested in (
-                    ("auto_exposure", CameraControlProperty.Exposure, auto_exposure),
-                    ("auto_focus", CameraControlProperty.Focus, auto_focus),
+                    ("auto_exposure", CAMERA_CONTROL_EXPOSURE, auto_exposure),
+                    ("auto_focus", CAMERA_CONTROL_FOCUS, auto_focus),
                 ):
                     if requested is None:
                         continue
