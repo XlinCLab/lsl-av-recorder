@@ -225,7 +225,7 @@ def _verify_max_framerates(
             try:
                 progress_cb(
                     int(100 * i / max(1, total)),
-                    f"Verifying achievable FPS ({i}/{total}): {pf} {w}x{h}",
+                    f"Testing device FPS capabilities ({i}/{total}): {pf} {w}x{h}",
                 )
             except Exception:
                 pass
