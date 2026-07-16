@@ -4,14 +4,7 @@ from typing import Any, Dict, List, Optional, Union
 
 import sounddevice as sd
 
-# Candidate sample rates to probe when discovering what an input device actually
-# supports; PortAudio has no "list supported rates" call, so each must be probed
-# individually via check_input_settings (Pa_IsFormatSupported).
-_CANDIDATE_SAMPLE_RATES = [8000, 11025, 16000, 22050, 32000, 44100, 48000, 88200, 96000, 176400, 192000]
-
-# GUI BitDepth -> PortAudio capture dtype. 32- and 64-bit both capture as float32
-# (64-bit is upcast to float64 in software after capture), so they share one probe.
-_BITDEPTH_DTYPES = {16: "int16", 32: "float32", 64: "float32"}
+from ..audio.constants import BITDEPTH_DTYPES, CANDIDATE_SAMPLE_RATES
 
 
 def list_input_devices() -> List[Dict[str, Any]]:
@@ -21,6 +14,7 @@ def list_input_devices() -> List[Dict[str, Any]]:
         if d.get("max_input_channels", 0) > 0:
             out.append({"index": i, "name": d.get("name"), "hostapi": d.get("hostapi")})
     return out
+
 
 def default_input_device_index():
     try:
@@ -39,7 +33,7 @@ def is_input_config_supported(
     channels: int,
     bitdepth: int,
 ) -> bool:
-    dtype = _BITDEPTH_DTYPES.get(int(bitdepth), "float32")
+    dtype = BITDEPTH_DTYPES.get(int(bitdepth), "float32")
     try:
         sd.check_input_settings(device=device, samplerate=samplerate, channels=channels, dtype=dtype)
         return True
@@ -80,7 +74,7 @@ def get_audio_device_capabilities(
 
     test_channels = max(1, min(int(channels) or 1, max_channels or 1))
 
-    candidate_rates = list(_CANDIDATE_SAMPLE_RATES)
+    candidate_rates = CANDIDATE_SAMPLE_RATES.copy()
     if default_samplerate and default_samplerate not in candidate_rates:
         candidate_rates.append(default_samplerate)
     supported_rates = sorted(
