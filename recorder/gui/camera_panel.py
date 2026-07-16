@@ -56,14 +56,25 @@ class _ApplyControlsThread(QThread):
     finished_apply = pyqtSignal(dict)
     failed = pyqtSignal(str)
 
-    def __init__(self, devnode: str, controls: dict[str, Any], parent: Optional[QWidget] = None):
+    def __init__(
+        self,
+        devnode: str,
+        controls: dict[str, Any],
+        device_name: Optional[str] = None,
+        parent: Optional[QWidget] = None,
+    ):
         super().__init__(parent)
         self._devnode = devnode
         self._controls = controls
+        self._device_name = device_name
 
     def run(self):
         try:
-            rep = apply_camera_controls(self._devnode, self._controls)
+            rep = apply_camera_controls(
+                devnode=self._devnode,
+                controls=self._controls,
+                device_name=self._device_name,
+            )
             self.finished_apply.emit(rep)
         except Exception as exc:
             self.failed.emit(str(exc))
@@ -861,7 +872,12 @@ class CameraPanel(QWidget):
         self._apply_loading = True
         self.applyStarted.emit()
 
-        thread = _ApplyControlsThread(dev, controls, parent=self)
+        thread = _ApplyControlsThread(
+            devnode=dev,
+            controls=controls,
+            device_name=self._device_name,
+            parent=self,
+        )
         self._apply_thread = thread
         thread.finished_apply.connect(lambda rep: self._on_apply_done(dev, rep))
         thread.failed.connect(self._on_apply_error)
@@ -872,6 +888,7 @@ class CameraPanel(QWidget):
             dev,
             rep.get("applied", {}),
             rep.get("failed", {}),
+            rep.get("unverified", {}),
         )
         self.text.append(summary)
         failed = rep.get("failed", {})

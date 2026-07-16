@@ -43,10 +43,15 @@ class _ApplyAllThread(QThread):
             for item in self._items:
                 label = item.get("label", "Camera")
                 devnode = item.get("devnode", "")
+                device_name = item.get("device_name")
                 controls = item.get("controls") or {}
                 if not controls:
                     continue
-                rep = apply_camera_controls(devnode, controls)
+                rep = apply_camera_controls(
+                    devnode=devnode,
+                    controls=controls,
+                    device_name=device_name
+                )
                 failed = rep.get("failed", {})
                 if failed:
                     failed_items = ", ".join(f"{k}={v}" for k, v in failed.items())
@@ -665,6 +670,7 @@ class MainWindow(QMainWindow):
                 {
                     "label": cam_cfg.Label,
                     "devnode": cam_cfg.DevNode,
+                    "device_name": cam_cfg.DeviceName,
                     "controls": controls,
                 }
             )

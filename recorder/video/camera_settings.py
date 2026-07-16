@@ -267,6 +267,68 @@ def _windows_camera_capabilities(
     return get_windows_camera_capabilities(index, progress_cb=progress_cb)
 
 
+def _windows_capabilities_for_device(devnode: str, device_name: str | None) -> Dict[str, Any] | None:
+    """Look up previously-probed Windows capabilities for this device from the
+    on-disk cache, using the same key `get_camera_capabilities` stores under.
+    Returns None if nothing has been cached yet (e.g. capabilities were never
+    probed this session/commit), in which case callers have no basis to judge
+    whether a setting is actually supported."""
+    os_name = sys.platform
+    git_hash = get_commit_hash(_project_root())
+    name_key = (device_name or devnode or "unknown").strip()
+    cache_key = _capabilities_cache_key(os_name, git_hash, name_key)
+    return _load_cached_capabilities(cache_key)
+
+
+def _validate_against_windows_capabilities(
+    settings: Dict[str, Any], caps: Dict[str, Any]
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    """Check width/height/pixel_format/fps (whichever are present in `settings`)
+    against a previously-probed Windows capabilities dict.
+    Returns (valid, invalid) partitions of `settings`; 
+    a key is left out of both if `caps` doesn't contain enough information to judge it."""
+    valid: Dict[str, Any] = {}
+    invalid: Dict[str, Any] = {}
+
+    pixel_format = settings.get("pixel_format")
+    supported_formats = {str(f).upper() for f in caps.get("pixel_formats") or []}
+    if pixel_format is not None:
+        if supported_formats and str(pixel_format).upper() not in supported_formats:
+            invalid["pixel_format"] = pixel_format
+        else:
+            valid["pixel_format"] = pixel_format
+
+    modes_by_format = caps.get("modes_by_format") or {}
+    fmt_key = str(pixel_format).upper() if pixel_format is not None else None
+    modes = modes_by_format.get(fmt_key, []) if fmt_key and fmt_key in modes_by_format else (caps.get("modes") or [])
+
+    width, height = settings.get("width"), settings.get("height")
+    matched_mode = None
+    if width and height:
+        matched_mode = next(
+            (m for m in modes
+             if int(m.get("width", -1)) == int(width) and int(m.get("height", -1)) == int(height)),
+            None,
+        )
+        if matched_mode is None:
+            invalid["width"] = width
+            invalid["height"] = height
+        else:
+            valid["width"] = width
+            valid["height"] = height
+
+    fps = settings.get("fps")
+    if fps is not None:
+        fps_pool = matched_mode.get("fps") if matched_mode else caps.get("fps")
+        if fps_pool:
+            if int(round(float(fps))) in {int(f) for f in fps_pool}:
+                valid["fps"] = fps
+            else:
+                invalid["fps"] = fps
+
+    return valid, invalid
+
+
 def get_camera_capabilities(
     devnode: str,
     device_index: int | None = None,
@@ -340,7 +402,19 @@ def get_control_settings_string(controls: dict) -> str:
     return ','.join([f'{k}={v}' for k, v in controls.items()])
 
 
-def set_frame_rate(devnode: str, fps: float) -> bool:
+def set_frame_rate(
+    devnode: str,
+    fps: float,
+    *,
+    width: int | None = None,
+    height: int | None = None,
+    pixel_format: str | None = None,
+    device_name: str | None = None,
+) -> tuple[bool, bool]:
+    """Returns (success, verified).
+    `verified` is False only for the Windows case where no capability probe 
+    has been cached yet for this device, so there is no basis to confirm or reject the requested fps.
+    Rather, it is simply queued to be applied when the DirectShow graph opens."""
     if IS_LINUX:
         # Linux V4L2 method
         cmd = ["v4l2-ctl", "-d", devnode, f"--set-parm={fps}"]
@@ -362,17 +436,39 @@ def set_frame_rate(devnode: str, fps: float) -> bool:
         ]
 
     elif IS_WINDOWS:
-        # No DirectShow pre-flight application/validation is implemented yet.
-        # FPS is applied directly by OpenCV (CAP_DSHOW) when the capture opens for recording.
-        return True
+        # No DirectShow pre-flight application is implemented. 
+        # Frame rate (fps) is applied directly when the capture opens for recording
+        # but it can still be checked against a previously-probed capabilities cache, if one exists.
+        caps = _windows_capabilities_for_device(devnode, device_name)
+        if caps is None:
+            return True, False
+        _, invalid = _validate_against_windows_capabilities(
+            {
+                "fps": fps,
+                "width": width,
+                "height": height,
+                "pixel_format": pixel_format
+            },
+            caps
+        )
+        return "fps" not in invalid, True
 
+    # Linux / MacOS
     _, error = run_capture_cmd(cmd)
-    return error is None
+    return error is None, True
 
 
-def set_camera_controls(devnode: str, control_settings: dict) -> dict:
+def set_camera_controls(devnode: str,
+                        control_settings: dict,
+                        device_name: str | None = None,
+                        ) -> tuple[dict, set]:
+    """Returns (successful_settings, unverified_keys), where unverified_keys is
+    a subset of successful_settings' keys that were accepted without being
+    checked against actual device capabilities (Windows-only, when no
+    capability probe has been cached yet for this device)."""
     settings_to_apply = {k: v for k, v in control_settings.items() if v is not None}
     successful_settings = {}
+    unverified_keys: set = set()
 
     # Build video size argument
     width = settings_to_apply.get("width")
@@ -436,7 +532,7 @@ def set_camera_controls(devnode: str, control_settings: dict) -> dict:
                 color_controls[key] = settings_to_apply.pop(key)
         if not settings_to_apply and color_controls:
             successful_settings.update(color_controls)
-            return successful_settings
+            return successful_settings, unverified_keys
 
         mac_pixel_format = None
         if "pixel_format" in settings_to_apply:
@@ -511,31 +607,71 @@ def set_camera_controls(devnode: str, control_settings: dict) -> dict:
             if "auto_focus" in applied:
                 successful_settings["auto_focus"] = auto_focus_val
 
-        successful_settings.update(settings_to_apply)
+        # Remaining keys at this point are width/height/pixel_format, 
+        # which are not applied by any pre-flight call on Windows.
+        # These are only applied when WindowsDShowVideoCapture opens the graph.
+        # Check them against a previously-probed capabilities cache, if available.
+        if settings_to_apply:
+            caps = _windows_capabilities_for_device(devnode, device_name)
+            if caps is not None:
+                valid, _invalid = _validate_against_windows_capabilities(settings_to_apply, caps)
+                successful_settings.update(valid)
+            else:
+                successful_settings.update(settings_to_apply)
+                unverified_keys.update(settings_to_apply.keys())
 
     else:
         raise ValueError(f"Unsupported OS: {sys.platform}")
 
-    return successful_settings
+    return successful_settings, unverified_keys
 
 
-def apply_camera_controls(devnode: str, controls: Dict[str, Any]) -> Dict[str, Any]:
-    applied, failed = {}, {}
+def apply_camera_controls(devnode: str,
+                          controls: Dict[str, Any],
+                          device_name: str | None = None,
+                          ) -> Dict[str, Any]:
+    applied, unverified, failed = {}, {}, {}
 
     # Handle camera recording settings (format/size first)
     fps = controls.pop('fps', None)
+    width = controls.get('width')
+    height = controls.get('height')
+    pixel_format = controls.get('pixel_format')
     if controls:
-        settings_results = set_camera_controls(devnode, controls)
+        settings_results, unverified_keys = set_camera_controls(
+            devnode=devnode, control_settings=controls,
+            device_name=device_name
+        )
         for k, v in controls.items():
-            (applied if k in settings_results else failed)[k] = v
+            if k not in settings_results:
+                failed[k] = v
+            elif k in unverified_keys:
+                unverified[k] = v
+            else:
+                applied[k] = v
 
     # Handle frame rate after format/size to respect driver constraints
     if fps:
-        success = set_frame_rate(devnode, fps)
-        (applied if success else failed)['fps'] = fps
-    
-    # Return successfully applied and failed settings
-    return {"devnode": devnode, "applied": applied, "failed": failed}
+        success, verified = set_frame_rate(
+            devnode=devnode,
+            fps=fps,
+            width=width,
+            height=height,
+            pixel_format=pixel_format,
+            device_name=device_name,
+        )
+        if not success:
+            failed['fps'] = fps
+        elif verified:
+            applied['fps'] = fps
+        else:
+            unverified['fps'] = fps
+
+    # Return settings: 
+    # - successfully applied
+    # - unverified (accepted but not checked againstactual device capabilities)
+    # - failed
+    return {"devnode": devnode, "applied": applied, "unverified": unverified, "failed": failed}
 
 
 def format_control_value(key: str, value) -> str:
@@ -548,12 +684,18 @@ def format_control_value(key: str, value) -> str:
 
 def summarize_control_application(devnode: str,
                                   applied: dict,
-                                  failed: dict
+                                  failed: dict,
+                                  unverified: dict | None = None,
                                   ) -> str:
     """Generate a summary string of camera setting application results."""
     summary = [f"devnode: {devnode}"]
     for k, v in applied.items():
         summary.append(f"INFO: Successfully set {k}={format_control_value(k, v)}")
+    for k, v in (unverified or {}).items():
+        summary.append(
+            f"INFO: Queued (not yet verified against known camera capabilities; "
+            f"will be applied when capture starts) {k}={format_control_value(k, v)}"
+        )
     for k, v in failed.items():
         summary.append(f"ERROR: Failed to set {k}={format_control_value(k, v)}")
     return '\n'.join(summary)
