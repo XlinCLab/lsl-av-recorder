@@ -32,6 +32,86 @@ def _dtype_format(bitdepth: int) -> str:
     return "int16" if bitdepth == 16 else "float32"
 
 
+def _device_default_samplerate(device) -> Optional[int]:
+    try:
+        rate = sd.query_devices(device).get("default_samplerate")
+        return int(round(rate)) if rate else None
+    except Exception:
+        return None
+
+
+def _try_device(device, samplerate: int, channels: int, dtype: str) -> tuple[Optional[int], Optional[Exception]]:
+    """Check whether `device` works at `samplerate`, falling back to the device's own
+    native/default sample rate if the requested one is rejected. Returns
+    (working_samplerate, None) on success, or (None, last_error) on failure."""
+    try:
+        sd.check_input_settings(device=device, samplerate=samplerate, channels=channels, dtype=dtype)
+        return samplerate, None
+    except Exception as exc:
+        native_rate = _device_default_samplerate(device)
+        if native_rate and native_rate != samplerate:
+            try:
+                sd.check_input_settings(device=device, samplerate=native_rate, channels=channels, dtype=dtype)
+                return native_rate, None
+            except Exception as exc2:
+                return None, exc2
+        return None, exc
+
+
+def _resolve_input_device(
+    requested: Optional[Union[int, str]],
+    samplerate: int,
+    channels: int,
+    dtype: str,
+) -> tuple[Union[int, str], int]:
+    """Resolve (device, samplerate) to hand to sounddevice.
+
+    A device index can be enumerated by PortAudio yet still fail to actually open
+    (seen on Windows, where some MME/WASAPI entries are stale, or only support their
+    own native sample rate rather than the one requested). Rather than pick a device
+    by index alone and let PortAudio raise a cryptic error at stream-open time,
+    validate candidates with `check_input_settings` first, falling back to a
+    candidate's own native sample rate if the requested one doesn't work.
+    """
+    if requested is not None:
+        resolved_rate, err = _try_device(requested, samplerate, channels, dtype)
+        if resolved_rate is None:
+            raise RuntimeError(
+                f"Configured audio input device (device={requested!r}) is not usable "
+                f"with samplerate={samplerate}, channels={channels}: {err}"
+            )
+        return requested, resolved_rate
+
+    candidates: list[int] = []
+    try:
+        default_idx = sd.default.device[0]
+    except Exception:
+        default_idx = None
+    if default_idx is not None and default_idx >= 0:
+        candidates.append(default_idx)
+    try:
+        devices = sd.query_devices()
+    except Exception:
+        devices = []
+    for i, d in enumerate(devices):
+        if d.get("max_input_channels", 0) > 0 and i not in candidates:
+            candidates.append(i)
+
+    last_error: Optional[Exception] = None
+    for idx in candidates:
+        resolved_rate, err = _try_device(idx, samplerate, channels, dtype)
+        if resolved_rate is not None:
+            return idx, resolved_rate
+        last_error = err
+
+    detail = f" (last error: {last_error})" if last_error else ""
+    raise RuntimeError(
+        "No usable audio input device was found for the configured sample rate/channels. "
+        "Select a specific input device in the Audio tab, adjust the sample rate/channels, "
+        f"or disable audio recording.{detail}"
+    )
+
+
 class AudioLSLStreamer:
     def __init__(self, s: AudioStreamSettings, sample_cb: Callable, status_cb: Optional[Callable[[str], None]] = None):
         self.s = s
@@ -77,8 +157,19 @@ class AudioLSLStreamer:
             if self.sample_cb:
                 self.sample_cb(timestamps, x)
 
+        device, resolved_samplerate = _resolve_input_device(
+            self.s.device, self.s.samplerate, self.s.channels, dtype
+        )
+        if resolved_samplerate != self.s.samplerate:
+            self.warning(
+                f"Requested sample rate {self.s.samplerate} Hz is not supported by the "
+                f"selected audio device; using its native rate of {resolved_samplerate} Hz "
+                "instead."
+            )
+            self.s.samplerate = resolved_samplerate
+
         self.stream = sd.InputStream(
-            device=self.s.device,
+            device=device,
             samplerate=self.s.samplerate,
             channels=self.s.channels,
             dtype=dtype,

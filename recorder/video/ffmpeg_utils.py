@@ -3,7 +3,7 @@ import subprocess
 from typing import List, Tuple
 
 from ..video.constants import (DEFAULT_CAMERA_FPS, FFMPEG_PROBE_DURATION_SEC,
-                               MAC_PIXEL_FORMAT_MAP)
+                               FFMPEG_PROBE_TIMEOUT_SEC, PIXEL_FORMAT_MAP)
 
 
 def _ffmpeg_avfoundation_probe(device: str, extra_args: list[str]) -> tuple[bool, str]:
@@ -17,7 +17,13 @@ def _ffmpeg_avfoundation_probe(device: str, extra_args: list[str]) -> tuple[bool
         "-f", "null",
         "-",
     ]
-    proc = subprocess.run(cmd, check=False, capture_output=True, text=True)
+    try:
+        proc = subprocess.run(
+            cmd, check=False, capture_output=True, text=True,
+            timeout=FFMPEG_PROBE_TIMEOUT_SEC,
+        )
+    except subprocess.TimeoutExpired:
+        return False, "probe timed out"
     text = (proc.stdout or "") + (proc.stderr or "")
     return proc.returncode == 0, text
 
@@ -81,21 +87,26 @@ def _probe_mac_supported_ui_formats(
         mode_probe_args.append(_build_mode_args(None, None, DEFAULT_CAMERA_FPS))
 
     supported: list[str] = []
-    total_formats = max(1, len(MAC_PIXEL_FORMAT_MAP))
-    for idx, (ui_fmt, ff_fmt) in enumerate(MAC_PIXEL_FORMAT_MAP.items(), start=1):
+    # Report progress per individual probe attempt (format x mode), not just
+    # once per pixel format, since a single format can require looping over
+    # many mode/fps combinations before it can be marked supported or not.
+    total_probes = max(1, len(PIXEL_FORMAT_MAP) * len(mode_probe_args))
+    completed = 0
+    for ui_fmt, ff_fmt in PIXEL_FORMAT_MAP.items():
         for mode_args in mode_probe_args:
             ok, text = _ffmpeg_avfoundation_probe(
                 device,
                 mode_args + ["-pixel_format", ff_fmt],
             )
+            completed += 1
+            if progress_cb:
+                try:
+                    progress_cb(completed, total_probes, ui_fmt)
+                except Exception:
+                    pass
             if _pixel_format_probe_succeeded(text, ok):
                 supported.append(ui_fmt)
                 break
-        if progress_cb:
-            try:
-                progress_cb(idx, total_formats, ui_fmt)
-            except Exception:
-                pass
     return sorted(set(supported))
 
 

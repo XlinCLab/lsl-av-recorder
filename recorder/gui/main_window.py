@@ -16,7 +16,9 @@ from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
                              QTableWidgetItem, QTabWidget, QTextEdit,
                              QVBoxLayout, QWidget)
 
-from ..audio.devices import default_input_device_index, list_input_devices
+from ..audio.devices import (default_input_device_index,
+                             get_audio_device_capabilities,
+                             is_input_config_supported, list_input_devices)
 from ..config import AppConfig, VideoCamConfig, load_cfg
 from ..lsl.labrecorder_rcs import LabRecorderRCS
 from ..video.camera_settings import apply_camera_controls
@@ -41,10 +43,15 @@ class _ApplyAllThread(QThread):
             for item in self._items:
                 label = item.get("label", "Camera")
                 devnode = item.get("devnode", "")
+                device_name = item.get("device_name")
                 controls = item.get("controls") or {}
                 if not controls:
                     continue
-                rep = apply_camera_controls(devnode, controls)
+                rep = apply_camera_controls(
+                    devnode=devnode,
+                    controls=controls,
+                    device_name=device_name
+                )
                 failed = rep.get("failed", {})
                 if failed:
                     failed_items = ", ".join(f"{k}={v}" for k, v in failed.items())
@@ -115,19 +122,14 @@ class MainWindow(QMainWindow):
         self.audio_enabled = QCheckBox("Enable audio (LSL stream, no WAV)")
         self.audio_enabled.setChecked(bool(self.cfg.Audio.Enabled))
         self.audio_device = QComboBox()
-        self._populate_audio_devices()
-
         self.audio_sr = QComboBox()
-        for sr in [22050, 44100, 48000, 96000]:
-            self.audio_sr.addItem(str(sr), sr)
-        self.audio_sr.setCurrentText(str(self.cfg.Audio.SampleRate))
-
         self.audio_bit = QComboBox()
-        for b in [16, 32, 64]:
-            self.audio_bit.addItem(str(b), b)
-        self.audio_bit.setCurrentText(str(self.cfg.Audio.BitDepth))
-
         self.audio_ch = QSpinBox(); self.audio_ch.setRange(1, 16); self.audio_ch.setValue(self.cfg.Audio.Channels)
+        self._audio_caps: dict = {}
+        self._populate_audio_devices()
+        self._refresh_audio_capabilities()
+        self.audio_device.currentIndexChanged.connect(self._on_audio_device_changed)
+
         self.audio_stream_name = QLineEdit(getattr(self.cfg.Audio, "StreamName", "Audio") or "Audio")
 
         af.addRow(self.audio_enabled)
@@ -228,11 +230,6 @@ class MainWindow(QMainWindow):
         self.cam_panels = []
         self.max_cams = 4
         self._init_camera_tabs()
-        # Show camera previews if video is enabled in config
-        if self.cfg.Video.Enabled:
-            for panel in self.cam_panels:
-                if panel.enabled.isChecked():
-                    self.preview_mgr.start_cam_preview(panel.to_config())
 
         left = QWidget()
         left_layout = QVBoxLayout()
@@ -281,6 +278,9 @@ class MainWindow(QMainWindow):
 
         self.preview_mgr.stop_all_previews()
         for panel in self.cam_panels:
+            # Skip a panel whose own capability probe is still running
+            if getattr(panel, "_caps_loading", False):
+                continue
             cam_cfg = panel.to_config()
             if cam_cfg.Enabled:
                 self.preview_mgr.start_cam_preview(cam_cfg)
@@ -424,6 +424,7 @@ class MainWindow(QMainWindow):
             self._start_progress_dialog.hide()
 
     def _populate_audio_devices(self):
+        self.audio_device.blockSignals(True)
         self.audio_device.clear()
         devs = list_input_devices()
         default_idx = default_input_device_index()
@@ -442,6 +443,69 @@ class MainWindow(QMainWindow):
             idx = self.audio_device.findData(default_idx)
             if idx >= 0:
                 self.audio_device.setCurrentIndex(idx)
+        self.audio_device.blockSignals(False)
+
+    def _on_audio_device_changed(self, _index: int):
+        self._refresh_audio_capabilities()
+
+    def _refresh_audio_capabilities(
+        self,
+        preferred_samplerate: Optional[int] = None,
+        preferred_bitdepth: Optional[int] = None,
+    ):
+        """Probe the selected audio device's actual supported sample rates/bit depths
+        and repopulate the Sample rate / Bit depth combos with only valid choices, so
+        the GUI can never offer (and silently have overridden at record time) a
+        combination the device doesn't support."""
+        device = self.audio_device.currentData()
+        if preferred_samplerate is None:
+            preferred_samplerate = self.audio_sr.currentData()
+        if preferred_samplerate is None:
+            preferred_samplerate = int(self.cfg.Audio.SampleRate)
+        if preferred_bitdepth is None:
+            preferred_bitdepth = self.audio_bit.currentData()
+        if preferred_bitdepth is None:
+            preferred_bitdepth = int(self.cfg.Audio.BitDepth)
+        preferred_channels = int(self.audio_ch.value()) or int(self.cfg.Audio.Channels)
+
+        caps = get_audio_device_capabilities(device, channels=preferred_channels)
+        self._audio_caps = caps
+
+        rates = caps.get("samplerates") or []
+        self.audio_sr.blockSignals(True)
+        self.audio_sr.clear()
+        if rates:
+            for sr in rates:
+                self.audio_sr.addItem(str(sr), sr)
+            idx = self.audio_sr.findData(preferred_samplerate)
+            if idx < 0:
+                default_sr = caps.get("default_samplerate")
+                idx = self.audio_sr.findData(default_sr) if default_sr in rates else 0
+            self.audio_sr.setCurrentIndex(max(idx, 0))
+        else:
+            # Couldn't probe the device (e.g. none selected/available yet); keep the
+            # configured value visible rather than silently discarding it.
+            self.audio_sr.addItem(str(preferred_samplerate), preferred_samplerate)
+            self.audio_sr.setCurrentIndex(0)
+        self.audio_sr.blockSignals(False)
+
+        depths = caps.get("bitdepths") or []
+        self.audio_bit.blockSignals(True)
+        self.audio_bit.clear()
+        if depths:
+            for b in depths:
+                self.audio_bit.addItem(str(b), b)
+            idx = self.audio_bit.findData(preferred_bitdepth)
+            self.audio_bit.setCurrentIndex(idx if idx >= 0 else 0)
+        else:
+            self.audio_bit.addItem(str(preferred_bitdepth), preferred_bitdepth)
+            self.audio_bit.setCurrentIndex(0)
+        self.audio_bit.blockSignals(False)
+
+        max_ch = caps.get("max_channels") or 0
+        self.audio_ch.setMaximum(max_ch if max_ch > 0 else 16)
+        if max_ch > 0 and self.audio_ch.value() > max_ch:
+            self.audio_ch.setValue(max_ch)
 
     def _init_camera_tabs(self):
         initial_count = self._determine_initial_camera_count()
@@ -487,8 +551,11 @@ class MainWindow(QMainWindow):
         panel.applyStarted.connect(self._on_apply_started)
         panel.applyFinished.connect(self._on_apply_finished)
         panel.applyFinished.connect(self._refresh_previews_from_panels)
+        panel.previewConfigChanged.connect(self._refresh_previews_from_panels)
+        panel.capabilitiesLoadStarted.connect(self.preview_mgr.stop_all_previews)
         panel.capabilitiesLoadStarted.connect(self._on_caps_load_started)
         panel.capabilitiesLoadFinished.connect(self._on_caps_load_finished)
+        panel.capabilitiesLoadFinished.connect(self._refresh_previews_from_panels)
         panel.capabilitiesLoadProgress.connect(self._on_caps_load_progress)
         panel.removeRequested.connect(self._on_remove_camera)
         self.cam_panels.append(panel)
@@ -576,6 +643,7 @@ class MainWindow(QMainWindow):
         if self._start_apply_thread and self._start_apply_thread.isRunning():
             return
         items, warnings = self._collect_camera_apply_items()
+        warnings.extend(self._validate_audio_settings())
         self._pending_start_warnings = warnings
         self.btn_start.setEnabled(False)
         if items:
@@ -602,10 +670,25 @@ class MainWindow(QMainWindow):
                 {
                     "label": cam_cfg.Label,
                     "devnode": cam_cfg.DevNode,
+                    "device_name": cam_cfg.DeviceName,
                     "controls": controls,
                 }
             )
         return items, warnings
+
+    def _validate_audio_settings(self) -> list[str]:
+        if not self.audio_enabled.isChecked():
+            return []
+        device = self.audio_device.currentData()
+        samplerate = int(self.audio_sr.currentData())
+        bitdepth = int(self.audio_bit.currentData())
+        channels = int(self.audio_ch.value())
+        if is_input_config_supported(device, samplerate, channels, bitdepth):
+            return []
+        return [
+            f"Audio: samplerate={samplerate}, bitdepth={bitdepth}, channels={channels} "
+            "is not supported by the selected input device."
+        ]
 
     def _on_apply_all_finished(self, failed_msgs: list[str]):
         self._hide_start_progress()
@@ -638,10 +721,10 @@ class MainWindow(QMainWindow):
         warnings.extend(failed_msgs or [])
         self._pending_start_warnings = []
         if warnings:
-            body = "Some camera settings may not be supported:\n\n"
+            body = "Some settings may not be supported:\n\n"
             body += "\n".join(f"- {msg}" for msg in warnings)
             body += "\n\nPlease adjust settings before starting the run."
-            QMessageBox.warning(self, "Camera settings warning", body)
+            QMessageBox.warning(self, "Settings warning", body)
             for msg in warnings:
                 self.log(msg, loglevel="WARNING")
             self.btn_start.setEnabled(True)
@@ -811,10 +894,12 @@ class MainWindow(QMainWindow):
         self.run.setText(self.cfg.Prompts.Run)
 
         self.audio_enabled.setChecked(bool(self.cfg.Audio.Enabled))
-        self._populate_audio_devices()
-        self._set_combo_to_data(self.audio_sr, int(self.cfg.Audio.SampleRate))
-        self._set_combo_to_data(self.audio_bit, int(self.cfg.Audio.BitDepth))
         self.audio_ch.setValue(int(self.cfg.Audio.Channels))
+        self._populate_audio_devices()
+        self._refresh_audio_capabilities(
+            preferred_samplerate=int(self.cfg.Audio.SampleRate),
+            preferred_bitdepth=int(self.cfg.Audio.BitDepth),
+        )
         self.audio_stream_name.setText(getattr(self.cfg.Audio, "StreamName", "Audio") or "Audio")
 
         self.labrec_enabled.setChecked(bool(self.cfg.LabRecorder.Enabled))
@@ -832,13 +917,6 @@ class MainWindow(QMainWindow):
 
         self._rebuild_camera_tabs_from_cfg()
         self._refresh_previews_from_panels()
-
-    def _set_combo_to_data(self, combo: QComboBox, value: int):
-        idx = combo.findData(value)
-        if idx < 0:
-            combo.addItem(str(value), value)
-            idx = combo.findData(value)
-        combo.setCurrentIndex(max(idx, 0))
 
     def _rebuild_camera_tabs_from_cfg(self):
         for panel in list(self.cam_panels):

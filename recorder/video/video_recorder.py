@@ -133,6 +133,22 @@ class VideoRecorder:
         elif sys.platform.startswith("linux"):
             source = self.cam.DevNode if getattr(self.cam, "DevNode", "") else self.cam.DeviceIndex
             self.cap = cv2.VideoCapture(source, cv2.CAP_V4L2)
+        elif sys.platform.startswith("win"):
+            from .dshow_capture import WindowsDShowVideoCapture
+
+            try:
+                self.cap = WindowsDShowVideoCapture(
+                    device_index=int(self.cam.DeviceIndex),
+                    width=int(self.cam.Width),
+                    height=int(self.cam.Height),
+                    pixel_format=str(getattr(self.cam, "PixelFormat", "") or "") or None,
+                    fps=float(self.cam.FPS or 0) or None,
+                    log_cb=self.log,
+                )
+            except Exception as exc:
+                self.error(f"Could not open DirectShow capture: {exc}")
+                self.cap = None
+                return False
         else:
             self.cap = cv2.VideoCapture(self.cam.DeviceIndex)
         if not self.cap.isOpened():
@@ -143,6 +159,7 @@ class VideoRecorder:
                 pass
             self.cap = None
             return False
+
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.cam.Width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.cam.Height)
         self.cap.set(cv2.CAP_PROP_FPS, self.cam.FPS)

@@ -7,12 +7,11 @@ Desktop GUI recorder for synchronized audio/video stream recording and XDF writi
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Running the App](#running-the-app)
-- [GUI Walkthrough](#gui-walkthrough)
 - [Camera Controls and Capability Detection](#camera-controls-and-capability-detection)
+- [LSL Integration](#lsl-integration)
 - [Configuration Files (.cfg)](#configuration-files-cfg)
 - [Output Files and Naming](#output-files-and-naming)
 - [Recording/Data Flow](#recordingdata-flow)
-- [Notes and Current Limitations](#notes-and-current-limitations)
 
 ## Overview
 - GUI for session metadata, audio settings, and per-camera setup.
@@ -27,10 +26,12 @@ Desktop GUI recorder for synchronized audio/video stream recording and XDF writi
 - OS-specific camera dependency:
   - Linux: `v4l-utils` (`v4l2-ctl`)
   - macOS: `ffmpeg` (AVFoundation input)
+  - Windows: `pygrabber` (DirectShow via COM; installed automatically via pip)
 
 ## Installation
-Use the setup script:
+Use the appropriate setup script for your platform. In addition to the platform-specific installation steps documented below, both scripts install a Python virtual environment (`.venv`) for this application.
 
+### Linux and MacOS:
 ```bash
 ./setup.sh
 ```
@@ -40,10 +41,29 @@ Use the setup script:
   - checks/installs `v4l-utils` via `apt-get`, `dnf`, or `pacman`
 - macOS:
   - checks/installs `ffmpeg` via Homebrew
-- Creates `.venv`
-- Installs package with:
-  - `pip install -U pip`
-  - `pip install -e .`
+
+After initial installation, only the project's virtual environment needs to be activated before running the application:
+```bash
+source .venv/bin/activate
+```
+
+### Windows
+```powershell
+.\setup.ps1
+```
+
+`setup.ps1` does the following:
+- downloads the latest LabRecorder Windows release
+
+If PowerShell blocks script execution, run once as Administrator:
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+```
+
+After initial installation, only the project's virtual environment needs to be activated before running the application:
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
 
 ## Running the App
 Start the GUI:
@@ -58,67 +78,37 @@ Unless `main.py` is run with a path to a config `.cfg` file, the default `exampl
 To load a different config in normal GUI use:
 - Click **Load config** in the main window.
 
-## GUI Walkthrough
-Main window includes:
-- Session metadata fields:
-  - `ExperimentName`
-  - `Subject (%p)`
-  - `Session (%s)`
-  - `Block/Task (%b)`
-  - `Acquisition (%a)`
-  - `Run (%r)`
-- Audio tab
-- 4 camera tabs (Camera 1..4)
-- Live preview panel
-- Log panel
-- Run controls: `Load config`, `Start`, `Stop`
-
-### Audio Tab
-Fields:
-- Enable audio
-- Input device (enumerated from `sounddevice`)
-- Sample rate
-- Bit depth (16/32/64)
-- Channels
-- LSL stream name field (currently metadata only for audio stream settings)
-
-### Camera Tabs
-Each camera tab includes:
-- Enable toggle
-- Device selection by name
-- Label
-- FPS dropdown
-- Resolution dropdown
-- Pixel format dropdown (`MJPG`, `YUYV`) with unsupported options disabled
-- Brightness / Hue / Saturation (enabled when supported)
-- Auto-exposure / Auto-focus toggles (enabled when supported)
-- Buttons:
-  - `Refresh video devices`
-  - `Refresh device capabilities`
-  - `Apply settings`
-
-Preview behavior:
-- Changing camera selection/settings triggers preview rebind when idle.
-- During active run/recording, preview workers are not hot-swapped.
-
 ## Camera Controls and Capability Detection
 Capability discovery is platform-specific and depending on the platform, some camera controls may not be supported.
+On MacOS and Windows, device capabilities are probed and/or tested empirically on first use, which may take up to a few minutes. These device capabilities are then cached and reused for future sessions, such that this capability probing/test step only runs once per device. This probe additionally runs again when the application version has changed from the version in the cache.
 
 ### Linux
 Uses `v4l2-ctl` to control camera settings:
 - Supported pixel formats
 - Supported FPS values
-- Supported `(resolution, fps)` modes
 - Control ranges for brightness/hue/saturation
 - Toggle enable/disable of `exposure_auto` and `focus_auto`
 
 ### macOS
 Uses `ffmpeg` AVFoundation probing:
-- Device list
 - Supported modes parsed by forcing unsupported framerate probe
 - Pixel formats are probed against valid mode/FPS combinations
 - Brightness/saturation/hue are applied via `ffmpeg` filter chain
 - Auto-exposure / auto-focus are treated as unsupported
+
+### Windows
+Interfaces with `DirectShow` via `COM` (through `pygrabber`) for both capability discovery and frame capture:
+- Supported pixel formats, resolutions, and FPS are queried from the device, and the declared max FPS per mode is empirically verified (and corrected down if the declared maximum frame rate cannot be verified)
+- Brightness/hue/saturation and auto-exposure/auto-focus are applied via `COM` camera-control interfaces
+- Resolution/FPS/pixel format have no separate "Apply settings" pre-flight step as in Linux and MacOS; instead, they are applied when the capture opens at preview/recording start
+
+## LSL Integration
+- Every camera's frame index and timestamp are published live as its own LSL outlet (`VideoFrames_cam-XX_role-<label>`, type `VideoFrame`) for the lifetime of the camera worker, independent of the in-app XDF writer, so external LSL clients can also record video timing.
+- Audio is not published as an LSL outlet; its samples are timestamped against the LSL clock (`pylsl.local_clock()`) and written directly into the in-app XDF file for synchronization with other streams.
+- Additional LSL streams (e.g. EEG, eye tracking) are found on the network and folded into the same XDF file:
+  - **Discover streams** (LabRecorder tab) resolves currently broadcasting LSL outlets via `pylsl.resolve_streams()`.
+  - Streams checked in the resulting table each get their own `StreamInlet`, pulling samples into the XDF file for the duration of the run.
+- **LabRecorder RCS**: the LabRecorder tab's host/port fields and Connect/Disconnect buttons open a socket to a separately running LabRecorder instance's Remote Control Server, independent of this app's own Start/Stop and XDF writing.
 
 ## Configuration Files (.cfg)
 Configuration files are INI-style and expected to be saved as `.cfg` files.
@@ -178,13 +168,10 @@ Path templating uses tokens:
 - Base directory and base name from `Output.PathTemplate`
 
 Created artifacts include:
-- Session metadata JSON:
-  - `<base_name>_session.json`
-- XDF file:
-  - rendered from output template
-- Video files:
-  - preview worker recording path: `<base_name>_cam-XX_role-<label>.<container>`
-  - run-controller recorder path: `<base_name>_cam-<label>.<container>`
+- XDF file containing audio and any LSL streams
+- Video `.mp4` files per camera
+- Session metadata JSON: `<base_name>_session.json`
+- Full session log: `run.log`
 
 ## Recording/Data Flow
 On **Start**:
@@ -206,6 +193,3 @@ Video flow:
 XDF flow:
 - `XDFWriter` writes file header, stream headers, boundary/sample chunks, and stream footers.
 
-## Notes and Current Limitations
-- The app is currently implemented for Linux/macOS camera tooling paths.
-- Preview/live reconfiguration is intentionally conservative while recording is active.

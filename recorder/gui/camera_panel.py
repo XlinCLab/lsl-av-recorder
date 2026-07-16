@@ -56,14 +56,25 @@ class _ApplyControlsThread(QThread):
     finished_apply = pyqtSignal(dict)
     failed = pyqtSignal(str)
 
-    def __init__(self, devnode: str, controls: dict[str, Any], parent: Optional[QWidget] = None):
+    def __init__(
+        self,
+        devnode: str,
+        controls: dict[str, Any],
+        device_name: Optional[str] = None,
+        parent: Optional[QWidget] = None,
+    ):
         super().__init__(parent)
         self._devnode = devnode
         self._controls = controls
+        self._device_name = device_name
 
     def run(self):
         try:
-            rep = apply_camera_controls(self._devnode, self._controls)
+            rep = apply_camera_controls(
+                devnode=self._devnode,
+                controls=self._controls,
+                device_name=self._device_name,
+            )
             self.finished_apply.emit(rep)
         except Exception as exc:
             self.failed.emit(str(exc))
@@ -361,10 +372,15 @@ class CameraPanel(QWidget):
 
         self.resolution.blockSignals(True)
         self.resolution.clear()
-        for r in ordered:
+        selected_idx = 0
+        for i, r in enumerate(ordered):
             self.resolution.addItem(self._resolution_label(r), r)
-        idx = self.resolution.findData(selected_resolution)
-        self.resolution.setCurrentIndex(idx if idx >= 0 else 0)
+            # QComboBox.findData() does not reliably match tuple item data by
+            # value in PyQt6 (only by object identity), so track the match
+            # ourselves with a plain Python "==" while inserting instead.
+            if r == selected_resolution:
+                selected_idx = i
+        self.resolution.setCurrentIndex(selected_idx)
         self.resolution.blockSignals(False)
 
     def _selected_resolution(self) -> tuple[int, int]:
@@ -405,6 +421,29 @@ class CameraPanel(QWidget):
         self.resolution.setEnabled(True)
         self._set_fps_choices(sorted({int(f) for f in fps_values if int(f) > 0}) or [fallback_fps], fallback_fps)
         self.fps.setEnabled(True)
+
+    def _populate_all_resolutions_for_current_format(self, prefer_current: bool) -> bool:
+        """Show every resolution the current pixel format supports, without
+        pre-filtering by whatever FPS happens to already be selected.
+
+        Used right after capabilities first load (or the pixel format list is
+        rebuilt), where the FPS combo can still hold a leftover value from
+        before probing (e.g. a config default) that happens to be valid for
+        only one resolution -- filtering by it there (as
+        _update_resolution_choices_for_selected_fps does, appropriately, when
+        the user deliberately changes FPS) would incorrectly narrow the
+        resolution list down to just that one, and recalculating FPS for that
+        same resolution afterward wouldn't break the loop, since the stale FPS
+        is still technically valid there.
+        """
+        resolutions = sorted({(w, h) for w, h, _ in self._modes})
+        if not resolutions:
+            return False
+        current = self._selected_resolution() if prefer_current else None
+        selected = current if current in resolutions else None
+        self._set_resolution_choices(resolutions, selected_resolution=selected)
+        self.resolution.setEnabled(True)
+        return True
 
     def _fps_for_resolution(self, resolution: tuple[int, int]) -> list[int]:
         if not self._modes:
@@ -615,7 +654,15 @@ class CameraPanel(QWidget):
         if self._modes:
             if self._modes_by_format:
                 self._set_modes_for_pixel_format(current_pf)
-            self._update_resolution_choices_for_selected_fps(prefer_current=False)
+            # Show every resolution for this format first (not pre-filtered by
+            # whatever FPS the combo still holds from before capabilities
+            # loaded, e.g. a config default) then compute valid FPS choices
+            # for whichever resolution ends up selected. Filtering resolution
+            # by FPS here instead can get stuck: if that leftover FPS happens
+            # to be valid for the also-defaulted current resolution, it stays
+            # selected, and filtering resolutions by it narrows the list down
+            # to just that one -- a self-consistent but overly narrow result.
+            self._populate_all_resolutions_for_current_format(prefer_current=True)
             self._update_fps_choices_for_selected_resolution(prefer_current=True)
         else:
             fps_values = caps.get("fps") or [current_fps]
@@ -638,7 +685,9 @@ class CameraPanel(QWidget):
             self.pixel_format.blockSignals(False)
             if self._modes_by_format:
                 if self._set_modes_for_pixel_format(self.pixel_format.currentText()):
-                    self._update_resolution_choices_for_selected_fps(prefer_current=True)
+                    # Same reasoning as above: show all resolutions for the
+                    # format first, then compute FPS for whichever is selected.
+                    self._populate_all_resolutions_for_current_format(prefer_current=True)
                     self._update_fps_choices_for_selected_resolution(prefer_current=True)
         else:
             self.pixel_format.setEnabled(False)
@@ -823,7 +872,12 @@ class CameraPanel(QWidget):
         self._apply_loading = True
         self.applyStarted.emit()
 
-        thread = _ApplyControlsThread(dev, controls, parent=self)
+        thread = _ApplyControlsThread(
+            devnode=dev,
+            controls=controls,
+            device_name=self._device_name,
+            parent=self,
+        )
         self._apply_thread = thread
         thread.finished_apply.connect(lambda rep: self._on_apply_done(dev, rep))
         thread.failed.connect(self._on_apply_error)
@@ -834,6 +888,7 @@ class CameraPanel(QWidget):
             dev,
             rep.get("applied", {}),
             rep.get("failed", {}),
+            rep.get("unverified", {}),
         )
         self.text.append(summary)
         failed = rep.get("failed", {})

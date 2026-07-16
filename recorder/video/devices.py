@@ -4,7 +4,8 @@ import re
 from typing import Any, Dict, List
 
 from ..utils.utils import run_capture_cmd
-from ..video.constants import IS_LINUX, IS_MAC
+from ..video.constants import IS_LINUX, IS_MAC, IS_WINDOWS
+from ..video.dshow_capture import list_windows_video_devices
 
 
 def _parse_mac_avfoundation_video_devices(text: str) -> List[Dict[str, Any]]:
@@ -72,5 +73,8 @@ def list_video_devices() -> List[Dict[str, Any]]:
     if IS_LINUX:
         text, _ = run_capture_cmd(["v4l2-ctl", "--list-devices"], check=False)
         return _parse_linux_v4l2_devices(text)
+
+    if IS_WINDOWS:
+        return list_windows_video_devices()
 
     return []

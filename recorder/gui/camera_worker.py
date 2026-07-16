@@ -39,6 +39,7 @@ class CameraWorker(QObject):
         brightness: Optional[int] = None,
         hue: Optional[int] = None,
         saturation: Optional[int] = None,
+        pixel_format: Optional[str] = None,
     ):
         super().__init__()
         self.cam_index = int(cam_index)
@@ -50,6 +51,7 @@ class CameraWorker(QObject):
         self.brightness = brightness
         self.hue = hue
         self.saturation = saturation
+        self.pixel_format = pixel_format
         # Color (brightness, hue, saturation) adjustments for MacOS only
         # On Linux, color settings are controllable via V4L2
         self._apply_color_adjustments = (
@@ -87,7 +89,18 @@ class CameraWorker(QObject):
         elif sys.platform.startswith("linux"):
             source = self.devnode if self.devnode else self.cam_index
             self.cap = cv2.VideoCapture(source, cv2.CAP_V4L2)
-        else:  # Windows
+        elif sys.platform.startswith("win"):  # Windows
+            from ..video.dshow_capture import WindowsDShowVideoCapture
+
+            self.cap = WindowsDShowVideoCapture(
+                device_index=self.cam_index,
+                width=self.w,
+                height=self.h,
+                pixel_format=self.pixel_format or None,
+                fps=float(self.fps) or None,
+                log_cb=lambda msg, level="WARNING": self.status.emit(f"{level}: {msg}"),
+            )
+        else:
             self.cap = cv2.VideoCapture(self.cam_index)
 
         if not self.cap.isOpened():
