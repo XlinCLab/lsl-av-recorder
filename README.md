@@ -8,6 +8,7 @@ Desktop GUI recorder for synchronized audio/video stream recording and XDF writi
 - [Installation](#installation)
 - [Running the App](#running-the-app)
 - [Camera Controls and Capability Detection](#camera-controls-and-capability-detection)
+- [LSL Integration](#lsl-integration)
 - [Configuration Files (.cfg)](#configuration-files-cfg)
 - [Output Files and Naming](#output-files-and-naming)
 - [Recording/Data Flow](#recordingdata-flow)
@@ -99,6 +100,14 @@ Interfaces with `DirectShow` via `COM` (through `pygrabber`) for both capability
 - Supported pixel formats, resolutions, and FPS are queried from the device, and the declared max FPS per mode is empirically verified (and corrected down if the declared maximum frame rate cannot be verified)
 - Brightness/hue/saturation and auto-exposure/auto-focus are applied via `COM` camera-control interfaces
 - Resolution/FPS/pixel format have no separate "Apply settings" pre-flight step as in Linux and MacOS; instead, they are applied when the capture opens at preview/recording start
+
+## LSL Integration
+- Every camera's frame index and timestamp are published live as its own LSL outlet (`VideoFrames_cam-XX_role-<label>`, type `VideoFrame`) for the lifetime of the camera worker, independent of the in-app XDF writer, so external LSL clients can also record video timing.
+- Audio is not published as an LSL outlet; its samples are timestamped against the LSL clock (`pylsl.local_clock()`) and written directly into the in-app XDF file for synchronization with other streams.
+- Additional LSL streams (e.g. EEG, eye tracking) are found on the network and folded into the same XDF file:
+  - **Discover streams** (LabRecorder tab) resolves currently broadcasting LSL outlets via `pylsl.resolve_streams()`.
+  - Streams checked in the resulting table each get their own `StreamInlet`, pulling samples into the XDF file for the duration of the run.
+- **LabRecorder RCS**: the LabRecorder tab's host/port fields and Connect/Disconnect buttons open a socket to a separately running LabRecorder instance's Remote Control Server, independent of this app's own Start/Stop and XDF writing.
 
 ## Configuration Files (.cfg)
 Configuration files are INI-style and expected to be saved as `.cfg` files.
