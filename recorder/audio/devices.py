@@ -4,7 +4,8 @@ from typing import Any, Dict, List, Optional, Union
 
 import sounddevice as sd
 
-from ..audio.constants import BITDEPTH_DTYPES, CANDIDATE_SAMPLE_RATES
+from ..audio.constants import (BITDEPTH_DTYPES, CANDIDATE_SAMPLE_RATES,
+                               DEFAULT_SAMPLING_RATE)
 
 
 def list_input_devices() -> List[Dict[str, Any]]:
@@ -86,7 +87,7 @@ def get_audio_device_capabilities(
     )
     caps["samplerates"] = supported_rates
 
-    probe_rate = supported_rates[0] if supported_rates else (default_samplerate or 44100)
+    probe_rate = supported_rates[0] if supported_rates else (default_samplerate or DEFAULT_SAMPLING_RATE)
     bitdepths = []
     for bitdepth in (16, 32):
         if is_input_config_supported(device, probe_rate, test_channels, bitdepth):
