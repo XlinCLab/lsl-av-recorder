@@ -10,6 +10,8 @@ from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 
+from ..video.constants import COMMON_FPS_VALUES
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -116,14 +118,8 @@ def _build_capabilities_from_formats(formats: List[Dict[str, Any]]) -> Dict[str,
     return caps
 
 
-# Common, human-recognizable frame rates to snap noisy measurements to, so
-# repeated probes of the same device converge on a stable, reproducible value
-# instead of e.g. 29.1 vs 30.6 depending on measurement jitter.
-_COMMON_FPS_VALUES = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20, 24, 25, 30, 50, 60, 90, 120]
-
-
 def _snap_to_common_fps(value: float) -> int:
-    return min(_COMMON_FPS_VALUES, key=lambda f: abs(f - value))
+    return min(COMMON_FPS_VALUES, key=lambda f: abs(f - value))
 
 
 def _measure_achievable_fps(

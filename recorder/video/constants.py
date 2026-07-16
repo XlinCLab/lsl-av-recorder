@@ -29,6 +29,10 @@ SATURATION_RANGE = (0, 200)
 # Frame rate (frames per second)
 DEFAULT_CAMERA_FPS = 30
 DEFAULT_PREVIEW_FPS = 15
+# Common, human-recognizable frame rates to snap noisy measurements to, 
+# so that repeated probes of the same device converge on a stable, 
+# reproducible value instead of e.g. 29.1 vs 30.6 depending on measurement jitter.
+COMMON_FPS_VALUES = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20, 24, 25, 30, 50, 60, 90, 120]
 
 # Pixel format
 DEFAULT_PIXEL_FORMAT = "YUYV"
