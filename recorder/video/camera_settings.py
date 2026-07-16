@@ -12,8 +12,10 @@ from ..video.constants import (BRIGHTNESS_RANGE, CAMERA_CAPS_CACHE,
                                FFMPEG_UNSUPPORTED_CONTROLS, HUE_RANGE,
                                IS_LINUX, IS_MAC, IS_WINDOWS, PIXEL_FORMAT_MAP,
                                SATURATION_RANGE, V4L2_AUTO_EXPOSURE_MODE,
-                               V4L2_CONTROL_MAP, V4L2_MANUAL_EXPOSURE_MODE)
-from ..video.dshow_capture import get_windows_camera_capabilities
+                               V4L2_AUTO_FOCUS_MODE, V4L2_CONTROL_MAP,
+                               V4L2_MANUAL_EXPOSURE_MODE)
+from ..video.dshow_capture import (get_windows_camera_capabilities,
+                                   set_windows_camera_controls)
 from ..video.ffmpeg_utils import (_get_supported_modes,
                                   _probe_mac_supported_fps,
                                   _probe_mac_supported_ui_formats,
@@ -476,12 +478,39 @@ def set_camera_controls(devnode: str, control_settings: dict) -> dict:
             successful_settings.update(color_controls)
 
     elif IS_WINDOWS:
-        # No DirectShow pre-flight application/validation is implemented yet.
-        # Width/height/pixel_format are applied directly by OpenCV (CAP_DSHOW) when the
-        # capture opens for recording; fine-grained controls (brightness/hue/saturation,
-        # auto-exposure/auto-focus) are not yet supported at all on Windows. 
-        # Accept everything here rather than blocking Start, since the GUI already disables
-        # controls that `get_camera_capabilities` reports as unsupported.
+        # Width/height/pixel_format are applied by WindowsDShowVideoCapture itself
+        # when the capture opens for recording
+        device_index = int(devnode)
+        color_controls = {}
+        for key in ("brightness", "hue", "saturation"):
+            if key in settings_to_apply:
+                color_controls[key] = settings_to_apply.pop(key)
+
+        auto_exposure_val = settings_to_apply.pop("auto_exposure", None)
+        auto_focus_val = settings_to_apply.pop("auto_focus", None)
+        auto_exposure = None if auto_exposure_val is None else auto_exposure_val == V4L2_AUTO_EXPOSURE_MODE
+        auto_focus = None if auto_focus_val is None else auto_focus_val == V4L2_AUTO_FOCUS_MODE
+
+        if color_controls or auto_exposure is not None or auto_focus is not None:
+            applied = set_windows_camera_controls(
+                device_index,
+                brightness=color_controls.get("brightness"),
+                hue=color_controls.get("hue"),
+                saturation=color_controls.get("saturation"),
+                auto_exposure=auto_exposure,
+                auto_focus=auto_focus,
+            )
+            if "brightness" in applied:
+                successful_settings["brightness"] = color_controls["brightness"]
+            if "hue" in applied:
+                successful_settings["hue"] = color_controls["hue"]
+            if "saturation" in applied:
+                successful_settings["saturation"] = color_controls["saturation"]
+            if "auto_exposure" in applied:
+                successful_settings["auto_exposure"] = auto_exposure_val
+            if "auto_focus" in applied:
+                successful_settings["auto_focus"] = auto_focus_val
+
         successful_settings.update(settings_to_apply)
 
     else:

@@ -170,10 +170,13 @@ and actual frame capture. Devices are addressed by their DirectShow enumeration 
   Windows (the button and the settings pass that runs automatically on **Start** are no-ops
   that report success without touching the device) — these are applied once, for real, when
   the DirectShow graph is built at recording/preview start.
-- Brightness/hue/saturation and auto-exposure/auto-focus are **not yet supported** on Windows
-  at all (would require wrapping `IAMVideoProcAmp`/`IAMCameraControl`, which `pygrabber` does
-  not expose); those controls are disabled in the GUI (capability probing reports them
-  unsupported).
+- Brightness/hue/saturation and auto-exposure/auto-focus are applied via hand-wrapped
+  `IAMVideoProcAmp`/`IAMCameraControl` COM interfaces (`pygrabber` doesn't expose either).
+  Capability probing queries each interface's supported ranges/defaults and, for
+  exposure/focus, whether auto mode is available at all — the corresponding GUI controls
+  are enabled/disabled per-device based on that. Only the auto/manual mode is set for
+  exposure/focus (not a target value), consistent with the other platforms; toggling the
+  mode reads the camera's current value first so it isn't reset to some driver default.
 
 ## Configuration Files (.cfg)
 Configuration files are INI-style and expected to be saved as `.cfg` files.
@@ -261,9 +264,3 @@ Video flow:
 XDF flow:
 - `XDFWriter` writes file header, stream headers, boundary/sample chunks, and stream footers.
 
-## Notes and Current Limitations
-- Windows support covers device enumeration, capability probing, and recording. 
-  There is no pre-flight settings validation (resolution/FPS/pixel format are trusted as-is and applied by
-  OpenCV at recording start), and brightness/hue/saturation/auto-exposure/auto-focus controls
-  are not yet supported at all — see [Windows](#windows) above.
-- Preview/live reconfiguration is intentionally conservative while recording is active.
