@@ -231,7 +231,7 @@ def _verify_max_framerates(
                 pass
         measured = _measure_achievable_fps(device_index, w, h, pf, declared_max)
         if measured is None:
-            logger.info(
+            logger.warning(
                 f"FPS verify: {pf} {w}x{h} declared_max={declared_max} "
                 "-> measurement FAILED (device busy/unreachable), leaving declared value as-is"
             )
@@ -241,7 +241,7 @@ def _verify_max_framerates(
         # declared value -- but tight enough to still catch a partial (not
         # just total) shortfall, e.g. a declared 60fps that only reaches ~50.
         will_correct = snapped < declared_max * 0.85
-        logger.info(
+        logger.debug(
             f"FPS verify: {pf} {w}x{h} declared_max={declared_max} "
             f"measured={measured:.2f} snapped={snapped} "
             f"-> {'CORRECTING to ' + str(snapped) if will_correct else 'keeping declared value (within tolerance)'}"
