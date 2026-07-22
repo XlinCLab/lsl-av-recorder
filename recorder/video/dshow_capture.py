@@ -136,8 +136,8 @@ def _measure_achievable_fps(
     target_fps: float,
     warmup: float = 2.0,
     duration: float = 2.0,
-    retries: int = 2,
-    retry_delay: float = 1.0,
+    retries: int = 3,
+    retry_delay: float = 1.5,
 ) -> Optional[float]:
     """Briefly open a real capture at the given format/resolution/fps and
     measure the actual delivered frame rate.
@@ -353,7 +353,7 @@ def _query_camera_control_auto_support(camera_control, property_id: int) -> bool
     return bool(int(p_caps) & CAMERA_CONTROL_FLAGS_AUTO)
 
 
-def _query_control_capabilities(device_index: int, retries: int = 2, retry_delay: float = 1.0) -> Dict[str, Any]:
+def _query_control_capabilities(device_index: int, retries: int = 3, retry_delay: float = 1.5) -> Dict[str, Any]:
     """Query real hardware-level control ranges/defaults/auto-support via
     IAMVideoProcAmp (brightness/hue/saturation) and IAMCameraControl
     (auto-exposure/auto-focus support). Returns the caps sub-dict for these
@@ -415,8 +415,8 @@ def set_windows_camera_controls(
     saturation: Optional[int] = None,
     auto_exposure: Optional[bool] = None,
     auto_focus: Optional[bool] = None,
-    retries: int = 2,
-    retry_delay: float = 1.0,
+    retries: int = 3,
+    retry_delay: float = 1.5,
 ) -> Dict[str, Any]:
     """Apply hardware-level camera controls via IAMVideoProcAmp
     (brightness/hue/saturation) and IAMCameraControl (auto-exposure/
@@ -743,3 +743,43 @@ class WindowsDShowVideoCapture:
                 pass
             self._com_initialized = False
         self._opened = False
+
+
+def open_windows_capture(
+    device_index: int,
+    width: int,
+    height: int,
+    pixel_format: Optional[str] = None,
+    fps: Optional[float] = None,
+    log_cb: Optional[Callable[[str, str], None]] = None,
+    retries: int = 3,
+    retry_delay: float = 1.0,
+) -> "WindowsDShowVideoCapture":
+    """Open a WindowsDShowVideoCapture, retrying briefly on failure.
+
+    Right after a capability probe finishes, or a previous preview/recording
+    capture on the same device is closed, DirectShow can take a moment to
+    actually release the device even though our own COM calls (release()'s
+    graph.stop()/remove_filters()) have already returned -- opening again too
+    soon can fail as "device busy" on some drivers.
+    """
+    last_exc: Exception = RuntimeError(f"Could not open camera index={device_index}")
+    for attempt in range(max(1, retries)):
+        if attempt > 0:
+            time.sleep(retry_delay)
+        try:
+            cap = WindowsDShowVideoCapture(
+                device_index=device_index,
+                width=width,
+                height=height,
+                pixel_format=pixel_format,
+                fps=fps,
+                log_cb=log_cb,
+            )
+        except Exception as exc:
+            last_exc = exc
+            continue
+        if cap.isOpened():
+            return cap
+        cap.release()
+    raise last_exc

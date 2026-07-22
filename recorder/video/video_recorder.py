@@ -134,10 +134,10 @@ class VideoRecorder:
             source = self.cam.DevNode if getattr(self.cam, "DevNode", "") else self.cam.DeviceIndex
             self.cap = cv2.VideoCapture(source, cv2.CAP_V4L2)
         elif sys.platform.startswith("win"):
-            from .dshow_capture import WindowsDShowVideoCapture
+            from .dshow_capture import open_windows_capture
 
             try:
-                self.cap = WindowsDShowVideoCapture(
+                self.cap = open_windows_capture(
                     device_index=int(self.cam.DeviceIndex),
                     width=int(self.cam.Width),
                     height=int(self.cam.Height),
