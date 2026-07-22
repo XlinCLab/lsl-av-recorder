@@ -136,8 +136,8 @@ def _measure_achievable_fps(
     target_fps: float,
     warmup: float = 2.0,
     duration: float = 2.0,
-    retries: int = 3,
-    retry_delay: float = 1.5,
+    retries: int = 2,
+    retry_delay: float = 1.0,
 ) -> Optional[float]:
     """Briefly open a real capture at the given format/resolution/fps and
     measure the actual delivered frame rate.
@@ -170,7 +170,11 @@ def _measure_achievable_fps(
                 pixel_format=pixel_format,
                 fps=target_fps,
             )
-        except Exception:
+        except Exception as exc:
+            logger.info(
+                f"FPS verify: {pixel_format} {width}x{height} attempt {attempt + 1}/{retries} "
+                f"could not open capture: {exc}"
+            )
             continue
         try:
             if not cap.isOpened():
@@ -353,7 +357,7 @@ def _query_camera_control_auto_support(camera_control, property_id: int) -> bool
     return bool(int(p_caps) & CAMERA_CONTROL_FLAGS_AUTO)
 
 
-def _query_control_capabilities(device_index: int, retries: int = 3, retry_delay: float = 1.5) -> Dict[str, Any]:
+def _query_control_capabilities(device_index: int, retries: int = 2, retry_delay: float = 1.0) -> Dict[str, Any]:
     """Query real hardware-level control ranges/defaults/auto-support via
     IAMVideoProcAmp (brightness/hue/saturation) and IAMCameraControl
     (auto-exposure/auto-focus support). Returns the caps sub-dict for these
@@ -415,8 +419,8 @@ def set_windows_camera_controls(
     saturation: Optional[int] = None,
     auto_exposure: Optional[bool] = None,
     auto_focus: Optional[bool] = None,
-    retries: int = 3,
-    retry_delay: float = 1.5,
+    retries: int = 2,
+    retry_delay: float = 1.0,
 ) -> Dict[str, Any]:
     """Apply hardware-level camera controls via IAMVideoProcAmp
     (brightness/hue/saturation) and IAMCameraControl (auto-exposure/
