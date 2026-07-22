@@ -138,9 +138,17 @@ def _measure_achievable_fps(
     duration: float = 2.0,
     retries: int = 2,
     retry_delay: float = 1.0,
-) -> Optional[float]:
+) -> tuple[Optional[float], bool]:
     """Briefly open a real capture at the given format/resolution/fps and
     measure the actual delivered frame rate.
+
+    Returns (measured_fps, could_open). `could_open` is False only if every
+    attempt failed to even construct/open the capture -- e.g. DirectShow
+    raising VFW_E_CANNOT_CONNECT because no compatible filter chain exists to
+    convert this pixel format to what the sample grabber requests. That's a
+    deterministic, hardware/OS-level failure (retrying changes nothing), as
+    opposed to opening fine but failing to measure any valid frames, which is
+    more plausibly a one-off timing issue.
 
     DirectShow's IAMStreamConfig::GetStreamCaps has been observed to declare an
     optimistic maximum (e.g. 60fps) that the device doesn't actually sustain in
@@ -159,6 +167,7 @@ def _measure_achievable_fps(
     currently-configured resolution silently keeping its optimistic declared
     max uncorrected, while every other resolution corrected fine.
     """
+    could_open = False
     for attempt in range(retries):
         if attempt > 0:
             time.sleep(retry_delay)
@@ -176,6 +185,7 @@ def _measure_achievable_fps(
                 f"could not open capture: {exc}"
             )
             continue
+        could_open = True
         try:
             if not cap.isOpened():
                 continue
@@ -191,10 +201,10 @@ def _measure_achievable_fps(
             elapsed = time.monotonic() - start
             if elapsed <= 0 or count == 0:
                 continue
-            return count / elapsed
+            return count / elapsed, True
         finally:
             cap.release()
-    return None
+    return None, could_open
 
 
 def _verify_max_framerates(
@@ -205,13 +215,21 @@ def _verify_max_framerates(
     """Correct each unique (pixel format, resolution) combination's declared
     maximum fps against what's actually measured, clamping it down if the
     driver's declaration is optimistic -- so the GUI never offers, and users
-    never select, a rate the camera can't really sustain."""
+    never select, a rate the camera can't really sustain.
+
+    Combinations that can never actually be opened on this system (e.g. no
+    compatible DirectShow filter chain to convert that pixel format to what
+    the sample grabber requests) are dropped entirely rather than merely left
+    with an unverified fps -- declaring a mode "supported" here only for the
+    GUI to offer it and preview/recording to then fail opening it the exact
+    same way would be worse than not offering it at all."""
     unique_combos: dict[tuple[str, int, int], float] = {}
     for fmt in formats:
         key = (str(fmt["media_type_str"]).upper(), int(fmt["width"]), int(fmt["height"]))
         unique_combos[key] = max(unique_combos.get(key, 0.0), float(fmt["max_framerate"]))
 
     corrections: dict[tuple[str, int, int], float] = {}
+    unsupported: set[tuple[str, int, int]] = set()
     total = len(unique_combos)
     for i, ((pf, w, h), declared_max) in enumerate(unique_combos.items(), start=1):
         if progress_cb:
@@ -222,11 +240,19 @@ def _verify_max_framerates(
                 )
             except Exception:
                 pass
-        measured = _measure_achievable_fps(device_index, w, h, pf, declared_max)
+        measured, could_open = _measure_achievable_fps(device_index, w, h, pf, declared_max)
+        if not could_open:
+            logger.warning(
+                f"FPS verify: {pf} {w}x{h} could not be opened on this system after "
+                "all retries (not a transient failure) -- excluding this combination "
+                "from supported capabilities"
+            )
+            unsupported.add((pf, w, h))
+            continue
         if measured is None:
             logger.warning(
                 f"FPS verify: {pf} {w}x{h} declared_max={declared_max} "
-                "-> measurement FAILED (device busy/unreachable), leaving declared value as-is"
+                "-> measurement FAILED (opened but delivered no frames), leaving declared value as-is"
             )
             continue
         snapped = _snap_to_common_fps(measured)
@@ -242,13 +268,21 @@ def _verify_max_framerates(
         if will_correct:
             corrections[(pf, w, h)] = float(snapped)
 
+    filtered_formats = [
+        fmt for fmt in formats
+        if (str(fmt["media_type_str"]).upper(), int(fmt["width"]), int(fmt["height"])) not in unsupported
+    ]
+    if unsupported:
+        logger.info(f"FPS verify: excluded {len(unsupported)} unopenable combination(s): {sorted(unsupported)}")
+
     if not corrections:
-        logger.info("FPS verify: no corrections applied to any (format, resolution) combination")
-        return formats
+        if not unsupported:
+            logger.info("FPS verify: no corrections applied to any (format, resolution) combination")
+        return filtered_formats
 
     logger.info(f"FPS verify: applying corrections to {len(corrections)} combination(s): {corrections}")
     corrected_formats = []
-    for fmt in formats:
+    for fmt in filtered_formats:
         key = (str(fmt["media_type_str"]).upper(), int(fmt["width"]), int(fmt["height"]))
         if key in corrections:
             fmt = dict(fmt)
