@@ -337,7 +337,10 @@ def _query_video_proc_amp_range(video_proc_amp, property_id: int):
         p_min, p_max, _p_step, p_default, _p_caps = video_proc_amp.GetRange(property_id)
     except Exception:
         return None, None
-    return (int(p_min), int(p_max)), int(p_default)
+    p_min, p_max = int(p_min), int(p_max)
+    if p_min >= p_max:
+        return None, None
+    return (p_min, p_max), int(p_default)
 
 
 def _query_camera_control_auto_support(camera_control, property_id: int) -> bool:
@@ -467,8 +470,18 @@ def set_windows_camera_controls(
                         camera_control = video_input.instance.QueryInterface(IAMCameraControl)
                         try:
                             current_value, _current_flags = camera_control.Get(prop)
-                        except Exception:
-                            current_value = 0
+                        except Exception as exc:
+                            # Don't fall back to some fabricated value (e.g. 0) here --
+                            # for exposure, 0 is a real, meaningful (and typically very
+                            # dark) setting, not a safe no-op. Without the actual
+                            # current value there's nothing safe to preserve, so skip
+                            # the mode toggle entirely rather than risk clobbering it.
+                            logger.warning(
+                                f"Could not read current value for {key} via IAMCameraControl "
+                                f"(device {device_index}); skipping mode toggle to avoid "
+                                f"resetting it to an arbitrary value: {exc}"
+                            )
+                            continue
                         flag = CAMERA_CONTROL_FLAGS_AUTO if requested else CAMERA_CONTROL_FLAGS_MANUAL
                         camera_control.Set(prop, int(current_value), flag)
                         applied[key] = requested
