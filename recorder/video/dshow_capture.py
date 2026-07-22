@@ -14,7 +14,8 @@ from ..video.constants import (CAMERA_CONTROL_EXPOSURE,
                                CAMERA_CONTROL_FLAGS_AUTO,
                                CAMERA_CONTROL_FLAGS_MANUAL,
                                CAMERA_CONTROL_FOCUS, COMMON_FPS_VALUES,
-                               VIDEO_PROC_AMP_BRIGHTNESS,
+                               DEFAULT_BRIGHTNESS, DEFAULT_HUE,
+                               DEFAULT_SATURATION, VIDEO_PROC_AMP_BRIGHTNESS,
                                VIDEO_PROC_AMP_FLAGS_MANUAL,
                                VIDEO_PROC_AMP_HUE, VIDEO_PROC_AMP_SATURATION)
 
@@ -381,6 +382,23 @@ def _query_video_proc_amp_range(video_proc_amp, property_id: int):
     return (p_min, p_max), int(p_default)
 
 
+def _sane_default(rng: Optional[tuple], default: Optional[int], app_default: int) -> Optional[int]:
+    """Some DirectShow drivers report pDefault sitting exactly at the range's
+    own floor (pMin) for brightness/saturation, instead of a genuine neutral
+    default -- observed in practice as e.g. brightness_range=(0, 255) with
+    brightness_default=0, which auto-populates the GUI control at 0 and makes
+    the preview look pitch black, rather than pDefault==pMin being a real
+    "start at minimum" recommendation. Treat that specific case as an
+    untrustworthy driver value and fall back to this app's own cross-platform
+    default (matching the Linux/macOS default for the same control), clamped
+    into the actual reported range."""
+    if rng is None or default is None:
+        return default
+    if default == rng[0]:
+        return min(max(app_default, rng[0]), rng[1])
+    return default
+
+
 def _query_camera_control_auto_support(camera_control, property_id: int) -> bool:
     """Whether this device advertises auto mode as available for a given
     IAMCameraControl property (via the pCapsFlags bitmask GetRange returns)."""
@@ -419,12 +437,23 @@ def _query_control_capabilities(device_index: int, retries: int = 2, retry_delay
 
                 try:
                     video_proc_amp = video_input.instance.QueryInterface(IAMVideoProcAmp)
-                    rng, default = _query_video_proc_amp_range(video_proc_amp, VIDEO_PROC_AMP_BRIGHTNESS)
-                    result["brightness_range"], result["brightness_default"] = rng, default
-                    rng, default = _query_video_proc_amp_range(video_proc_amp, VIDEO_PROC_AMP_HUE)
-                    result["hue_range"], result["hue_default"] = rng, default
-                    rng, default = _query_video_proc_amp_range(video_proc_amp, VIDEO_PROC_AMP_SATURATION)
-                    result["saturation_range"], result["saturation_default"] = rng, default
+                    rng, raw_default = _query_video_proc_amp_range(video_proc_amp, VIDEO_PROC_AMP_BRIGHTNESS)
+                    result["brightness_range"] = rng
+                    result["brightness_default"] = _sane_default(rng, raw_default, DEFAULT_BRIGHTNESS)
+                    rng, raw_default = _query_video_proc_amp_range(video_proc_amp, VIDEO_PROC_AMP_HUE)
+                    result["hue_range"] = rng
+                    result["hue_default"] = _sane_default(rng, raw_default, DEFAULT_HUE)
+                    rng, raw_default = _query_video_proc_amp_range(video_proc_amp, VIDEO_PROC_AMP_SATURATION)
+                    result["saturation_range"] = rng
+                    result["saturation_default"] = _sane_default(rng, raw_default, DEFAULT_SATURATION)
+                    logger.info(
+                        "Camera controls: IAMVideoProcAmp on device "
+                        f"{device_index}: brightness(range={result['brightness_range']}, "
+                        f"default={result['brightness_default']}), "
+                        f"hue(range={result['hue_range']}, default={result['hue_default']}), "
+                        f"saturation(range={result['saturation_range']}, "
+                        f"default={result['saturation_default']})"
+                    )
                 except Exception:
                     logger.info(f"Camera controls: IAMVideoProcAmp not available on device {device_index}")
 
