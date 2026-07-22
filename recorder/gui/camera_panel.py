@@ -564,8 +564,20 @@ class CameraPanel(QWidget):
 
     def _on_device_name_selected(self):
         self._sync_device_fields_from_combo()
+        self._reset_control_defaults_state()
         self.text.append("INFO: Device changed. Click 'Refresh device capabilities' to load supported modes.")
         self.previewConfigChanged.emit()
+
+    def _reset_control_defaults_state(self):
+        """Clear the "explicitly configured"/"already auto-defaulted" latches
+        for brightness/hue/saturation on a device change.
+        """
+        self._brightness_configured = False
+        self._brightness_auto_defaulted = False
+        self._hue_configured = False
+        self._hue_auto_defaulted = False
+        self._saturation_configured = False
+        self._saturation_auto_defaulted = False
 
     def refresh_video_devices(self):
         dev = self.device_name.currentData()
