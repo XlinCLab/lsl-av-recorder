@@ -14,7 +14,8 @@ from ..video.constants import (CAMERA_CONTROL_EXPOSURE,
                                CAMERA_CONTROL_FLAGS_AUTO,
                                CAMERA_CONTROL_FLAGS_MANUAL,
                                CAMERA_CONTROL_FOCUS, COMMON_FPS_VALUES,
-                               VIDEO_PROC_AMP_BRIGHTNESS,
+                               DEFAULT_BRIGHTNESS, DEFAULT_HUE,
+                               DEFAULT_SATURATION, VIDEO_PROC_AMP_BRIGHTNESS,
                                VIDEO_PROC_AMP_FLAGS_MANUAL,
                                VIDEO_PROC_AMP_HUE, VIDEO_PROC_AMP_SATURATION)
 
@@ -138,9 +139,17 @@ def _measure_achievable_fps(
     duration: float = 2.0,
     retries: int = 2,
     retry_delay: float = 1.0,
-) -> Optional[float]:
+) -> tuple[Optional[float], bool]:
     """Briefly open a real capture at the given format/resolution/fps and
     measure the actual delivered frame rate.
+
+    Returns (measured_fps, could_open). `could_open` is False only if every
+    attempt failed to even construct/open the capture -- e.g. DirectShow
+    raising VFW_E_CANNOT_CONNECT because no compatible filter chain exists to
+    convert this pixel format to what the sample grabber requests. That's a
+    deterministic, hardware/OS-level failure (retrying changes nothing), as
+    opposed to opening fine but failing to measure any valid frames, which is
+    more plausibly a one-off timing issue.
 
     DirectShow's IAMStreamConfig::GetStreamCaps has been observed to declare an
     optimistic maximum (e.g. 60fps) that the device doesn't actually sustain in
@@ -159,6 +168,7 @@ def _measure_achievable_fps(
     currently-configured resolution silently keeping its optimistic declared
     max uncorrected, while every other resolution corrected fine.
     """
+    could_open = False
     for attempt in range(retries):
         if attempt > 0:
             time.sleep(retry_delay)
@@ -170,8 +180,13 @@ def _measure_achievable_fps(
                 pixel_format=pixel_format,
                 fps=target_fps,
             )
-        except Exception:
+        except Exception as exc:
+            logger.info(
+                f"FPS verify: {pixel_format} {width}x{height} attempt {attempt + 1}/{retries} "
+                f"could not open capture: {exc}"
+            )
             continue
+        could_open = True
         try:
             if not cap.isOpened():
                 continue
@@ -187,10 +202,10 @@ def _measure_achievable_fps(
             elapsed = time.monotonic() - start
             if elapsed <= 0 or count == 0:
                 continue
-            return count / elapsed
+            return count / elapsed, True
         finally:
             cap.release()
-    return None
+    return None, could_open
 
 
 def _verify_max_framerates(
@@ -201,13 +216,21 @@ def _verify_max_framerates(
     """Correct each unique (pixel format, resolution) combination's declared
     maximum fps against what's actually measured, clamping it down if the
     driver's declaration is optimistic -- so the GUI never offers, and users
-    never select, a rate the camera can't really sustain."""
+    never select, a rate the camera can't really sustain.
+
+    Combinations that can never actually be opened on this system (e.g. no
+    compatible DirectShow filter chain to convert that pixel format to what
+    the sample grabber requests) are dropped entirely rather than merely left
+    with an unverified fps -- declaring a mode "supported" here only for the
+    GUI to offer it and preview/recording to then fail opening it the exact
+    same way would be worse than not offering it at all."""
     unique_combos: dict[tuple[str, int, int], float] = {}
     for fmt in formats:
         key = (str(fmt["media_type_str"]).upper(), int(fmt["width"]), int(fmt["height"]))
         unique_combos[key] = max(unique_combos.get(key, 0.0), float(fmt["max_framerate"]))
 
     corrections: dict[tuple[str, int, int], float] = {}
+    unsupported: set[tuple[str, int, int]] = set()
     total = len(unique_combos)
     for i, ((pf, w, h), declared_max) in enumerate(unique_combos.items(), start=1):
         if progress_cb:
@@ -218,11 +241,19 @@ def _verify_max_framerates(
                 )
             except Exception:
                 pass
-        measured = _measure_achievable_fps(device_index, w, h, pf, declared_max)
+        measured, could_open = _measure_achievable_fps(device_index, w, h, pf, declared_max)
+        if not could_open:
+            logger.warning(
+                f"FPS verify: {pf} {w}x{h} could not be opened on this system after "
+                "all retries (not a transient failure) -- excluding this combination "
+                "from supported capabilities"
+            )
+            unsupported.add((pf, w, h))
+            continue
         if measured is None:
             logger.warning(
                 f"FPS verify: {pf} {w}x{h} declared_max={declared_max} "
-                "-> measurement FAILED (device busy/unreachable), leaving declared value as-is"
+                "-> measurement FAILED (opened but delivered no frames), leaving declared value as-is"
             )
             continue
         snapped = _snap_to_common_fps(measured)
@@ -238,13 +269,21 @@ def _verify_max_framerates(
         if will_correct:
             corrections[(pf, w, h)] = float(snapped)
 
+    filtered_formats = [
+        fmt for fmt in formats
+        if (str(fmt["media_type_str"]).upper(), int(fmt["width"]), int(fmt["height"])) not in unsupported
+    ]
+    if unsupported:
+        logger.info(f"FPS verify: excluded {len(unsupported)} unopenable combination(s): {sorted(unsupported)}")
+
     if not corrections:
-        logger.info("FPS verify: no corrections applied to any (format, resolution) combination")
-        return formats
+        if not unsupported:
+            logger.info("FPS verify: no corrections applied to any (format, resolution) combination")
+        return filtered_formats
 
     logger.info(f"FPS verify: applying corrections to {len(corrections)} combination(s): {corrections}")
     corrected_formats = []
-    for fmt in formats:
+    for fmt in filtered_formats:
         key = (str(fmt["media_type_str"]).upper(), int(fmt["width"]), int(fmt["height"]))
         if key in corrections:
             fmt = dict(fmt)
@@ -337,7 +376,27 @@ def _query_video_proc_amp_range(video_proc_amp, property_id: int):
         p_min, p_max, _p_step, p_default, _p_caps = video_proc_amp.GetRange(property_id)
     except Exception:
         return None, None
-    return (int(p_min), int(p_max)), int(p_default)
+    p_min, p_max = int(p_min), int(p_max)
+    if p_min >= p_max:
+        return None, None
+    return (p_min, p_max), int(p_default)
+
+
+def _sane_default(rng: Optional[tuple], default: Optional[int], app_default: int) -> Optional[int]:
+    """Some DirectShow drivers report pDefault sitting exactly at the range's
+    own floor (pMin) for brightness/saturation, instead of a genuine neutral
+    default -- observed in practice as e.g. brightness_range=(0, 255) with
+    brightness_default=0, which auto-populates the GUI control at 0 and makes
+    the preview look pitch black, rather than pDefault==pMin being a real
+    "start at minimum" recommendation. Treat that specific case as an
+    untrustworthy driver value and fall back to this app's own cross-platform
+    default (matching the Linux/macOS default for the same control), clamped
+    into the actual reported range."""
+    if rng is None or default is None:
+        return default
+    if default == rng[0]:
+        return min(max(app_default, rng[0]), rng[1])
+    return default
 
 
 def _query_camera_control_auto_support(camera_control, property_id: int) -> bool:
@@ -378,12 +437,23 @@ def _query_control_capabilities(device_index: int, retries: int = 2, retry_delay
 
                 try:
                     video_proc_amp = video_input.instance.QueryInterface(IAMVideoProcAmp)
-                    rng, default = _query_video_proc_amp_range(video_proc_amp, VIDEO_PROC_AMP_BRIGHTNESS)
-                    result["brightness_range"], result["brightness_default"] = rng, default
-                    rng, default = _query_video_proc_amp_range(video_proc_amp, VIDEO_PROC_AMP_HUE)
-                    result["hue_range"], result["hue_default"] = rng, default
-                    rng, default = _query_video_proc_amp_range(video_proc_amp, VIDEO_PROC_AMP_SATURATION)
-                    result["saturation_range"], result["saturation_default"] = rng, default
+                    rng, raw_default = _query_video_proc_amp_range(video_proc_amp, VIDEO_PROC_AMP_BRIGHTNESS)
+                    result["brightness_range"] = rng
+                    result["brightness_default"] = _sane_default(rng, raw_default, DEFAULT_BRIGHTNESS)
+                    rng, raw_default = _query_video_proc_amp_range(video_proc_amp, VIDEO_PROC_AMP_HUE)
+                    result["hue_range"] = rng
+                    result["hue_default"] = _sane_default(rng, raw_default, DEFAULT_HUE)
+                    rng, raw_default = _query_video_proc_amp_range(video_proc_amp, VIDEO_PROC_AMP_SATURATION)
+                    result["saturation_range"] = rng
+                    result["saturation_default"] = _sane_default(rng, raw_default, DEFAULT_SATURATION)
+                    logger.info(
+                        "Camera controls: IAMVideoProcAmp on device "
+                        f"{device_index}: brightness(range={result['brightness_range']}, "
+                        f"default={result['brightness_default']}), "
+                        f"hue(range={result['hue_range']}, default={result['hue_default']}), "
+                        f"saturation(range={result['saturation_range']}, "
+                        f"default={result['saturation_default']})"
+                    )
                 except Exception:
                     logger.info(f"Camera controls: IAMVideoProcAmp not available on device {device_index}")
 
@@ -467,8 +537,18 @@ def set_windows_camera_controls(
                         camera_control = video_input.instance.QueryInterface(IAMCameraControl)
                         try:
                             current_value, _current_flags = camera_control.Get(prop)
-                        except Exception:
-                            current_value = 0
+                        except Exception as exc:
+                            # Don't fall back to some fabricated value (e.g. 0) here --
+                            # for exposure, 0 is a real, meaningful (and typically very
+                            # dark) setting, not a safe no-op. Without the actual
+                            # current value there's nothing safe to preserve, so skip
+                            # the mode toggle entirely rather than risk clobbering it.
+                            logger.warning(
+                                f"Could not read current value for {key} via IAMCameraControl "
+                                f"(device {device_index}); skipping mode toggle to avoid "
+                                f"resetting it to an arbitrary value: {exc}"
+                            )
+                            continue
                         flag = CAMERA_CONTROL_FLAGS_AUTO if requested else CAMERA_CONTROL_FLAGS_MANUAL
                         camera_control.Set(prop, int(current_value), flag)
                         applied[key] = requested
@@ -730,3 +810,43 @@ class WindowsDShowVideoCapture:
                 pass
             self._com_initialized = False
         self._opened = False
+
+
+def open_windows_capture(
+    device_index: int,
+    width: int,
+    height: int,
+    pixel_format: Optional[str] = None,
+    fps: Optional[float] = None,
+    log_cb: Optional[Callable[[str, str], None]] = None,
+    retries: int = 3,
+    retry_delay: float = 1.0,
+) -> "WindowsDShowVideoCapture":
+    """Open a WindowsDShowVideoCapture, retrying briefly on failure.
+
+    Right after a capability probe finishes, or a previous preview/recording
+    capture on the same device is closed, DirectShow can take a moment to
+    actually release the device even though our own COM calls (release()'s
+    graph.stop()/remove_filters()) have already returned -- opening again too
+    soon can fail as "device busy" on some drivers.
+    """
+    last_exc: Exception = RuntimeError(f"Could not open camera index={device_index}")
+    for attempt in range(max(1, retries)):
+        if attempt > 0:
+            time.sleep(retry_delay)
+        try:
+            cap = WindowsDShowVideoCapture(
+                device_index=device_index,
+                width=width,
+                height=height,
+                pixel_format=pixel_format,
+                fps=fps,
+                log_cb=log_cb,
+            )
+        except Exception as exc:
+            last_exc = exc
+            continue
+        if cap.isOpened():
+            return cap
+        cap.release()
+    raise last_exc

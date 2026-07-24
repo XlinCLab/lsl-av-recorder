@@ -90,9 +90,9 @@ class CameraWorker(QObject):
             source = self.devnode if self.devnode else self.cam_index
             self.cap = cv2.VideoCapture(source, cv2.CAP_V4L2)
         elif sys.platform.startswith("win"):  # Windows
-            from ..video.dshow_capture import WindowsDShowVideoCapture
+            from ..video.dshow_capture import open_windows_capture
 
-            self.cap = WindowsDShowVideoCapture(
+            self.cap = open_windows_capture(
                 device_index=self.cam_index,
                 width=self.w,
                 height=self.h,
