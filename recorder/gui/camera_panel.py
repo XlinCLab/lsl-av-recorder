@@ -237,6 +237,7 @@ class CameraPanel(QWidget):
         self.btn_apply.clicked.connect(self.on_apply)
         self.btn_remove.clicked.connect(lambda: self.removeRequested.emit(self))
         self.device_name.currentIndexChanged.connect(self._on_device_name_selected)
+        self._selected_device_key = self._device_key(self.device_name.currentData())
         self.enabled.toggled.connect(lambda _: self.previewConfigChanged.emit())
         self.fps.currentIndexChanged.connect(self._on_fps_changed)
         self.resolution.currentIndexChanged.connect(self._on_resolution_changed)
@@ -562,9 +563,28 @@ class CameraPanel(QWidget):
         self.devnode.setText(devnode)
         self.devnode.blockSignals(False)
 
+    @staticmethod
+    def _device_key(dev) -> Optional[tuple]:
+        """Stable identity for a device combo entry, used to tell a real device
+        change from a device-list refresh that re-selects the same camera.
+        Returns None for a non-device entry (e.g. the transient empty selection
+        emitted while the combo is being cleared during a refresh)."""
+        if not isinstance(dev, dict):
+            return None
+        return (
+            str(dev.get("name") or ""),
+            int(dev.get("index", -1)),
+            str(dev.get("devnode") or ""),
+        )
+
     def _on_device_name_selected(self):
+        dev = self.device_name.currentData()
         self._sync_device_fields_from_combo()
-        self._reset_control_defaults_state()
+        # Only wipe the brightness/hue/saturation latches when the selected device actually changed
+        new_key = self._device_key(dev)
+        if new_key is not None and new_key != self._selected_device_key:
+            self._selected_device_key = new_key
+            self._reset_control_defaults_state()
         self.text.append("INFO: Device changed. Click 'Refresh device capabilities' to load supported modes.")
         self.previewConfigChanged.emit()
 
