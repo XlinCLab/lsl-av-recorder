@@ -19,7 +19,10 @@ from __future__ import annotations
 import numpy as np
 import pytest
 import pyxdf
+from pylsl import cf_float32, local_clock
 
+from recorder.lsl import lsl_inlet_recorder
+from recorder.lsl.lsl_inlet_recorder import LslInletRecorder
 from recorder.xdf.xdf_writer import XDFWriter
 
 
@@ -34,6 +37,17 @@ def load_by_name(path: str, **kwargs) -> dict:
     streams, _ = pyxdf.load_xdf(path, **kwargs)
     return {s["info"]["name"][0]: s for s in streams}
 
+
+def add_eeg_stream(w: XDFWriter) -> int:
+    return w.add_lsl_stream(
+        name="EEG",
+        stype="EEG",
+        channel_count=1,
+        srate=250.0,
+        fmt="float32",
+        source_id="eeg",
+        key="lsl:eeg",
+    )
 
 @pytest.fixture
 def xdf_path(tmp_path):
@@ -60,15 +74,7 @@ def test_only_lsl_streams_are_marked_external(xdf_path):
         height=480,
         fps=30.0,
     )
-    eeg_sid = w.add_lsl_stream(
-        name="EEG",
-        stype="EEG",
-        channel_count=1,
-        srate=250.0,
-        fmt="float32",
-        source_id="eeg",
-        key="lsl:eeg",
-    )
+    eeg_sid = add_eeg_stream(w)
     w.stop()
 
     assert eeg_sid in w._external_clock_streams
@@ -147,15 +153,7 @@ def test_lsl_samples_emit_no_synthetic_offset(xdf_path):
     """write_lsl_samples alone must not emit any clock offset chunk."""
     w = XDFWriter(xdf_path)
     w.start()
-    sid = w.add_lsl_stream(
-        name="EEG",
-        stype="EEG",
-        channel_count=1,
-        srate=250.0,
-        fmt="float32",
-        source_id="eeg",
-        key="lsl:eeg",
-    )
+    sid = add_eeg_stream(w)
     w.write_lsl_samples(
         stream_id=sid,
         timestamps=np.array([1000.0, 1000.004], dtype=np.float64),
@@ -172,15 +170,7 @@ def test_record_clock_offset_sign_and_collection_time(xdf_path):
     """collection_time == now - offset; value == offset (LabRecorder convention)."""
     w = XDFWriter(xdf_path)
     w.start()
-    sid = w.add_lsl_stream(
-        name="EEG",
-        stype="EEG",
-        channel_count=1,
-        srate=250.0,
-        fmt="float32",
-        source_id="eeg",
-        key="lsl:eeg",
-    )
+    sid = add_eeg_stream(w)
     # Remote clock 1000 s ahead => time_correction() returns local - remote = -1000
     w.record_clock_offset(stream_id=sid, offset=-1000.0, now=10.0)
     w.record_clock_offset(stream_id=sid, offset=-1000.5, now=15.0)
@@ -201,15 +191,7 @@ def test_ensure_local_clock_offset_skips_external(xdf_path):
     """Ensure external streams get no zero clock offset."""
     w = XDFWriter(xdf_path)
     w.start()
-    sid = w.add_lsl_stream(
-        name="EEG",
-        stype="EEG",
-        channel_count=1,
-        srate=10.0,
-        fmt="float32",
-        source_id="eeg",
-        key="lsl:eeg",
-    )
+    sid = add_eeg_stream(w)
     w._ensure_local_clock_offset(
         stream_id=sid,
         timestamps=np.array([1000.0], dtype=np.float64),
@@ -231,15 +213,7 @@ def test_ensure_local_clock_offset_skips_external(xdf_path):
 def test_footer_records_measured_offsets(xdf_path):
     w = XDFWriter(xdf_path)
     w.start()
-    sid = w.add_lsl_stream(
-        name="EEG",
-        stype="EEG",
-        channel_count=1,
-        srate=10.0,
-        fmt="float32",
-        source_id="eeg",
-        key="lsl:eeg",
-    )
+    sid = add_eeg_stream(w)
     w.record_clock_offset(stream_id=sid, offset=-1000.0, now=10.0)
     w.write_lsl_samples(
         stream_id=sid,
@@ -255,6 +229,100 @@ def test_footer_records_measured_offsets(xdf_path):
 
 
 # ---------------------------------------------------------------------------
+# Recorder wiring (LslInletRecorder -> XDFWriter)
+# 
+# Test using fake LSL stream, since a live StreamInlet needs a real LSL outlet on the network, 
+# so we monkeypatch it with a fake and inject a fake writer to capture the call.
+# ---------------------------------------------------------------------------
+
+class _FakeStreamInfo:
+    """Minimal pylsl.StreamInfo stand-in for constructing an LslInletRecorder."""
+
+    def channel_format(self):
+        return cf_float32
+
+    def uid(self):
+        return "uid-fake"
+
+    def name(self):
+        return "EEG"
+
+
+def _patch_inlet(monkeypatch, inlet):
+    """Make LslInletRecorder.__init__ build `inlet` instead of a live one."""
+    monkeypatch.setattr(lsl_inlet_recorder, "StreamInlet", lambda *a, **k: inlet)
+
+
+def test_recorder_forwards_time_correction_unmodified(monkeypatch, xdf_path):
+    offset = -1000.0  # e.g. remote clock 1000 s ahead of the recorder
+    class FakeInlet:
+        def time_correction(self, timeout=None):
+            return offset
+
+    w = XDFWriter(xdf_path)
+    w.start()
+    sid = add_eeg_stream(w)
+
+    _patch_inlet(monkeypatch, FakeInlet())
+    rec = LslInletRecorder(
+        stream_info=_FakeStreamInfo(),
+        stream_id=sid,
+        xdf_writer=w,
+    )
+
+    before = local_clock()
+    rec._record_clock_offset()
+    after = local_clock()
+    w.write_lsl_samples(
+        stream_id=sid,
+        timestamps=np.array([1010.0], dtype=np.float64),
+        samples=np.array([[1.0]], dtype=np.float32),
+    )
+    w.stop()
+
+    eeg = load_by_name(xdf_path)["EEG"]
+    # Offset is passed through untouched (correct sign, no re-derivation)
+    assert eeg["clock_values"] == pytest.approx([offset])
+    # collection_time == now - offset, with `now` taken from local_clock()
+    assert before - offset <= eeg["clock_times"][0] <= after - offset
+
+
+def test_recorder_skips_offset_on_timeout(monkeypatch, xdf_path):
+    class FakeInlet:
+        def time_correction(self, timeout=None):
+            raise TimeoutError("no response from stream")
+
+    logs = []
+
+    w = XDFWriter(xdf_path)
+    w.start()
+    sid = add_eeg_stream(w)
+
+    _patch_inlet(monkeypatch, FakeInlet())
+    rec = LslInletRecorder(
+        stream_info=_FakeStreamInfo(),
+        stream_id=sid,
+        xdf_writer=w,
+        status_cb=lambda msg, loglevel: logs.append((loglevel, msg)),
+    )
+
+    rec._record_clock_offset()  # must not raise error
+    w.write_lsl_samples(
+        stream_id=sid,
+        timestamps=np.array([1010.0], dtype=np.float64),
+        samples=np.array([[1.0]], dtype=np.float32),
+    )
+    w.stop()
+
+    # Failed measurement records nothing
+    assert load_by_name(xdf_path)["EEG"]["clock_values"] == []
+    # but it is surfaced as a warning
+    assert logs[0] == (
+        'WARNING',
+        'time_correction timed out for <EEG>; skipping this clock offset measurement'
+    )
+
+# ---------------------------------------------------------------------------
 # End-to-end round trip through pyxdf (the real downstream consumer)
 # ---------------------------------------------------------------------------
 
@@ -268,15 +336,7 @@ def test_pyxdf_synchronizes_foreign_clock_stream(xdf_path):
         samplerate=10.0,
         channels=1,
     )
-    eeg_sid = w.add_lsl_stream(
-        name="EEG",
-        stype="EEG",
-        channel_count=1,
-        srate=10.0,
-        fmt="float32",
-        source_id="eeg",
-        key="lsl:eeg",
-    )
+    eeg_sid = add_eeg_stream(w)
 
     local_event_times = np.array([10.0, 10.1, 10.2], dtype=np.float64)
     w.write_audio(
