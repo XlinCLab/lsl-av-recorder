@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import threading
-from typing import Optional, Tuple
+import time
+from typing import Callable, Optional, Tuple
 
 import numpy as np
 from pylsl import (StreamInfo, StreamInlet, cf_double64, cf_float32, cf_int8,
-                   cf_int16, cf_int32, cf_int64, cf_string)
+                   cf_int16, cf_int32, cf_int64, cf_string, local_clock)
 
 from ..xdf.xdf_writer import XDFWriter
 
@@ -34,13 +35,20 @@ class LslInletRecorder:
         xdf_writer: XDFWriter,
         chunk_size: int = 128,
         pull_timeout: float = 0.1,
+        clock_offset_interval_s: float = 5.0,
+        time_correction_timeout: float = 5.0,
+        status_cb: Optional[Callable[[str, str], None]] = None,
     ):
         self.stream_info = stream_info
         self.stream_id = stream_id
         self.xdf_writer = xdf_writer
         self.chunk_size = chunk_size
         self.pull_timeout = pull_timeout
+        self.clock_offset_interval_s = float(clock_offset_interval_s)
+        self.time_correction_timeout = float(time_correction_timeout)
+        self.status_cb = status_cb
         self._thread: Optional[threading.Thread] = None
+        self._offset_thread: Optional[threading.Thread] = None
         self._running = False
 
         self.inlet = StreamInlet(stream_info, max_chunklen=chunk_size)
@@ -48,12 +56,31 @@ class LslInletRecorder:
         self.xdf_format = fmt
         self.dtype = dtype
 
+    def log(self, msg: str, loglevel: str = "INFO"):
+        if self.status_cb:
+            self.status_cb(msg, loglevel)
+
+    def warning(self, msg: str):
+        self.log(msg=msg, loglevel="WARNING")
+
+    def error(self, msg: str):
+        self.log(msg=msg, loglevel="ERROR")
+
     def start(self):
         if self._running:
             return
         self._running = True
-        self._thread = threading.Thread(target=self._loop, name=f"LSLInlet-{self.stream_info.uid()}", daemon=True)
+        uid = self.stream_info.uid()
+        self._thread = threading.Thread(
+            target=self._loop, name=f"LSLInlet-{uid}", daemon=True
+        )
         self._thread.start()
+        # Dedicated thread for clock synchronization, mirroring LabRecorder's per-inlet time_correction loop.
+        # Kept separate from the sample-pulling loop so a slow/blocking time_correction() never stalls data capture.
+        self._offset_thread = threading.Thread(
+            target=self._offset_loop, name=f"LSLOffset-{uid}", daemon=True
+        )
+        self._offset_thread.start()
 
     def stop(self):
         if not self._running:
@@ -62,6 +89,10 @@ class LslInletRecorder:
         if self._thread:
             self._thread.join(timeout=2.0)
             self._thread = None
+        if self._offset_thread:
+            # May be blocked inside time_correction(); allow up to its timeout
+            self._offset_thread.join(timeout=2.0 + self.time_correction_timeout)
+            self._offset_thread = None
 
     def _loop(self):
         while self._running:
@@ -71,3 +102,39 @@ class LslInletRecorder:
             values = np.asarray(samples, dtype=self.dtype)
             ts = np.asarray(timestamps, dtype=np.float64)
             self.xdf_writer.write_lsl_samples(self.stream_id, ts, values)
+
+    def _offset_loop(self):
+        # Take an initial measurement immediately so the file has an early
+        # anchor, then repeat on the configured interval.
+        self._record_clock_offset()
+        next_t = self._next_t()
+        while self._running:
+            if time.monotonic() >= next_t:
+                self._record_clock_offset()
+                next_t = self._next_t()
+            time.sleep(0.05)
+
+    def _next_t(self):
+        return time.monotonic() + self.clock_offset_interval_s
+
+    def _record_clock_offset(self):
+        """
+        Measure the offset between this inlet's (remote) clock and the
+        recorder's local clock and hand it to the XDF writer. Failures are
+        non-fatal: a stream that cannot answer a time_correction ping simply
+        contributes no offset sample this cycle.
+        """
+        try:
+            offset = self.inlet.time_correction(timeout=self.time_correction_timeout)
+            # Sample the local clock as close to the measurement as possible.
+            now = local_clock()
+        except TimeoutError:
+            self.warning(f"time_correction timed out for <{self.stream_info.name()}>; skipping this clock offset measurement")
+            return
+        except Exception as exc:
+            self.warning(f"time_correction failed for <{self.stream_info.name()}>: {exc}")
+            return
+        try:
+            self.xdf_writer.record_clock_offset(self.stream_id, offset=offset, now=now)
+        except Exception as exc:
+            self.warning(f"Failed to record clock offset for <{self.stream_info.name()}>: {exc}")

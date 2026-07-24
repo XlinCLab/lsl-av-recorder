@@ -293,7 +293,13 @@ class RunController:
                 if sid is None:
                     self.warning(f"LSL stream not registered in XDF: {stream.name()}")
                     continue
-                rec = LslInletRecorder(stream, sid, xdf_writer)
+                rec = LslInletRecorder(
+                    stream_info=stream,
+                    stream_id=sid,
+                    xdf_writer=xdf_writer,
+                    clock_offset_interval_s=xdf_writer._clock_offset_interval_s,
+                    status_cb=self.log,
+                )
                 self.lsl_recorders.append(rec)
                 self.info(f"Initialized LSL inlet for stream <{stream.name()}>")
             except Exception as exc:
