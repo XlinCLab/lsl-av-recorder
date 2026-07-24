@@ -42,6 +42,8 @@ class XDFWriter:
         self._clock_offsets: Dict[int, list[tuple[float, float]]] = {}
         self._clock_offset_interval_s = float(clock_offset_interval_s)
         self._last_clock_offset_time: Dict[int, float] = {}
+        # Streams whose timestamps live in an external clock domain (external LSL inlets)
+        self._external_clock_streams: set[int] = set()
 
     def _get_next_stream_id(self):
         sid = self._next_stream_id
@@ -208,13 +210,21 @@ class XDFWriter:
         xml = self._make_stream_footer_xml(stream_id)
         self._write_chunk(TAG_STREAM_FOOTER, xml, stream_id)
 
-    def _write_stream_offset(self, stream_id: int, now: float, offset: float):  # TODO not yet used, may be needed for multiple streams
+    def _write_stream_offset(self, stream_id: int, now: float, offset: float):
         """
         Write a clock offset chunk (TAG_CLOCK_OFFSET) and
         store it for inclusion in the stream footer.
 
-        now: current time (float64)
-        offset: offset to apply (float64)
+        now:    the recorder's local clock time (pylsl.local_clock()) at the
+                moment the offset was measured.
+        offset: the value returned by StreamInlet.time_correction(), i.e. the
+                quantity that must be added to a remote timestamp to bring it
+                into this recorder's local clock domain (0.0 for streams that
+                are already generated in the local clock domain).
+
+        The stored collection_time (now - offset) is the measurement instant
+        expressed in the remote clock domain, so it aligns with the raw
+        sample timestamps that pyxdf fits the offset series against.
         """
         collection_time = now - offset
 
@@ -253,12 +263,26 @@ class XDFWriter:
                 stream_id=None,
             )
 
-    def _ensure_clock_offset(self, stream_id: int, timestamps):
+    def record_clock_offset(self, stream_id: int, offset: float, now: float):
+        """
+        Record a measured clock offset for an external stream
+        (e.g. an LSL inlet whose samples are timestamped on another machine).
+
+        offset: value returned by StreamInlet.time_correction().
+        now:    pylsl.local_clock() sampled at the moment offset was measured.
+        """
+        self._write_stream_offset(stream_id, now=now, offset=offset)
+
+    def _ensure_local_clock_offset(self, stream_id: int, timestamps):
         """
         Emit periodic clock offset chunks per stream (offset=0.0).
         This keeps pyxdf's clock_segments aligned with segments when
-        all streams share the same clock domain.
+        a stream is generated in the recorder's own clock domain (audio, video).
+        External LSL inlets are handled instead by self.record_clock_offset().
         """
+        if stream_id in self._external_clock_streams:
+            # Skip external streams; handled separately via self.record_clock_offset()
+            return
         if timestamps is None:
             return
         ts = np.asarray(timestamps, dtype=np.float64)
@@ -402,9 +426,12 @@ class XDFWriter:
         key: Optional[str] = None,
     ) -> int:
         """
-        Register a generic LSL stream (numeric samples). Samples must be written via write_lsl_samples().
+        Register a generic LSL stream (numeric samples).
+        External LSL inlets carry timestamps from a foreign clock domain.
+        Samples must be written via write_lsl_samples().
         """
         sid = self._get_next_stream_id()
+        self._external_clock_streams.add(sid)
         xml = self._make_stream_header_xml(
             name=name,
             stype=stype,
@@ -431,7 +458,7 @@ class XDFWriter:
         samples: np.ndarray,
     ):
         self._write_boundary_chunk()
-        self._ensure_clock_offset(stream_id, timestamps)
+        self._ensure_local_clock_offset(stream_id, timestamps)
         with self._lock:
             self._write_samples(stream_id, timestamps, samples)
 
@@ -442,7 +469,7 @@ class XDFWriter:
         frame_indices: np.ndarray,
     ):
         self._write_boundary_chunk()
-        self._ensure_clock_offset(stream_id, timestamps)
+        self._ensure_local_clock_offset(stream_id, timestamps)
         frame_indices = np.asarray(frame_indices, dtype=np.int64)
         with self._lock:
             self._write_samples(stream_id, timestamps, frame_indices)
@@ -454,7 +481,11 @@ class XDFWriter:
         samples: np.ndarray,
     ):
         self._write_boundary_chunk()
-        self._ensure_clock_offset(stream_id, timestamps)
+        # NB: External LSL streams get their clock offsets from real
+        # time_correction() measurements via record_clock_offset(),
+        # called from LslInletRecorder._record_clock_offset(),
+        # so no synthetic local-clock offset is emitted here
+        # as done for audio and video streams (assumed to be local).
         with self._lock:
             self._write_samples(stream_id, timestamps, samples)
 
