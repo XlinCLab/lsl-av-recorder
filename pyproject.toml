@@ -18,6 +18,15 @@ dependencies = [
   "comtypes>=1.2; sys_platform == 'win32'",
 ]
 
+[project.optional-dependencies]
+test = [
+  "pytest>=7",
+  "pyxdf>=1.16",
+]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["recorder*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
