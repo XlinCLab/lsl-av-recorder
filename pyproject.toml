@@ -16,6 +16,7 @@ dependencies = [
   "PyQt6>=6.5",
   "pygrabber>=0.2; sys_platform == 'win32'",
   "comtypes>=1.2; sys_platform == 'win32'",
+  "pyxdf>=1.17.5",
 ]
 
 [project.optional-dependencies]
