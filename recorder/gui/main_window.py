@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import copy
 import os
+import shutil
+import tempfile
 import threading
 import time
 from datetime import datetime
@@ -23,6 +26,7 @@ from ..config import AppConfig, VideoCamConfig, load_cfg
 from ..lsl.labrecorder_rcs import LabRecorderRCS
 from ..video.camera_settings import apply_camera_controls
 from ..video.devices import list_video_devices
+from ..xdf.xdf_validation import ValidationReport, validate_test_recording
 from .camera_panel import CameraPanel
 from .preview_manager import PreviewManager
 from .preview_panel import PreviewPanel
@@ -103,12 +107,20 @@ class MainWindow(QMainWindow):
         btn_row = QHBoxLayout()
         self.btn_load = QPushButton("Load config")
         self.btn_add_camera = QPushButton("Add camera")
+        self.test_duration_spin = QSpinBox()
+        self.test_duration_spin.setRange(5, 60)
+        self.test_duration_spin.setValue(15)
+        self.test_duration_spin.setSuffix(" s")
+        self.btn_test_recording = QPushButton("Test recording settings")
         self.btn_start = QPushButton("Start")
         self.btn_stop = QPushButton("Stop")
         self.btn_stop.setEnabled(False)
         btn_row.addWidget(self.btn_load)
         btn_row.addWidget(self.btn_add_camera)
         btn_row.addStretch(1)
+        btn_row.addWidget(QLabel("Test duration:"))
+        btn_row.addWidget(self.test_duration_spin)
+        btn_row.addWidget(self.btn_test_recording)
         btn_row.addWidget(self.btn_start)
         btn_row.addWidget(self.btn_stop)
 
@@ -222,6 +234,15 @@ class MainWindow(QMainWindow):
         self._start_progress_dialog: Optional[QProgressDialog] = None
         self._start_apply_thread: Optional[_ApplyAllThread] = None
         self._pending_start_warnings: list[str] = []
+        self._testing_active = False
+        self._test_controller: Optional[RunController] = None
+        self._test_cfg: Optional[AppConfig] = None
+        self._test_lsl_streams: List[StreamInfo] = []
+        self._test_duration_s: float = 0.0
+        self._test_xdf_path: Optional[str] = None
+        self._test_progress_dialog: Optional[QProgressDialog] = None
+        self._test_countdown_timer: Optional[QTimer] = None
+        self._test_remaining_s: int = 0
         self._preview_refresh_timer = QTimer(self)
         self._preview_refresh_timer.setSingleShot(True)
         self._preview_refresh_timer.timeout.connect(self._do_refresh_previews_from_panels)
@@ -257,6 +278,7 @@ class MainWindow(QMainWindow):
         self.btn_add_camera.clicked.connect(self._on_add_camera)
         self.btn_start.clicked.connect(self.on_start)
         self.btn_stop.clicked.connect(self.on_stop)
+        self.btn_test_recording.clicked.connect(self.on_test_recording)
         self.labrec_connect_btn.clicked.connect(self.on_connect_labrecorder)
         self.labrec_disconnect_btn.clicked.connect(self.on_disconnect_labrecorder)
         self.labrec_enabled.stateChanged.connect(self._update_labrecorder_controls)
@@ -631,6 +653,8 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Load failed", str(e))
 
     def on_start(self):
+        if self._testing_active:
+            return
         self.pull_gui_into_cfg()
         try:
             # Stop preview workers; recording will supply frames for preview.
@@ -788,6 +812,167 @@ class MainWindow(QMainWindow):
             if self.cfg.Video.Enabled:
                 self._refresh_previews_from_panels()
             self._close_run_log()
+
+
+    def on_test_recording(self):
+        """Runs a short, real recording with the currently configured streams
+        (audio/video/selected LSL streams) into a temp directory, then loads
+        the resulting XDF file with pyxdf and checks it against the config,
+        so misconfigurations or recording issues surface immediately instead of
+        at the start of a real session or after recording."""
+        if self._recording_active or self._testing_active:
+            return
+        self.pull_gui_into_cfg()
+
+        warnings = self._validate_audio_settings()
+        if warnings:
+            body = "Some settings may not be supported:\n\n"
+            body += "\n".join(f"- {msg}" for msg in warnings)
+            body += "\n\nPlease adjust settings before testing."
+            QMessageBox.warning(self, "Settings warning", body)
+            return
+
+        lsl_streams = self._get_selected_lsl_streams()
+        if not self.cfg.Audio.Enabled and not self.cfg.Video.Enabled and not lsl_streams:
+            QMessageBox.information(
+                self,
+                "Nothing to test",
+                "Enable audio/video or select at least one LSL stream (Discover streams) to test.",
+            )
+            return
+
+        duration_s = int(self.test_duration_spin.value())
+        test_cfg = copy.deepcopy(self.cfg)
+        test_cfg.Output.StudyRoot = tempfile.mkdtemp(prefix="lsl_av_recorder_test_")
+
+        self.preview_mgr.stop_all_previews()
+        self.btn_start.setEnabled(False)
+        self.btn_test_recording.setEnabled(False)
+        self._testing_active = True
+
+        try:
+            controller = RunController(
+                test_cfg,
+                status_cb=lambda msg, loglevel: self.log(f"[Test] {msg}", loglevel),
+                lsl_streams=lsl_streams,
+            )
+            controller.start()
+        except Exception as exc:
+            QMessageBox.critical(self, "Test recording failed to start", str(exc))
+            self._abort_test_recording(test_cfg)
+            return
+
+        self._test_controller = controller
+        self._test_cfg = test_cfg
+        self._test_lsl_streams = lsl_streams
+        self._test_duration_s = float(duration_s)
+        self._test_xdf_path = controller.xdf.path if controller.xdf else None
+        self.log(f"[Test] Recording for {duration_s}s into {test_cfg.Output.StudyRoot} ...")
+        self._show_test_progress(duration_s)
+        QTimer.singleShot(duration_s * 1000, self._finish_test_recording)
+
+    def _abort_test_recording(self, test_cfg: AppConfig):
+        self._testing_active = False
+        self.btn_start.setEnabled(True)
+        self.btn_test_recording.setEnabled(True)
+        if self.cfg.Video.Enabled:
+            self._refresh_previews_from_panels()
+        shutil.rmtree(test_cfg.Output.StudyRoot, ignore_errors=True)
+
+    def _show_test_progress(self, duration_s: int):
+        self._test_remaining_s = duration_s
+        if self._test_progress_dialog is None:
+            self._test_progress_dialog = self._ensure_progress_dialog("Testing recording settings", "")
+        self._update_test_progress_label()
+        self._test_progress_dialog.show()
+        QApplication.processEvents()
+        if self._test_countdown_timer is None:
+            self._test_countdown_timer = QTimer(self)
+            self._test_countdown_timer.timeout.connect(self._tick_test_progress)
+        self._test_countdown_timer.start(1000)
+
+    def _tick_test_progress(self):
+        self._test_remaining_s = max(0, self._test_remaining_s - 1)
+        self._update_test_progress_label()
+
+    def _update_test_progress_label(self):
+        if self._test_progress_dialog:
+            self._test_progress_dialog.setLabelText(
+                f"Recording test streams... {self._test_remaining_s}s remaining"
+            )
+
+    def _hide_test_progress(self):
+        if self._test_countdown_timer:
+            self._test_countdown_timer.stop()
+        if self._test_progress_dialog:
+            self._test_progress_dialog.hide()
+
+    def _finish_test_recording(self):
+        self._hide_test_progress()
+        controller = self._test_controller
+        test_cfg = self._test_cfg
+        lsl_streams = self._test_lsl_streams
+        duration_s = self._test_duration_s
+        xdf_path = self._test_xdf_path
+
+        try:
+            controller.stop()
+        except Exception as exc:
+            self.log(f"[Test] Error stopping test recording: {exc}", loglevel="ERROR")
+
+        self._testing_active = False
+        self.btn_start.setEnabled(True)
+        self.btn_test_recording.setEnabled(True)
+        if self.cfg.Video.Enabled:
+            self._refresh_previews_from_panels()
+
+        self._test_controller = None
+        self._test_cfg = None
+        self._test_lsl_streams = []
+        self._test_xdf_path = None
+
+        if not xdf_path:
+            QMessageBox.critical(self, "Test recording failed", "No XDF file was produced.")
+            shutil.rmtree(test_cfg.Output.StudyRoot, ignore_errors=True)
+            return
+
+        report = validate_test_recording(xdf_path, test_cfg, lsl_streams, expected_duration_s=duration_s)
+        self._show_validation_report(report, test_cfg.Output.StudyRoot)
+
+    def _show_validation_report(self, report: ValidationReport, temp_dir: str):
+        for check in report.checks:
+            loglevel = "INFO" if check.passed else "WARNING"
+            mark = "PASS" if check.passed else "FAIL"
+            self.log(f"[Test] [{mark}] {check.name}: {check.detail}", loglevel)
+
+        box = QMessageBox(self)
+        box.setWindowTitle("Test recording results")
+        delete_btn = None
+        if report.passed:
+            box.setIcon(QMessageBox.Icon.Information)
+            box.setText(f"All checks passed ({report.summary()}).")
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            self.log(f"[Test] Cleaned up temp test recording directory: {temp_dir}")
+            ok_btn = box.addButton(QMessageBox.StandardButton.Ok)
+            box.setDefaultButton(ok_btn)
+        else:
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setText(
+                f"{report.summary()}.\n\nThe recording is kept for inspection at:\n{temp_dir}"
+            )
+            self.log(
+                f"[Test] Validation failed; keeping temp directory for inspection: {temp_dir}",
+                loglevel="WARNING",
+            )
+            ok_btn = box.addButton(QMessageBox.StandardButton.Ok)
+            delete_btn = box.addButton("Delete test files", QMessageBox.ButtonRole.DestructiveRole)
+            box.setDefaultButton(ok_btn)
+        box.setDetailedText(report.detailed_text())
+        box.exec()
+
+        if delete_btn is not None and box.clickedButton() == delete_btn:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            self.log(f"[Test] Deleted test recording directory: {temp_dir}")
 
     def on_connect_labrecorder(self):
         host = self.labrec_host.text().strip() or self.cfg.LabRecorder.Host
