@@ -87,3 +87,19 @@ def test_list_video_devices_linux(monkeypatch, as_platform):
     monkeypatch.setattr(devices_mod, "run_capture_cmd", lambda cmd, check=True: (LINUX_LIST, None))
     devs = list_video_devices()
     assert [d["devnode"] for d in devs] == ["/dev/video0", "/dev/video1", "/dev/video2"]
+
+
+def test_list_video_devices_windows(monkeypatch, as_platform):
+    """On Windows, list_video_devices delegates to the DirectShow enumerator
+    (list_windows_video_devices) and returns its result unchanged.
+
+    Unlike the mac/linux paths, Windows enumeration goes through COM (pygrabber's
+    FilterGraph), which can't run off-Windows, so this test fakes that call.
+    """
+    as_platform(devices_mod, "windows")
+    fake_devices = [
+        {"index": 0, "name": "Integrated Webcam", "devnode": "0"},
+        {"index": 1, "name": "USB Cam", "devnode": "1"},
+    ]
+    monkeypatch.setattr(devices_mod, "list_windows_video_devices", lambda: fake_devices)
+    assert list_video_devices() == fake_devices
