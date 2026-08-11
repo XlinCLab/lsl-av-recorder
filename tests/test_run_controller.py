@@ -310,6 +310,32 @@ def test_get_active_cams_empty_when_video_disabled(tmp_path):
     assert rc.cams == []
 
 
+def test_get_active_cams_warns_on_invalid_settings(tmp_path):
+    """A camera with an invalid FPS/Width/Height is warned about (by Label) and
+    still returned, rather than crashing construction."""
+    cfg = _cfg(tmp_path / "s")
+    cfg.Video.Enabled = True
+    cfg.Video.Cams = [
+        VideoCamConfig(
+            Enabled=True,
+            Label="Face",
+            FPS=0,
+            Width=0,
+            Height=0,
+        )
+    ]
+    logs: list[tuple[str, str]] = []
+    rc = RunController(
+        cfg=cfg,
+        status_cb=lambda msg, level: logs.append((level, msg))
+    )
+    assert [c.Label for c in rc.cams] == ["Face"]
+    warnings = [msg for level, msg in logs if level == "WARNING"]
+    assert any("Camera Face sampling rate is 0" in msg for msg in warnings)
+    assert any("Camera Face width is 0" in msg for msg in warnings)
+    assert any("Camera Face height is 0" in msg for msg in warnings)
+
+
 def test_video_output_path_uses_label_and_container(tmp_path):
     """The per-camera video path combines the run base name, camera label, and
     configured container extension, under the run's output directory."""

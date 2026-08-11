@@ -340,11 +340,11 @@ class RunController:
         active_cams = [c for c in self.cfg.Video.Cams if c.Enabled]
         for cam in active_cams:
             if cam.FPS is None or float(cam.FPS) <= 0:
-                self.warning(f"Camera {cam.label} sampling rate is {cam.FPS}")
+                self.warning(f"Camera {cam.Label} sampling rate is {cam.FPS}")
             if cam.Width is None or float(cam.Width) <= 0:
-                self.warning(f"Camera {cam.label} width is {cam.Width}")
+                self.warning(f"Camera {cam.Label} width is {cam.Width}")
             if cam.Height is None or float(cam.Height) <= 0:
-                self.warning(f"Camera {cam.label} height is {cam.Height}")
+                self.warning(f"Camera {cam.Label} height is {cam.Height}")
         return active_cams
 
     def _get_video_output_path(self, cam: VideoCamConfig):
