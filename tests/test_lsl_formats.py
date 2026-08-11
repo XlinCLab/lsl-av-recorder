@@ -27,15 +27,17 @@ from recorder.lsl.lsl_inlet_recorder import lsl_format_to_xdf
     ],
 )
 def test_maps_each_numeric_format(fmt, expected):
-    assert lsl_format_to_xdf(fmt) == expected
+    """Each supported numeric channel format maps to its (xdf name, numpy dtype) pair."""
+    assert lsl_format_to_xdf(fmt=fmt) == expected
 
 
 def test_string_format_is_rejected():
-    # String streams can't be written to the numeric XDF sample path.
+    """String streams cannot be written to the numeric XDF sample path."""
     with pytest.raises(ValueError, match="string"):
-        lsl_format_to_xdf(cf_string)
+        lsl_format_to_xdf(fmt=cf_string)
 
 
 def test_unknown_format_is_rejected():
+    """An unrecognized format enum raises rather than silently guessing a dtype."""
     with pytest.raises(ValueError, match="Unsupported"):
-        lsl_format_to_xdf(999)
+        lsl_format_to_xdf(fmt=999)

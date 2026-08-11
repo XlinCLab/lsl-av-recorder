@@ -22,13 +22,16 @@ V4L2_CTRLS = """
 # ---------------------------------------------------------------------------
 
 def test_extract_range_parses_min_max():
-    assert _extract_range(V4L2_CTRLS, "brightness") == (0, 255)
-    assert _extract_range(V4L2_CTRLS, "hue") == (-2000, 2000)
-    assert _extract_range(V4L2_CTRLS, "saturation") == (0, 200)
+    """The (min, max) integer pair is parsed for each named control,
+    including a negative minimum (hue)."""
+    assert _extract_range(text=V4L2_CTRLS, name="brightness") == (0, 255)
+    assert _extract_range(text=V4L2_CTRLS, name="hue") == (-2000, 2000)
+    assert _extract_range(text=V4L2_CTRLS, name="saturation") == (0, 200)
 
 
 def test_extract_range_missing_control_returns_none():
-    assert _extract_range(V4L2_CTRLS, "contrast") is None
+    """A control absent from the output yields None rather than raising an error."""
+    assert _extract_range(text=V4L2_CTRLS, name="contrast") is None
 
 
 # ---------------------------------------------------------------------------
@@ -36,46 +39,53 @@ def test_extract_range_missing_control_returns_none():
 # ---------------------------------------------------------------------------
 
 def test_extract_default_parses_value():
-    assert _extract_default(V4L2_CTRLS, "brightness") == 128
-    assert _extract_default(V4L2_CTRLS, "hue") == 0
-    assert _extract_default(V4L2_CTRLS, "saturation") == 100
+    """The integer default is parsed for each named control (including 0)."""
+    assert _extract_default(text=V4L2_CTRLS, name="brightness") == 128
+    assert _extract_default(text=V4L2_CTRLS, name="hue") == 0
+    assert _extract_default(text=V4L2_CTRLS, name="saturation") == 100
 
 
 def test_extract_default_missing_control_returns_none():
-    assert _extract_default(V4L2_CTRLS, "contrast") is None
+    """A control absent from the output yields None."""
+    assert _extract_default(text=V4L2_CTRLS, name="contrast") is None
+
 
 # ---------------------------------------------------------------------------
 # get_commit_hash
 # ---------------------------------------------------------------------------
 
 class _FakeCompleted:
+    """Minimal stand-in for subprocess.CompletedProcess (only .stdout/.stderr used)."""
+
     def __init__(self, stdout="", stderr=""):
         self.stdout = stdout
         self.stderr = stderr
 
 
 def test_get_commit_hash_returns_short_sha(monkeypatch, tmp_path):
+    """A valid git SHA on stdout is returned truncated to 12 characters."""
+    full_hash = "abcdef1234567890"
     def fake_run(cmd, **kwargs):
-        return _FakeCompleted(stdout="abcdef1234567890\n")
+        return _FakeCompleted(stdout=f"{full_hash}\n")
 
     monkeypatch.setattr(utils.subprocess, "run", fake_run)
-    # Truncated to 12 chars
-    assert get_commit_hash(tmp_path) == "abcdef123456"
+    assert get_commit_hash(root=tmp_path) == full_hash[:12]
 
 
 def test_get_commit_hash_non_hex_output_is_unknown(monkeypatch, tmp_path):
+    """Output that isn't a hex SHA is reported as 'unknown' (not passed through)."""
     def fake_run(cmd, **kwargs):
         return _FakeCompleted(stdout="not-a-sha\n")
 
     monkeypatch.setattr(utils.subprocess, "run", fake_run)
-    assert get_commit_hash(tmp_path) == "unknown"
+    assert get_commit_hash(root=tmp_path) == "unknown"
 
 
 def test_get_commit_hash_falls_back_to_date_on_failure(monkeypatch, tmp_path):
+    """If git fails entirely, the fallback is a UTC YYYYMMDD date stamp."""
     def fake_run(cmd, **kwargs):
         raise subprocess.CalledProcessError(returncode=128, cmd=cmd)
 
     monkeypatch.setattr(utils.subprocess, "run", fake_run)
-    result = get_commit_hash(tmp_path)
-    # Fallback is a UTC YYYYMMDD stamp
+    result = get_commit_hash(root=tmp_path)
     assert re.fullmatch(r"\d{8}", result)

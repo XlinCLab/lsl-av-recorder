@@ -14,9 +14,10 @@ from recorder.config import (AppConfig, AppPrompts, AudioConfig,
 # ---------------------------------------------------------------------------
 
 def test_appconfig_defaults_are_independent_instances():
+    """Each AppConfig gets its own nested dataclasses/lists (via default_factory),
+    so mutating one instance never leaks into another."""
     a = AppConfig()
     b = AppConfig()
-    # default_factory must give each AppConfig its own nested dataclasses/lists
     assert a.Prompts is not b.Prompts
     assert a.Video.Cams is not b.Video.Cams
     assert isinstance(a.Prompts, AppPrompts)
@@ -31,7 +32,8 @@ def test_appconfig_defaults_are_independent_instances():
 # ---------------------------------------------------------------------------
 
 def test_load_cfg_missing_file_returns_defaults(tmp_path):
-    cfg = load_cfg(str(tmp_path / "does_not_exist.cfg"))
+    """A path that doesn't exist yields an all-defaults config rather than raising an error."""
+    cfg = load_cfg(path=str(tmp_path / "does_not_exist.cfg"))
     assert cfg.Audio.SampleRate == DEFAULT_SAMPLING_RATE
     assert cfg.Audio.Enabled is False
     assert cfg.Video.Cams == []
@@ -40,7 +42,8 @@ def test_load_cfg_missing_file_returns_defaults(tmp_path):
 
 
 def test_load_cfg_empty_file_returns_defaults(write_cfg):
-    cfg = load_cfg(write_cfg(""))
+    """An empty (but present) cfg file also yields all defaults."""
+    cfg = load_cfg(path=write_cfg(""))
     assert cfg.Audio.SampleRate == DEFAULT_SAMPLING_RATE
     assert cfg.Audio.Enabled is False
     assert cfg.Video.Cams == []
@@ -53,6 +56,7 @@ def test_load_cfg_empty_file_returns_defaults(write_cfg):
 # ---------------------------------------------------------------------------
 
 def test_load_cfg_session_and_output(write_cfg):
+    """The [Session] and [Output] sections populate the Prompts and Output dataclasses."""
     path = write_cfg(
         """
         [Session]
@@ -65,7 +69,7 @@ def test_load_cfg_session_and_output(write_cfg):
         PathTemplate = sub-%p/rec
         """
     )
-    cfg = load_cfg(path)
+    cfg = load_cfg(path=path)
     assert cfg.Prompts.Subject == "S01"
     assert cfg.Prompts.Session == "2"
     assert cfg.Prompts.Block == "reading"
@@ -74,8 +78,10 @@ def test_load_cfg_session_and_output(write_cfg):
 
 
 def test_load_cfg_audio_enabled_and_types(write_cfg):
+    """[Audio] values are coerced to their declared types
+    (bool Enabled, int SampleRate/Channels, str StreamName)."""
     cfg = load_cfg(
-        write_cfg(
+        path=write_cfg(
             """
             [Audio]
             Enabled = yes
@@ -92,8 +98,9 @@ def test_load_cfg_audio_enabled_and_types(write_cfg):
 
 
 def test_load_cfg_audio_empty_device_becomes_none(write_cfg):
+    """A blank Device value normalizes to None (meaning 'auto-select')."""
     cfg = load_cfg(
-        write_cfg(
+        path=write_cfg(
             """
             [Audio]
             Device =
@@ -104,8 +111,9 @@ def test_load_cfg_audio_empty_device_becomes_none(write_cfg):
 
 
 def test_load_cfg_audio_device_preserved_when_set(write_cfg):
+    """A non-blank Device value is preserved verbatim."""
     cfg = load_cfg(
-        write_cfg(
+        path=write_cfg(
             """
             [Audio]
             Device = USB Mic
@@ -116,8 +124,9 @@ def test_load_cfg_audio_device_preserved_when_set(write_cfg):
 
 
 def test_load_cfg_labrecorder_blank_host_falls_back_to_default(write_cfg):
+    """A blank Host falls back to the default loopback address; Enabled/Port are still parsed."""
     cfg = load_cfg(
-        write_cfg(
+        path=write_cfg(
             """
             [LabRecorder]
             Enabled = true
@@ -136,8 +145,10 @@ def test_load_cfg_labrecorder_blank_host_falls_back_to_default(write_cfg):
 # ---------------------------------------------------------------------------
 
 def test_deprecated_audio_buffer_seconds_migrates(write_cfg):
+    """The legacy [Audio] BufferSeconds key is migrated into
+    Buffering.AudioBufferSeconds so old config files keep working."""
     cfg = load_cfg(
-        write_cfg(
+        path=write_cfg(
             """
             [Audio]
             BufferSeconds = 1.5
@@ -148,8 +159,10 @@ def test_deprecated_audio_buffer_seconds_migrates(write_cfg):
 
 
 def test_deprecated_video_buffer_frames_migrates(write_cfg):
+    """The legacy [Video] BufferFrames key is migrated into
+    Buffering.VideoBufferFrames."""
     cfg = load_cfg(
-        write_cfg(
+        path=write_cfg(
             """
             [Video]
             BufferFrames = 8
@@ -164,8 +177,9 @@ def test_deprecated_video_buffer_frames_migrates(write_cfg):
 # ---------------------------------------------------------------------------
 
 def test_writer_drop_policy_alias_drop_maps_to_drop_newest(write_cfg):
+    """The bare 'drop' alias resolves to the concrete 'drop_newest' policy."""
     cfg = load_cfg(
-        write_cfg(
+        path=write_cfg(
             """
             [Buffering]
             WriterDropPolicy = drop
@@ -176,9 +190,10 @@ def test_writer_drop_policy_alias_drop_maps_to_drop_newest(write_cfg):
 
 
 def test_writer_drop_policy_accepts_known_values(write_cfg):
+    """Each explicit policy value is accepted and stored unchanged."""
     for policy in ("drop_oldest", "drop_newest", "block"):
         cfg = load_cfg(
-            write_cfg(
+            path=write_cfg(
                 f"""
                 [Buffering]
                 WriterDropPolicy = {policy}
@@ -189,8 +204,9 @@ def test_writer_drop_policy_accepts_known_values(write_cfg):
 
 
 def test_writer_drop_policy_is_case_insensitive(write_cfg):
+    """Policy values are matched case-insensitively (BLOCK -> block)."""
     cfg = load_cfg(
-        write_cfg(
+        path=write_cfg(
             """
             [Buffering]
             WriterDropPolicy = BLOCK
@@ -201,8 +217,9 @@ def test_writer_drop_policy_is_case_insensitive(write_cfg):
 
 
 def test_writer_drop_policy_invalid_falls_back_to_default(write_cfg):
+    """An unrecognized policy falls back to the default (drop_oldest)."""
     cfg = load_cfg(
-        write_cfg(
+        path=write_cfg(
             """
             [Buffering]
             WriterDropPolicy = nonsense
@@ -217,8 +234,9 @@ def test_writer_drop_policy_invalid_falls_back_to_default(write_cfg):
 # ---------------------------------------------------------------------------
 
 def test_video_cam_sections_parsed_up_to_maxcams(write_cfg):
+    """Only VideoCam sections with an index within MaxCams are parsed."""
     cfg = load_cfg(
-        write_cfg(
+        path=write_cfg(
             """
             [Video]
             MaxCams = 2
@@ -239,8 +257,9 @@ def test_video_cam_sections_parsed_up_to_maxcams(write_cfg):
 
 
 def test_video_cam_devnode_derives_device_index(write_cfg):
+    """A /dev/videoN DevNode derives the numeric DeviceIndex (video3 -> 3)."""
     cfg = load_cfg(
-        write_cfg(
+        path=write_cfg(
             """
             [Video]
             MaxCams = 1
@@ -255,8 +274,9 @@ def test_video_cam_devnode_derives_device_index(write_cfg):
 
 
 def test_video_cam_pixel_format_uppercased(write_cfg):
+    """PixelFormat is normalized to upper case (yuyv -> YUYV)."""
     cfg = load_cfg(
-        write_cfg(
+        path=write_cfg(
             """
             [Video]
             MaxCams = 1
@@ -275,21 +295,24 @@ def test_video_cam_pixel_format_uppercased(write_cfg):
 # ---------------------------------------------------------------------------
 
 def test_get_bool_reads_truthy_and_falsy(write_cfg):
+    """_get_bool accepts every configparser truthy/falsy spelling
+    (on/off, true/false, yes/no)."""
     cp = configparser.ConfigParser(interpolation=None)
     cp.read_string("[S]\nyes_key = on\nno_key = off\n")
-    assert _get_bool(cp, "S", "yes_key") is True
-    assert _get_bool(cp, "S", "no_key") is False
+    assert _get_bool(cp=cp, section="S", key="yes_key") is True
+    assert _get_bool(cp=cp, section="S", key="no_key") is False
     cp.read_string("[S]\nyes_key = true\nno_key = false\n")
-    assert _get_bool(cp, "S", "yes_key") is True
-    assert _get_bool(cp, "S", "no_key") is False
+    assert _get_bool(cp=cp, section="S", key="yes_key") is True
+    assert _get_bool(cp=cp, section="S", key="no_key") is False
     cp.read_string("[S]\nyes_key = yes\nno_key = no\n")
-    assert _get_bool(cp, "S", "yes_key") is True
-    assert _get_bool(cp, "S", "no_key") is False
+    assert _get_bool(cp=cp, section="S", key="yes_key") is True
+    assert _get_bool(cp=cp, section="S", key="no_key") is False
 
 
 def test_get_bool_falls_back_on_missing_or_invalid(write_cfg):
+    """A missing key or an unparseable value both fall back to the supplied
+    default instead of raising an error."""
     cp = configparser.ConfigParser(interpolation=None)
     cp.read_string("[S]\nbad = maybe\n")
-    # Missing key -> default; unparseable value -> default
-    assert _get_bool(cp, "S", "absent", default=True) is True
-    assert _get_bool(cp, "S", "bad", default=False) is False
+    assert _get_bool(cp=cp, section="S", key="absent", default=True) is True
+    assert _get_bool(cp=cp, section="S", key="bad", default=False) is False
