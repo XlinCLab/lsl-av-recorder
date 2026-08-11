@@ -8,6 +8,9 @@ from recorder.audio.constants import DEFAULT_SAMPLING_RATE
 from recorder.config import (AppConfig, AppPrompts, AudioConfig,
                              LabRecorderConfig, OutputConfig, VideoConfig,
                              _get_bool, load_cfg)
+from recorder.xdf.xdf_writer import (FULL_BUFFER_BLOCK_THREAD_POLICY,
+                                     FULL_BUFFER_DEFAULT_POLICY,
+                                     FULL_BUFFER_POLICIES)
 
 # ---------------------------------------------------------------------------
 # Dataclass defaults
@@ -177,7 +180,7 @@ def test_deprecated_video_buffer_frames_migrates(write_cfg):
 # ---------------------------------------------------------------------------
 
 def test_writer_drop_policy_alias_drop_maps_to_drop_newest(write_cfg):
-    """The bare 'drop' alias resolves to the concrete 'drop_newest' policy."""
+    """The bare 'drop' alias resolves to the default drop policy."""
     cfg = load_cfg(
         path=write_cfg(
             """
@@ -186,12 +189,12 @@ def test_writer_drop_policy_alias_drop_maps_to_drop_newest(write_cfg):
             """
         )
     )
-    assert cfg.Buffering.WriterDropPolicy == "drop_newest"
+    assert cfg.Buffering.WriterDropPolicy == FULL_BUFFER_DEFAULT_POLICY
 
 
 def test_writer_drop_policy_accepts_known_values(write_cfg):
     """Each explicit policy value is accepted and stored unchanged."""
-    for policy in ("drop_oldest", "drop_newest", "block"):
+    for policy in FULL_BUFFER_POLICIES:
         cfg = load_cfg(
             path=write_cfg(
                 f"""
@@ -213,11 +216,11 @@ def test_writer_drop_policy_is_case_insensitive(write_cfg):
             """
         )
     )
-    assert cfg.Buffering.WriterDropPolicy == "block"
+    assert cfg.Buffering.WriterDropPolicy == FULL_BUFFER_BLOCK_THREAD_POLICY
 
 
 def test_writer_drop_policy_invalid_falls_back_to_default(write_cfg):
-    """An unrecognized policy falls back to the default (drop_oldest)."""
+    """An unrecognized policy falls back to the default."""
     cfg = load_cfg(
         path=write_cfg(
             """
@@ -226,7 +229,7 @@ def test_writer_drop_policy_invalid_falls_back_to_default(write_cfg):
             """
         )
     )
-    assert cfg.Buffering.WriterDropPolicy == "drop_oldest"
+    assert cfg.Buffering.WriterDropPolicy == FULL_BUFFER_DEFAULT_POLICY
 
 
 # ---------------------------------------------------------------------------

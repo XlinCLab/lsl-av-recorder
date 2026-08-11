@@ -10,6 +10,7 @@ from .audio.constants import (DEFAULT_BIT_DEPTH, DEFAULT_N_CHANNELS,
 from .video.constants import (DEFAULT_CAMERA_FPS, DEFAULT_HEIGHT,
                               DEFAULT_PIXEL_FORMAT, DEFAULT_PREVIEW_FPS,
                               DEFAULT_WIDTH, DEVNODE_PATTERN)
+from .xdf.xdf_writer import FULL_BUFFER_DEFAULT_POLICY, FULL_BUFFER_POLICIES
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +79,7 @@ class BufferingConfig:
     AudioBufferSeconds: float = 0.0
     VideoBufferFrames: int = 0
     WriterQueueSize: int = 256
-    WriterDropPolicy: str = "drop_oldest"  # drop_oldest | drop_newest | block
+    WriterDropPolicy: str = FULL_BUFFER_DEFAULT_POLICY  # drop_oldest | drop_newest | block
 
 @dataclass
 class AppConfig:
@@ -151,8 +152,8 @@ def load_cfg(path: str) -> AppConfig:
         cfg.Buffering.VideoBufferFrames = cp.getint(s, "VideoBufferFrames", fallback=cfg.Buffering.VideoBufferFrames)
         cfg.Buffering.WriterQueueSize = cp.getint(s, "WriterQueueSize", fallback=cfg.Buffering.WriterQueueSize)
         policy = cp.get(s, "WriterDropPolicy", fallback=cfg.Buffering.WriterDropPolicy).strip().lower()
-        if policy in ("drop_oldest", "drop_newest", "block", "drop"):
-            cfg.Buffering.WriterDropPolicy = "drop_newest" if policy == "drop" else policy
+        if policy in FULL_BUFFER_POLICIES + ["drop"]:
+            cfg.Buffering.WriterDropPolicy = FULL_BUFFER_DEFAULT_POLICY if policy == "drop" else policy
         else:
             logger.warning(f"Invalid Buffering.WriterDropPolicy '{policy}'; falling back to '{cfg.Buffering.WriterDropPolicy}'.")
 
