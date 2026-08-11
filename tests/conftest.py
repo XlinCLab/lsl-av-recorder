@@ -95,6 +95,18 @@ class FakeSoundDevice:
 
 
 @pytest.fixture
+def as_platform(monkeypatch):
+    """Return a helper that fakes the OS on a module."""
+    def _set(module, platform: str):
+        assert platform in ("linux", "mac", "windows")
+        monkeypatch.setattr(module, "IS_LINUX", platform == "linux", raising=False)
+        monkeypatch.setattr(module, "IS_MAC", platform == "mac", raising=False)
+        monkeypatch.setattr(module, "IS_WINDOWS", platform == "windows", raising=False)
+
+    return _set
+
+
+@pytest.fixture
 def fake_sd(monkeypatch) -> FakeSoundDevice:
     """Patch the shared `sounddevice` module with a FakeSoundDevice.
 
