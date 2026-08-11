@@ -19,7 +19,10 @@ from ..config import AppConfig, VideoCamConfig
 from ..lsl.lsl_inlet_recorder import LslInletRecorder, lsl_format_to_xdf
 from ..naming import build_paths
 from ..video.video_recorder import VideoRecorder
-from ..xdf.xdf_writer import XDFWriter
+from ..xdf.xdf_writer import (FULL_BUFFER_BLOCK_THREAD_POLICY,
+                              FULL_BUFFER_DEFAULT_POLICY,
+                              FULL_BUFFER_DROP_NEWEST_POLICY,
+                              FULL_BUFFER_POLICIES, XDFWriter)
 
 
 class RunController:
@@ -64,12 +67,12 @@ class RunController:
         # Background writer (bounded queue for jitter resilience)
         # Queue of write tasks (write function, descrition for logging) processed by the writer thread
         # Drop policy for when the writer queue is full (drop_oldest | drop_newest | block)
-        self._writer_drop_policy = str(getattr(self.cfg.Buffering, "WriterDropPolicy", "drop_oldest"))
-        if self._writer_drop_policy not in ("drop_oldest", "drop_newest", "block"):
+        self._writer_drop_policy = str(getattr(self.cfg.Buffering, "WriterDropPolicy", FULL_BUFFER_DEFAULT_POLICY))
+        if self._writer_drop_policy not in FULL_BUFFER_POLICIES:
             self.warning(
-                f"Invalid writer drop policy '{self._writer_drop_policy}'; using 'drop_oldest'."
+                f"Invalid writer drop policy '{self._writer_drop_policy}'; using '{FULL_BUFFER_DEFAULT_POLICY}'."
             )
-            self._writer_drop_policy = "drop_oldest"
+            self._writer_drop_policy = FULL_BUFFER_DEFAULT_POLICY
         # Max number of queued write tasks to keep memory bounded
         self._writer_queue_size = max(1, int(getattr(self.cfg.Buffering, "WriterQueueSize", 256)))
         self._writer_queue: queue.Queue[tuple] = queue.Queue(maxsize=self._writer_queue_size)
@@ -337,11 +340,11 @@ class RunController:
         active_cams = [c for c in self.cfg.Video.Cams if c.Enabled]
         for cam in active_cams:
             if cam.FPS is None or float(cam.FPS) <= 0:
-                self.warning(f"Camera {cam.label} sampling rate is {cam.FPS}")
+                self.warning(f"Camera {cam.Label} sampling rate is {cam.FPS}")
             if cam.Width is None or float(cam.Width) <= 0:
-                self.warning(f"Camera {cam.label} width is {cam.Width}")
+                self.warning(f"Camera {cam.Label} width is {cam.Width}")
             if cam.Height is None or float(cam.Height) <= 0:
-                self.warning(f"Camera {cam.label} height is {cam.Height}")
+                self.warning(f"Camera {cam.Label} height is {cam.Height}")
         return active_cams
 
     def _get_video_output_path(self, cam: VideoCamConfig):
@@ -632,14 +635,14 @@ class RunController:
                 fn()
             return
         try:
-            if block or self._writer_drop_policy == "block":
+            if block or self._writer_drop_policy == FULL_BUFFER_BLOCK_THREAD_POLICY:
                 # Block briefly for critical writes (e.g., final flush)
                 self._writer_queue.put((fn, desc), timeout=2.0)
             else:
                 # Non-blocking enqueue for capture callbacks
                 self._writer_queue.put_nowait((fn, desc))
         except queue.Full:
-            if self._writer_drop_policy == "drop_newest":
+            if self._writer_drop_policy == FULL_BUFFER_DROP_NEWEST_POLICY:
                 # Drop this task (newest) when the queue is full
                 self._increment_drop_counts(newest=1)
             else:
