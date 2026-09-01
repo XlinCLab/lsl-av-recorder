@@ -32,9 +32,18 @@ from ..xdf.xdf_writer import (FULL_BUFFER_BLOCK_THREAD_POLICY,
                               FULL_BUFFER_DROP_NEWEST_POLICY,
                               FULL_BUFFER_DROP_OLDEST_POLICY)
 from .camera_panel import CameraPanel
+from .camera_worker import CAMERA_PREVIEW_STREAM_TYPE
 from .preview_manager import PreviewManager
 from .preview_panel import PreviewPanel
 from .run_controller import RunController
+
+
+def _exclude_camera_preview_streams(streams: List[StreamInfo]) -> List[StreamInfo]:
+    """Drop this app's own camera-preview outlets from a list of resolved LSL streams.
+    Selecting one to be recorded (via this app's own LSL stream table) will yield
+    an empty stream: it only exists for the lifetime of the live preview and
+    goes silent when Start is pressed."""
+    return [s for s in streams if s.type() != CAMERA_PREVIEW_STREAM_TYPE]
 
 
 class _ApplyAllThread(QThread):
@@ -1008,7 +1017,7 @@ class MainWindow(QMainWindow):
         self.lsl_streams_table.setRowCount(0)
         try:
             from pylsl import resolve_streams
-            streams = resolve_streams(wait_time=2.0)
+            streams = _exclude_camera_preview_streams(resolve_streams(wait_time=2.0))
             if not streams:
                 self.lsl_streams_table.setRowCount(0)
                 return

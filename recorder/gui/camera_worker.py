@@ -14,6 +14,9 @@ from ..video.color_adjust import apply_color_adjustments
 from ..video.constants import (DEFAULT_BRIGHTNESS, DEFAULT_HUE,
                                DEFAULT_SATURATION)
 
+# LSL stream type published by CameraWorker's preview outlet
+CAMERA_PREVIEW_STREAM_TYPE = "VideoFrame"
+
 
 @dataclass
 class RecordParams:
@@ -75,7 +78,7 @@ class CameraWorker(QObject):
         sname = f"VideoFrames_cam-{self.cam_index:02d}_role-{self.label}"
         info = StreamInfo(
             name=sname,
-            type="VideoFrame",
+            type=CAMERA_PREVIEW_STREAM_TYPE,
             channel_count=2,
             nominal_srate=self.fps,
             channel_format="double64",
