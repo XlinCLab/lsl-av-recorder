@@ -5,7 +5,7 @@ import struct
 import threading
 import uuid
 import xml.etree.ElementTree as ET
-from typing import BinaryIO, Dict, Optional
+from typing import BinaryIO, Dict, List, Optional
 
 import numpy as np
 
@@ -169,6 +169,7 @@ class XDFWriter:
         srate: float,
         fmt: str,
         source_id: str,
+        channels: Optional[List[Dict[str, str]]] = None,
         extra: Optional[Dict[str, str]] = None,
     ) -> bytes:
         root = ET.Element("info")
@@ -180,10 +181,17 @@ class XDFWriter:
         ET.SubElement(root, "source_id").text = source_id
         ET.SubElement(root, "uid").text = str(uuid.uuid4())
 
-        if extra:
+        if extra or channels:
             desc = ET.SubElement(root, "desc")
-            for k, v in extra.items():
-                ET.SubElement(desc, k).text = str(v)
+            if extra:
+                for k, v in extra.items():
+                    ET.SubElement(desc, k).text = str(v)
+            if channels:
+                channels_el = ET.SubElement(desc, "channels")
+                for chan in channels:
+                    chan_el = ET.SubElement(channels_el, "channel")
+                    for k, v in chan.items():
+                        ET.SubElement(chan_el, k).text = str(v)
 
         return ET.tostring(root, encoding="utf-8")
 
@@ -434,6 +442,7 @@ class XDFWriter:
         fmt: str,
         source_id: str,
         extra: Optional[Dict[str, str]] = None,
+        channels: Optional[List[Dict[str, str]]] = None,
         key: Optional[str] = None,
     ) -> int:
         """
@@ -451,6 +460,7 @@ class XDFWriter:
             fmt=fmt,
             source_id=source_id,
             extra=extra,
+            channels=channels,
         )
 
         with self._lock:

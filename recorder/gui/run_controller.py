@@ -11,12 +11,13 @@ from time import sleep
 from typing import Callable, Dict, List, Optional
 
 import numpy as np
-from pylsl import StreamInfo
+from pylsl import StreamInfo, StreamInlet
 
 from ..audio.lsl_audio import (AudioLSLStreamer, AudioStreamSettings,
                                _dtype_format)
 from ..config import AppConfig, VideoCamConfig
-from ..lsl.lsl_inlet_recorder import LslInletRecorder, lsl_format_to_xdf
+from ..lsl.lsl_inlet_recorder import (LslInletRecorder, extract_channel_info,
+                                      lsl_format_to_xdf)
 from ..naming import build_paths
 from ..video.video_recorder import VideoRecorder
 from ..xdf.xdf_writer import (FULL_BUFFER_BLOCK_THREAD_POLICY,
@@ -272,6 +273,7 @@ class RunController:
         for stream in self.lsl_streams:
             try:
                 fmt, _ = lsl_format_to_xdf(stream.channel_format())
+                channels = self._resolve_lsl_channels(stream)
                 sid = xdf_writer.add_lsl_stream(
                     name=stream.name(),
                     stype=stream.type(),
@@ -280,11 +282,31 @@ class RunController:
                     fmt=fmt,
                     source_id=stream.source_id() or stream.uid(),
                     extra={"hostname": stream.hostname(), "uid": stream.uid()},
+                    channels=channels,
                     key=f"lsl:{stream.uid()}",
                 )
                 self.info(f"Initialized LSL stream <{stream.name()}> in XDF")
             except Exception as exc:
                 self.warning(f"Skipping LSL stream due to error: {exc}")
+
+    def _resolve_lsl_channels(self, stream: StreamInfo) -> Optional[List[Dict[str, str]]]:
+        """
+        StreamInfo objects from resolve_streams() carry an empty desc(); 
+        channel labels/units live in the extended description, which is only available
+        by briefly opening an inlet and querying its full info().
+        """
+        try:
+            inlet = StreamInlet(stream, max_chunklen=1)
+            try:
+                full_info = inlet.info(timeout=2.0)
+            finally:
+                inlet.close_stream()
+        except Exception as exc:
+            # Best-effort: any failure here just means the XDF stream header won't carry channel
+            # metadata, not that the stream itself fails to register.
+            self.warning(f"Could not fetch channel info for <{stream.name()}>: {exc}")
+            return None
+        return extract_channel_info(full_info) or None
 
     def _initialize_lsl_recorders(self, xdf_writer: XDFWriter):
         self.lsl_recorders = []

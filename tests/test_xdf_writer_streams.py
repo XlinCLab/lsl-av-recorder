@@ -58,6 +58,59 @@ def test_stream_header_xml_includes_extra_desc(writer):
     assert desc.findtext("width") == "640"
 
 
+def test_stream_header_xml_includes_channels_desc(writer):
+    """Per-channel metadata is emitted as <desc><channels><channel>...</channel></channels></desc>,
+    the layout pyxdf/MNE expect channel labels to live at."""
+    xml = writer._make_stream_header_xml(
+        name="EEG",
+        stype="EEG",
+        channel_count=2,
+        srate=250.0,
+        fmt="float32",
+        source_id="eeg",
+        channels=[
+            {"label": "FPz", "unit": "microvolts", "type": "EEG"},
+            {"label": "Cz"},
+        ],
+    )
+    desc = ET.fromstring(xml).find("desc")
+    assert desc is not None
+    channel_els = desc.findall("channels/channel")
+    assert [c.findtext("label") for c in channel_els] == ["FPz", "Cz"]
+    assert channel_els[0].findtext("unit") == "microvolts"
+    assert channel_els[0].findtext("type") == "EEG"
+
+
+def test_stream_header_xml_combines_extra_and_channels(writer):
+    """extra fields and per-channel metadata can coexist under the same <desc>."""
+    xml = writer._make_stream_header_xml(
+        name="EEG",
+        stype="EEG",
+        channel_count=1,
+        srate=250.0,
+        fmt="float32",
+        source_id="eeg",
+        extra={"hostname": "host1"},
+        channels=[{"label": "FPz"}],
+    )
+    desc = ET.fromstring(xml).find("desc")
+    assert desc.findtext("hostname") == "host1"
+    assert desc.findtext("channels/channel/label") == "FPz"
+
+
+def test_stream_header_xml_omits_desc_without_extra_or_channels(writer):
+    """No <desc> element is written when it would otherwise be empty."""
+    xml = writer._make_stream_header_xml(
+        name="Audio",
+        stype="Audio",
+        channel_count=1,
+        srate=44100.0,
+        fmt="float32",
+        source_id="audio",
+    )
+    assert ET.fromstring(xml).find("desc") is None
+
+
 # ---------------------------------------------------------------------------
 # add_lsl_stream: key bookkeeping
 # ---------------------------------------------------------------------------

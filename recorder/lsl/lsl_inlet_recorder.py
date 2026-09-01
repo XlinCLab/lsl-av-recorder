@@ -2,13 +2,40 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Callable, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 from pylsl import (StreamInfo, StreamInlet, cf_double64, cf_float32, cf_int8,
                    cf_int16, cf_int32, cf_int64, cf_string, local_clock)
 
 from ..xdf.xdf_writer import XDFWriter
+
+
+def extract_channel_info(stream_info: StreamInfo) -> List[Dict[str, str]]:
+    """
+    Read per-channel metadata (e.g. label, unit, type) from a StreamInfo's
+    desc() XML, following the standard LSL layout:
+    <desc><channels><channel><label>...</label>...</channel>...</channels></desc>.
+
+    NB: stream_info must carry the extended description (e.g. from StreamInlet.info()).
+    StreamInfo objects returned by resolve_streams() have an empty desc()
+    and will yield an empty list here.
+    """
+    channels: List[Dict[str, str]] = []
+    try:
+        chan = stream_info.desc().child("channels").child("channel")
+        while not chan.empty():
+            fields: Dict[str, str] = {}
+            field = chan.first_child()
+            while not field.empty():
+                fields[field.name()] = field.child_value()
+                field = field.next_sibling()
+            if fields:
+                channels.append(fields)
+            chan = chan.next_sibling("channel")
+    except Exception:
+        return []
+    return channels
 
 
 def lsl_format_to_xdf(fmt: int) -> Tuple[str, np.dtype]:

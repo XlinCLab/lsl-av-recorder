@@ -368,3 +368,39 @@ def test_pyxdf_synchronizes_foreign_clock_stream(xdf_path):
         desired=local_event_times,
         atol=1e-6,
     )
+
+
+def test_pyxdf_reads_back_channel_labels_and_values(xdf_path):
+    """Per-channel labels/units survive the write+read round trip at the exact
+    desc/channels/channel/label path pyxdf (and other XDF readers) expect
+    and each channel's sample values recorded in the matching column."""
+    w = XDFWriter(xdf_path)
+    w.start()
+    eeg_sid = w.add_lsl_stream(
+        name="EEG",
+        stype="EEG",
+        channel_count=2,
+        srate=250.0,
+        fmt="float32",
+        source_id="eeg",
+        extra={"hostname": "host1"},
+        channels=[
+            {"label": "FPz", "unit": "microvolts", "type": "EEG"},
+            {"label": "Cz", "unit": "microvolts", "type": "EEG"},
+        ],
+        key="lsl:eeg",
+    )
+    samples = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)
+    w.write_lsl_samples(
+        stream_id=eeg_sid,
+        timestamps=np.array([1.0, 2.0], dtype=np.float64),
+        samples=samples,
+    )
+    w.stop()
+
+    eeg = load_by_name(xdf_path)["EEG"]
+    channels = eeg["info"]["desc"][0]["channels"][0]["channel"]
+    assert [c["label"][0] for c in channels] == ["FPz", "Cz"]
+    assert channels[0]["unit"][0] == "microvolts"
+    assert eeg["info"]["desc"][0]["hostname"][0] == "host1"
+    np.testing.assert_allclose(eeg["time_series"], samples)
