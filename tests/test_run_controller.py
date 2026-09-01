@@ -5,12 +5,14 @@ import os
 
 import numpy as np
 import pytest
+from pylsl import cf_string
 
 from recorder.config import AppConfig, VideoCamConfig
 from recorder.gui.run_controller import RunController
 from recorder.xdf.xdf_writer import (FULL_BUFFER_DEFAULT_POLICY,
                                      FULL_BUFFER_DROP_NEWEST_POLICY,
                                      FULL_BUFFER_DROP_OLDEST_POLICY)
+from tests.shared import MARKER_STREAM_NAME
 
 
 def _cfg(study_dir, template="rec", **buffering):
@@ -376,3 +378,41 @@ def test_lsl_stream_meta_collects_fields_and_skips_failures(tmp_path):
         "uid": "uid-1",
     }
     assert "hostname" not in meta  # getter raised -> field skipped
+
+
+# ---------------------------------------------------------------------------
+# _add_streams_to_xdf_writer: string-format (marker/trigger) streams
+# ---------------------------------------------------------------------------
+
+def test_add_streams_to_xdf_writer_registers_string_format_stream(tmp_path, monkeypatch):
+    """A cf_string marker stream gets registered correctly in the XDF writer."""
+    class FakeMarkerStream:
+        def name(self): return MARKER_STREAM_NAME
+        def type(self): return "Markers"
+        def channel_count(self): return 1
+        def nominal_srate(self): return 0.0
+        def channel_format(self): return cf_string
+        def source_id(self): return "markers"
+        def uid(self): return "uid-markers"
+        def hostname(self): return "host1"
+
+    class FailingInlet:
+        def __init__(self, *a, **k):
+            raise TimeoutError("no network stream to probe in this test")
+
+    monkeypatch.setattr("recorder.gui.run_controller.StreamInlet", FailingInlet)
+
+    logs: list[tuple[str, str]] = []
+    rc = RunController(
+        cfg=_cfg(tmp_path / "s"),
+        status_cb=lambda msg, loglevel: logs.append((loglevel, msg)),
+        lsl_streams=[FakeMarkerStream()],
+    )
+    xdf_writer = rc._initialize_xdf_writer(xdf_path=rc._get_xdf_path())
+    xdf_writer.start()
+    rc._add_streams_to_xdf_writer(xdf_writer)
+    xdf_writer.stop()
+
+    assert "lsl:uid-markers" in xdf_writer.streams
+    assert xdf_writer._stream_formats[xdf_writer.streams["lsl:uid-markers"]] == "string"
+    assert not any("Skipping LSL stream" in msg for _, msg in logs)

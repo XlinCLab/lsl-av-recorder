@@ -61,11 +61,6 @@ def push_samples(
     return t
 
 
-@pytest.fixture
-def xdf_path(tmp_path):
-    return str(tmp_path / "test.xdf")
-
-
 def test_lsl_inlet_recorder_receives_real_outlet(xdf_path):
     stream_name = f"TestMockEEG-{uuid.uuid4().hex[:8]}"
     n_channels = 4

@@ -20,6 +20,9 @@ TAG_STREAM_FOOTER = 6
 # XDF header bytes
 XDF_MAGIC_BYTES = b"XDF:"
 
+# Stream dtypes
+VIDEO_STREAM_DTYPE = "int64"
+
 # Drop policies when buffer is full
 FULL_BUFFER_DROP_OLDEST_POLICY = "drop_oldest"
 FULL_BUFFER_DROP_NEWEST_POLICY = "drop_newest"
@@ -55,6 +58,8 @@ class XDFWriter:
         self._last_clock_offset_time: Dict[int, float] = {}
         # Streams whose timestamps live in an external clock domain (external LSL inlets)
         self._external_clock_streams: set[int] = set()
+        # Registered channel_format per stream
+        self._stream_formats: Dict[int, str] = {}
 
     def _get_next_stream_id(self):
         sid = self._next_stream_id
@@ -323,19 +328,33 @@ class XDFWriter:
         self,
         stream_id: int,
         timestamps: np.ndarray,
-        values: np.ndarray,
+        values,
     ):
         """
         Write a Samples chunk.
         Each sample: [TimeStampBytes][TimeStamp][SampleValues]
         Preceded by [NumSamples (uint32)][SampleFormat (uint8)]
+
+        For string-format streams (e.g. marker/trigger streams), each
+        per-channel value has no fixed width, so SampleValues instead holds
+        one [VarLenLength][UTF-8 bytes] entry per channel.
         """
         timestamps = np.asarray(timestamps, dtype=np.float64)
-        values = np.asarray(values)  # type depends on stream (float32 or int64)
-        if values.ndim == 1:
-            values = values.reshape(-1, 1)
+        is_string = self._stream_formats.get(stream_id) == "string"
         n_samples = timestamps.shape[0]
-        assert values.shape[0] == n_samples, "values/timestamps length mismatch"
+
+        if is_string:
+            # Normalize to a plain list of per-sample channel-value lists,
+            # without forcing a numpy dtype (values are variable-length strings)
+            rows = list(values)
+            if rows and not isinstance(rows[0], (list, tuple, np.ndarray)):
+                rows = [[v] for v in rows]
+            assert len(rows) == n_samples, "values/timestamps length mismatch"
+        else:
+            values = np.asarray(values)  # type depends on stream (float32, int64, ...)
+            if values.ndim == 1:
+                values = values.reshape(-1, 1)
+            assert values.shape[0] == n_samples, "values/timestamps length mismatch"
 
         # Enforce strictly increasing timestamps across chunks
         last_ts = self._last_timestamp.get(stream_id)
@@ -348,6 +367,7 @@ class XDFWriter:
         # uint32: sample count
         # float64[n]: timestamps
         # float32[n, channels] | float64[n, channels]: values (row-major)
+        # string streams: [VarLenLength][bytes] per channel per sample
 
         payload = bytearray()
         buf = bytearray()
@@ -357,7 +377,13 @@ class XDFWriter:
         # Per-sample data
         for i in range(n_samples):
             payload += self._format_timestamp(timestamps[i])
-            payload += values[i].tobytes(order="C")
+            if is_string:
+                for v in rows[i]:
+                    encoded = ("" if v is None else str(v)).encode("utf-8")
+                    self._write_varlen_int_to_buffer(payload, len(encoded))
+                    payload += encoded
+            else:
+                payload += values[i].tobytes(order="C")
 
         self._write_chunk(TAG_SAMPLES, bytes(payload), stream_id)
 
@@ -396,6 +422,7 @@ class XDFWriter:
         with self._lock:
             self._write_stream_header(sid, xml)
 
+        self._stream_formats[sid] = fmt
         self.streams[name] = sid
         return sid
 
@@ -417,7 +444,7 @@ class XDFWriter:
             stype="Video",
             channel_count=1,  # NB: only one channel for video in XDF because only frame index is stored
             srate=fps or 0.0,  # NB: 0.0 marks the sampling rate as "irregular", expected to be positive otherwise
-            fmt="int64",  # TODO check this
+            fmt=VIDEO_STREAM_DTYPE,  # int64
             source_id=f"camera:{camera_id}",
             extra={
                 "video_path": video_path,
@@ -430,6 +457,7 @@ class XDFWriter:
         with self._lock:
             self._write_stream_header(sid, xml)
 
+        self._stream_formats[sid] = VIDEO_STREAM_DTYPE
         self.streams[name] = sid
         return sid
 
@@ -446,7 +474,8 @@ class XDFWriter:
         key: Optional[str] = None,
     ) -> int:
         """
-        Register a generic LSL stream (numeric samples).
+        Register a generic LSL stream (numeric samples, or fmt="string" for
+        marker/trigger streams).
         External LSL inlets carry timestamps from a foreign clock domain.
         Samples must be written via write_lsl_samples().
         """
@@ -466,6 +495,7 @@ class XDFWriter:
         with self._lock:
             self._write_stream_header(sid, xml)
 
+        self._stream_formats[sid] = fmt
         stream_key = key or f"{name}:{source_id}:{sid}"
         if stream_key in self.streams:
             stream_key = f"{stream_key}:{uuid.uuid4()}"
@@ -499,8 +529,10 @@ class XDFWriter:
         self,
         stream_id: int,
         timestamps: np.ndarray,
-        samples: np.ndarray,
+        samples,
     ):
+        """samples: np.ndarray for numeric streams, or a list of per-sample
+        lists of str for string-format (e.g. marker/trigger) streams."""
         self._write_boundary_chunk()
         # NB: External LSL streams get their clock offsets from real
         # time_correction() measurements via record_clock_offset(),

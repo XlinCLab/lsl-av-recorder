@@ -121,3 +121,8 @@ def fake_sd(monkeypatch) -> FakeSoundDevice:
     monkeypatch.setattr(sd, "check_input_settings", fake.check_input_settings)
     monkeypatch.setattr(sd, "default", fake.default)
     return fake
+
+
+@pytest.fixture
+def xdf_path(tmp_path):
+    return str(tmp_path / "test.xdf")

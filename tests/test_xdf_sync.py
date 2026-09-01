@@ -18,41 +18,11 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-import pyxdf
 from pylsl import cf_float32, local_clock
 
-from recorder.lsl import lsl_inlet_recorder
 from recorder.lsl.lsl_inlet_recorder import LslInletRecorder
 from recorder.xdf.xdf_writer import XDFWriter
-
-
-def load_by_name(path: str, **kwargs) -> dict:
-    """Load an XDF file and return {stream_name: stream_dict}.
-
-    Defaults to the *raw* view (no clock sync / dejitter) so tests can inspect
-    the clock offsets and unmodified timestamps the writer actually produced.
-    """
-    kwargs.setdefault("synchronize_clocks", False)
-    kwargs.setdefault("dejitter_timestamps", False)
-    streams, _ = pyxdf.load_xdf(path, **kwargs)
-    return {s["info"]["name"][0]: s for s in streams}
-
-
-def add_eeg_stream(w: XDFWriter) -> int:
-    return w.add_lsl_stream(
-        name="EEG",
-        stype="EEG",
-        channel_count=1,
-        srate=250.0,
-        fmt="float32",
-        source_id="eeg",
-        key="lsl:eeg",
-    )
-
-@pytest.fixture
-def xdf_path(tmp_path):
-    return str(tmp_path / "test.xdf")
-
+from tests.shared import _patch_inlet, add_eeg_stream, load_by_name
 
 # ---------------------------------------------------------------------------
 # Stream classification
@@ -246,11 +216,6 @@ class _FakeStreamInfo:
 
     def name(self):
         return "EEG"
-
-
-def _patch_inlet(monkeypatch, inlet):
-    """Make LslInletRecorder.__init__ build `inlet` instead of a live one."""
-    monkeypatch.setattr(lsl_inlet_recorder, "StreamInlet", lambda *a, **k: inlet)
 
 
 def test_recorder_forwards_time_correction_unmodified(monkeypatch, xdf_path):

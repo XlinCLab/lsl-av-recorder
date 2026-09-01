@@ -10,17 +10,12 @@ a time_correction() ping.
 from __future__ import annotations
 
 import numpy as np
-import pytest
 from pylsl import StreamInfo
 
 from recorder.config import AppConfig, VideoCamConfig
 from recorder.xdf.xdf_validation import validate_test_recording
 from recorder.xdf.xdf_writer import XDFWriter
-
-
-@pytest.fixture
-def xdf_path(tmp_path):
-    return str(tmp_path / "test.xdf")
+from tests.shared import MARKER_STREAM_NAME
 
 
 def write_audio_stream(
@@ -466,3 +461,43 @@ def test_lsl_irregular_rate_stream_checks_only_presence(xdf_path):
     assert not any("sample rate" in c.name for c in report.checks if "Markers" in c.name)
     count_check = next(c for c in report.checks if "Markers" in c.name and "sample count" in c.name)
     assert count_check.passed
+
+
+def test_lsl_string_format_marker_stream_pass(xdf_path):
+    """Test that a real  Markers-shaped stream (channel_format="string", irregular rate) validates cleanly."""
+    stream_info = StreamInfo(
+        name=MARKER_STREAM_NAME,
+        type="Markers",
+        channel_count=1,
+        nominal_srate=0.0,
+        channel_format="string",
+        source_id="src-markers",
+    )
+
+    w = XDFWriter(xdf_path)
+    w.start()
+    sid = w.add_lsl_stream(
+        name=MARKER_STREAM_NAME,
+        stype="Markers",
+        channel_count=1,
+        srate=0.0,
+        fmt="string",
+        source_id="src-markers",
+        key="lsl:markers",
+    )
+    ts = np.array([100.0, 102.5, 107.0])
+    w.write_lsl_samples(
+        stream_id=sid,
+        timestamps=ts,
+        samples=[["Stimulus/S1"], ["Stimulus/S2"], ["Response/R1"]],
+    )
+    w.record_clock_offset(stream_id=sid, offset=0.0, now=ts[-1])
+    w.stop()
+
+    report = validate_test_recording(
+        xdf_path=xdf_path,
+        cfg=base_cfg(),
+        lsl_streams=[stream_info],
+        expected_duration_s=10.0,
+    )
+    assert report.passed, report.detailed_text()
