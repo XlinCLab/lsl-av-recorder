@@ -3,7 +3,8 @@
 Maps a pylsl channel-format enum to the (xdf format string, numpy dtype) pair
 used to decode inbound LSL samples. A wrong mapping would silently misinterpret
 every sample of an external stream, so the whole enum is pinned down here,
-including the two rejection paths.
+including cf_string (used by marker/trigger streams, which have no fixed-width dtype)
+and the unknown-format rejection.
 """
 from __future__ import annotations
 
@@ -31,10 +32,11 @@ def test_maps_each_numeric_format(fmt, expected):
     assert lsl_format_to_xdf(fmt=fmt) == expected
 
 
-def test_string_format_is_rejected():
-    """String streams cannot be written to the numeric XDF sample path."""
-    with pytest.raises(ValueError, match="string"):
-        lsl_format_to_xdf(fmt=cf_string)
+def test_maps_string_format():
+    """cf_string maps to the "string" xdf format with no numpy dtype (None),
+    signalling callers to keep samples as plain Python strings rather than
+    casting to a fixed-width array."""
+    assert lsl_format_to_xdf(fmt=cf_string) == ("string", None)
 
 
 def test_unknown_format_is_rejected():

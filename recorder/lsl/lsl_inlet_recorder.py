@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Callable, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 from pylsl import (StreamInfo, StreamInlet, cf_double64, cf_float32, cf_int8,
@@ -11,10 +11,43 @@ from pylsl import (StreamInfo, StreamInlet, cf_double64, cf_float32, cf_int8,
 from ..xdf.xdf_writer import XDFWriter
 
 
-def lsl_format_to_xdf(fmt: int) -> Tuple[str, np.dtype]:
-    if fmt == cf_string:
-        raise ValueError("LSL string channel format is not supported for XDF writing")
+def extract_channel_info(stream_info: StreamInfo) -> List[Dict[str, str]]:
+    """
+    Read per-channel metadata (e.g. label, unit, type) from a StreamInfo's
+    desc() XML, following the standard LSL layout:
+    <desc><channels><channel><label>...</label>...</channel>...</channels></desc>.
+
+    NB: stream_info must carry the extended description (e.g. from StreamInlet.info()).
+    StreamInfo objects returned by resolve_streams() have an empty desc()
+    and will yield an empty list here.
+    """
+    channels: List[Dict[str, str]] = []
+    try:
+        chan = stream_info.desc().child("channels").child("channel")
+        while not chan.empty():
+            fields: Dict[str, str] = {}
+            field = chan.first_child()
+            while not field.empty():
+                fields[field.name()] = field.child_value()
+                field = field.next_sibling()
+            if fields:
+                channels.append(fields)
+            chan = chan.next_sibling("channel")
+    except Exception:
+        return []
+    return channels
+
+
+def lsl_format_to_xdf(fmt: int) -> Tuple[str, Optional[np.dtype]]:
+    """
+    Map an LSL channel-format enum to the (xdf format string, numpy dtype)
+    pair used to decode inbound samples.
+    cf_string (e.g. EEG marker / trigger streams) have no fixed-width numpy dtype
+    as its samples are variable-length strings, so its dtype is None, signalling callers
+    to keep samples as plain Python strings rather than casting to an array.
+    """
     mapping = {
+        cf_string: ("string", None),
         cf_float32: ("float32", np.float32),
         cf_double64: ("double64", np.float64),
         cf_int8: ("int8", np.int8),
@@ -97,11 +130,15 @@ class LslInletRecorder:
     def _loop(self):
         while self._running:
             samples, timestamps = self.inlet.pull_chunk(timeout=self.pull_timeout)
-            if not timestamps:
-                continue
-            values = np.asarray(samples, dtype=self.dtype)
-            ts = np.asarray(timestamps, dtype=np.float64)
-            self.xdf_writer.write_lsl_samples(self.stream_id, ts, values)
+            self._process_chunk(samples, timestamps)
+
+    def _process_chunk(self, samples, timestamps):
+        if not timestamps:
+            return
+        # String samples (e.g. marker/trigger streams) have no fixed dtype
+        values = samples if self.dtype is None else np.asarray(samples, dtype=self.dtype)
+        ts = np.asarray(timestamps, dtype=np.float64)
+        self.xdf_writer.write_lsl_samples(self.stream_id, ts, values)
 
     def _offset_loop(self):
         # Take an initial measurement immediately so the file has an early

@@ -154,7 +154,11 @@ def _validate_lsl_streams(
         checks.append(_check(f"LSL stream <{name}> present", True, "found"))
 
         info = stream["info"]
-        n_samples = stream["time_series"].shape[0]
+        # NB: pyxdf returns time_series as a plain list (not an ndarray)
+        # for string-format streams (e.g. marker/trigger streams),
+        # so len() is used here rather than .shape[0] to support both
+        n_samples = len(stream["time_series"])
+
         actual_channels = int(info["channel_count"][0])
         checks.append(_check(
             f"LSL <{name}> channel count", actual_channels == stream_info.channel_count(),
