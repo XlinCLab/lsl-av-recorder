@@ -8,3 +8,9 @@ def _project_root() -> Path:
 def _cache_path() -> Path:
     root = _project_root()
     return root / ".cache"
+
+
+def _logs_path() -> Path:
+    """Directory for persistent, app-level session logs."""
+    root = _project_root()
+    return root / "logs"

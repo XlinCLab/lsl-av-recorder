@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import copy
+import faulthandler
+import json
 import os
 import shutil
 import tempfile
 import threading
 import time
+from dataclasses import asdict
 from datetime import datetime
 from typing import List, Optional
 
@@ -24,6 +27,8 @@ from ..audio.devices import (default_input_device_index,
                              is_input_config_supported, list_input_devices)
 from ..config import AppConfig, VideoCamConfig, load_cfg
 from ..lsl.labrecorder_rcs import LabRecorderRCS
+from ..utils.constants import _logs_path, _project_root
+from ..utils.utils import get_environment_info
 from ..video.camera_settings import apply_camera_controls
 from ..video.devices import list_video_devices
 from ..xdf.xdf_validation import ValidationReport, validate_test_recording
@@ -36,6 +41,17 @@ from .camera_worker import CAMERA_PREVIEW_STREAM_TYPE
 from .preview_manager import PreviewManager
 from .preview_panel import PreviewPanel
 from .run_controller import RunController
+
+
+def build_config_log_payload(label: str, cfg: AppConfig) -> str:
+    """Build a single JSON log line combining environment info
+    with a full config snapshot."""
+    payload = {
+        "event": label,
+        "environment": get_environment_info(_project_root()),
+        "config": asdict(cfg),
+    }
+    return json.dumps(payload, indent=2, default=str, ensure_ascii=False)
 
 
 def _exclude_camera_preview_streams(streams: List[StreamInfo]) -> List[StreamInfo]:
@@ -96,10 +112,26 @@ class MainWindow(QMainWindow):
         self.debug_logs.setChecked(self._show_debug)
         self.debug_logs.stateChanged.connect(self._on_debug_logs_changed)
         self.log_signal.connect(self._append_log)
-        self._log_file = None
+        self._run_log_file = None
         self._log_lock = threading.Lock()
         self._log_path = None
+        # Persistent app-level session log:
+        # opened for the lifetime of the app, independent of any specific recording run,
+        # so activity before a run ever starts (config loads, setting changes,
+        # capability-probe failures, or native crash) still leaves a trace on disk.
+        # The per-run `run.log` (opened in _open_run_log) mirrors the same lines
+        # for the duration of that run only, alongside its own output.
+        self._app_session_log_file = None
+        self._app_session_log_path = None
+        self._open_app_session_log()
+        env = get_environment_info(_project_root())
+        self.log(
+            f"App started (PID {os.getpid()}): commit={env['commit']} "
+            f"platform={env['platform']} hostname={env['hostname']} "
+            f"python={env['python_version']}"
+        )
         self.cfg: AppConfig = load_cfg(cfg_path) if cfg_path else load_cfg("example.cfg")
+        self.log(build_config_log_payload("config_loaded_at_startup", self.cfg))
         self.controller: RunController = None
 
         form = QFormLayout()
@@ -328,14 +360,19 @@ class MainWindow(QMainWindow):
         self.logbox.append(line)
 
     def _write_log_line(self, line: str):
-        if not self._log_file:
-            return
         with self._log_lock:
-            try:
-                self._log_file.write(line + "\n")
-                self._log_file.flush()
-            except Exception:
-                pass
+            if self._app_session_log_file:
+                try:
+                    self._app_session_log_file.write(line + "\n")
+                    self._app_session_log_file.flush()
+                except Exception:
+                    pass
+            if self._run_log_file:
+                try:
+                    self._run_log_file.write(line + "\n")
+                    self._run_log_file.flush()
+                except Exception:
+                    pass
 
     def log(self, msg: str, loglevel: str = "INFO"):
         if loglevel == "DEBUG" and not self._show_debug:
@@ -350,25 +387,74 @@ class MainWindow(QMainWindow):
     def _on_debug_logs_changed(self, _state: int):
         self._show_debug = self.debug_logs.isChecked()
 
+    def _open_app_session_log(self):
+        """Open the app-level session log file for the lifetime of this
+        process, at a fixed location independent of any run."""
+        try:
+            logs_dir = _logs_path()
+            logs_dir.mkdir(parents=True, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            self._app_session_log_path = str(logs_dir / f"session_{timestamp}.log")
+            self._app_session_log_file = open(self._app_session_log_path, "a", encoding="utf-8")
+            faulthandler.enable(file=self._app_session_log_file, all_threads=True)
+        except Exception:
+            self._app_session_log_file = None
+            self._app_session_log_path = None
+
+    def _close_app_session_log(self):
+        if self._app_session_log_file:
+            try:
+                self._app_session_log_file.close()
+            except Exception:
+                pass
+        self._app_session_log_file = None
+
+    def _copy_app_log_to(self, target_dir: str):
+        """Copy the app-level session log's current contents (everything
+        logged since app launch, including any pre-Start activity) into
+        `target_dir` (output directory where run.log is written)
+        as session.log, without disturbing the live file, which keeps being
+        written at its original _logs_path() location (see _open_app_log).
+
+        Called twice per run: right after Start (so even a crash mid-run
+        still leaves that run's folder with everything up to when it began)
+        and again at Stop (so a clean run ends up with the fully up-to-date log)."""
+        if not self._app_session_log_file or not self._app_session_log_path:
+            return
+        try:
+            self._app_session_log_file.flush()
+        except Exception:
+            pass
+        try:
+            os.makedirs(target_dir, exist_ok=True)
+            shutil.copyfile(self._app_session_log_path, os.path.join(target_dir, "session.log"))
+        except Exception as exc:
+            self.log(f"Could not copy session log to {target_dir}: {exc}", loglevel="WARNING")
+
+    def closeEvent(self, event):
+        self._close_run_log()
+        self._close_app_session_log()
+        super().closeEvent(event)
+
     def _open_run_log(self):
         self._close_run_log()
         if not self.controller:
             return
         try:
             self._log_path = os.path.join(self.controller.outdir, "run.log")
-            self._log_file = open(self._log_path, "a", encoding="utf-8")
+            self._run_log_file = open(self._log_path, "a", encoding="utf-8")
         except Exception as exc:
-            self._log_file = None
+            self._run_log_file = None
             self._log_path = None
             self.log(f"Could not open run log: {exc}", loglevel="WARNING")
 
     def _close_run_log(self):
-        if self._log_file:
+        if self._run_log_file:
             try:
-                self._log_file.close()
+                self._run_log_file.close()
             except Exception:
                 pass
-        self._log_file = None
+        self._run_log_file = None
         self._log_path = None
 
     def _ensure_progress_dialog(self, title: str, message: str) -> QProgressDialog:
@@ -662,6 +748,7 @@ class MainWindow(QMainWindow):
             self.cfg = load_cfg(path)
             self._apply_cfg_to_gui()
             self.log(f"Loaded config: {path}")
+            self.log(build_config_log_payload("config_loaded", self.cfg))
         except Exception as e:
             QMessageBox.critical(self, "Load failed", str(e))
 
@@ -782,6 +869,8 @@ class MainWindow(QMainWindow):
                 preview_frame_cb=self.preview_frame_signal.emit,
             )
             self._open_run_log()
+            self._copy_app_log_to(self.controller.outdir)
+            self.log(build_config_log_payload("recording_started", self.cfg))
             self.controller.start()
             self.btn_start.setEnabled(False)
             self.btn_stop.setEnabled(True)
@@ -807,6 +896,7 @@ class MainWindow(QMainWindow):
             self.preview_mgr.stop_all_previews()
             self.controller.stop()
             outdir = os.path.abspath(self.controller.outdir)
+            self._copy_app_log_to(outdir)
             msg = f"Results written to:\n{outdir}\n\nClose the app now?"
             confirm = QMessageBox.question(
                 self,
