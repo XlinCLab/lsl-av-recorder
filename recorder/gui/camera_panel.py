@@ -600,8 +600,29 @@ class CameraPanel(QWidget):
         if new_key is not None and new_key != self._selected_device_key:
             self._selected_device_key = new_key
             self._reset_control_defaults_state()
-        self.text.append("INFO: Device changed. Click 'Refresh device capabilities' to load supported modes.")
+            self._notify_device_changed(dev)
         self.previewConfigChanged.emit()
+
+    def _notify_device_changed(self, dev):
+        name = str(dev.get("name") or "?") if isinstance(dev, dict) else "?"
+        index = int(self.device_index.value())
+        self._log(f"Device changed to [{index}] {name}")
+
+        box = QMessageBox(self)
+        box.setWindowTitle("Camera device changed")
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setText(
+            f"Camera device changed to [{index}] {name}.\n\n"
+            "Refresh device capabilities now to load its supported modes?"
+        )
+        refresh_btn = box.addButton("Refresh capabilities", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Skip", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(refresh_btn)
+        box.exec()
+        if box.clickedButton() is refresh_btn:
+            self.refresh_capabilities()
+        else:
+            self._log(f"Skipped capability refresh for [{index}] {name}")
 
     def _reset_control_defaults_state(self):
         """Clear the "explicitly configured"/"already auto-defaulted" latches
