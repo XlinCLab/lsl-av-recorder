@@ -176,7 +176,7 @@ class MainWindow(QMainWindow):
         # Audio tab
         audio_widget = QWidget()
         af = QFormLayout()
-        self.audio_enabled = QCheckBox("Enable audio (LSL stream, no WAV)")
+        self.audio_enabled = QCheckBox("Enable audio")
         self.audio_enabled.setChecked(bool(self.cfg.Audio.Enabled))
         self.audio_device = QComboBox()
         self.audio_sr = QComboBox()
