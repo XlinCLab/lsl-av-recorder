@@ -899,6 +899,10 @@ class CameraPanel(QWidget):
         if not result:
             return
         width, height, fps = result
+        previous_resolution = self._selected_resolution()
+        previous_fps = int(self.fps.currentData() or DEFAULT_CAMERA_FPS)
+        unchanged = (width, height, fps) == (previous_resolution[0], previous_resolution[1], previous_fps)
+
         existing = [
             int(self.fps.itemData(i))
             for i in range(self.fps.count())
@@ -914,6 +918,10 @@ class CameraPanel(QWidget):
         self.resolution.blockSignals(True)
         self._set_resolution_choices(compatible or [(width, height)], selected_resolution=(width, height))
         self.resolution.blockSignals(False)
+
+        if unchanged:
+            # No reason to restart preview if unchanged
+            return
         self.previewConfigChanged.emit()
 
     def _on_capabilities_error(self, msg: str):
