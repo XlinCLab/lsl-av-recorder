@@ -147,7 +147,14 @@ class CameraPanel(QWidget):
     capabilitiesLoadFinished = pyqtSignal()
     capabilitiesLoadProgress = pyqtSignal(int, str)
 
-    def __init__(self, cam_cfg: VideoCamConfig, parent: Optional[QWidget] = None):
+    _UNSELECTED_DEVICE_LABEL = "Select a camera..."
+
+    def __init__(
+        self,
+        cam_cfg: VideoCamConfig,
+        parent: Optional[QWidget] = None,
+        preselect_device: bool = True,
+    ):
         super().__init__(parent)
 
         self._default_resolution = (int(cam_cfg.Width), int(cam_cfg.Height))
@@ -228,9 +235,29 @@ class CameraPanel(QWidget):
         layout.addWidget(self.btn_remove)
         self.setLayout(layout)
 
+        # Controls that are meaningless without a selected device; grayed out until one is chosen
+        self._device_dependent_widgets = [
+            self.enabled,
+            self.fps,
+            self.resolution,
+            self.pixel_format,
+            self.auto_exposure,
+            self.auto_focus,
+            self.btn_refresh_caps,
+            self.btn_apply,
+        ]
+
         self._video_devices: list[dict[str, Any]] = []
         self._device_name: Optional[str] = cam_cfg.DeviceName
-        self._populate_video_devices(cam_cfg.DeviceIndex, cam_cfg.DevNode, cam_cfg.DeviceName)
+        self._populate_video_devices(
+            preferred_index=cam_cfg.DeviceIndex,
+            preferred_devnode=cam_cfg.DevNode,
+            preferred_name=cam_cfg.DeviceName,
+            allow_preselect=preselect_device,
+        )
+        self._set_device_dependent_controls_enabled(
+            isinstance(self.device_name.currentData(), dict)
+        )
 
         self.btn_refresh_devices.clicked.connect(self.refresh_video_devices)
         self.btn_refresh_caps.clicked.connect(self.refresh_capabilities)
@@ -242,6 +269,12 @@ class CameraPanel(QWidget):
         self.fps.currentIndexChanged.connect(self._on_fps_changed)
         self.resolution.currentIndexChanged.connect(self._on_resolution_changed)
         self.pixel_format.currentIndexChanged.connect(self._on_pixel_format_changed)
+
+    def _set_device_dependent_controls_enabled(self, enabled: bool):
+        """Gray out (or restore) every control that is meaningless without a
+        selected device. Restoring just returns them to interactive mode."""
+        for widget in self._device_dependent_widgets:
+            widget.setEnabled(enabled)
 
     def _tag(self) -> str:
         """Short prefix identifying which camera panel a log message is
@@ -537,31 +570,37 @@ class CameraPanel(QWidget):
         preferred_index: int,
         preferred_devnode: str,
         preferred_name: Optional[str],
+        allow_preselect: bool = True,
     ):
+        """Populate the device combo."""
         self.device_name.clear()
         self._video_devices = list_video_devices()
 
-        selected_row = -1
-        for row, dev in enumerate(self._video_devices):
+        self.device_name.addItem(self._UNSELECTED_DEVICE_LABEL, None)
+        selected_row = 0
+
+        for row, dev in enumerate(self._video_devices, start=1):
             self.device_name.addItem(
                 f"[{dev['index']}] {dev['name']}",
                 dev,
             )
-            if selected_row < 0:
+            if selected_row == 0:
                 name_matches = bool(preferred_name) and str(dev.get("name")) == str(preferred_name)
-                devnode_matches = preferred_devnode and str(dev.get("devnode")) == str(preferred_devnode)
-                index_matches = int(dev.get("index", -1)) == int(preferred_index)
+                devnode_matches = (
+                    allow_preselect and preferred_devnode and str(dev.get("devnode")) == str(preferred_devnode)
+                )
+                index_matches = allow_preselect and int(dev.get("index", -1)) == int(preferred_index)
                 if name_matches or devnode_matches or index_matches:
                     selected_row = row
 
-        if self.device_name.count() == 0:
+        if not self._video_devices and allow_preselect:
             self.device_name.addItem(
                 f"[{preferred_index}] Manual device",
                 {"index": int(preferred_index), "devnode": preferred_devnode, "name": "Manual device"},
             )
-            selected_row = 0
+            selected_row = self.device_name.count() - 1
 
-        self.device_name.setCurrentIndex(max(0, selected_row))
+        self.device_name.setCurrentIndex(selected_row)
         self._sync_device_fields_from_combo()
 
     def _sync_device_fields_from_combo(self):
@@ -595,11 +634,18 @@ class CameraPanel(QWidget):
     def _on_device_name_selected(self):
         dev = self.device_name.currentData()
         self._sync_device_fields_from_combo()
-        # Only wipe the brightness/hue/saturation latches when the selected device actually changed
         new_key = self._device_key(dev)
-        if new_key is not None and new_key != self._selected_device_key:
+        if new_key is None:
+            # "Select a camera..." placeholder
+            # nothing to preview/probe/apply settings for until a real
+            # device is chosen
+            self._selected_device_key = None
+            self._set_device_dependent_controls_enabled(False)
+        elif new_key != self._selected_device_key:
+            # Only wipe the brightness/hue/saturation latches when the selected device actually changed
             self._selected_device_key = new_key
             self._reset_control_defaults_state()
+            self._set_device_dependent_controls_enabled(True)
             self._notify_device_changed(dev)
         self.previewConfigChanged.emit()
 
@@ -645,7 +691,14 @@ class CameraPanel(QWidget):
             preferred_index = int(self.device_index.value())
             preferred_devnode = self.devnode.text().strip()
             preferred_name = self._device_name
-        self._populate_video_devices(preferred_index, preferred_devnode, preferred_name)
+        self._populate_video_devices(
+            preferred_index=preferred_index,
+            preferred_devnode=preferred_devnode,
+            preferred_name=preferred_name,
+            # Only allow falling back to index/devnode matching when a real
+            # device has already been selected
+            allow_preselect=isinstance(dev, dict),
+        )
 
     def _on_fps_changed(self):
         self._log(f"FPS changed to {self.fps.currentData()}")
@@ -946,7 +999,7 @@ class CameraPanel(QWidget):
 
     def to_config(self) -> VideoCamConfig:
         c = VideoCamConfig()
-        c.Enabled = self.enabled.isChecked()
+        c.Enabled = self.enabled.isChecked() and self._device_name is not None
         c.DeviceIndex = int(self.device_index.value())
         c.DevNode = self.devnode.text().strip()
         c.DeviceName = self._device_name

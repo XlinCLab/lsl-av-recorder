@@ -692,8 +692,13 @@ class MainWindow(QMainWindow):
     def _init_camera_tabs(self):
         initial_count = self._determine_initial_camera_count()
         for i in range(initial_count):
-            cam_cfg = self.cfg.Video.Cams[i] if i < len(self.cfg.Video.Cams) else VideoCamConfig()
-            self._add_camera_panel(cam_cfg)
+            if i < len(self.cfg.Video.Cams):
+                self._add_camera_panel(self.cfg.Video.Cams[i])
+            else:
+                # No config entry for this tab:
+                # (e.g. auto-detected extra camera with nothing saved for it yet)
+                # treat exactly like "Add camera": no pre-selected device
+                self._add_camera_panel()
 
     def _determine_initial_camera_count(self) -> int:
         cfg_count = len(self.cfg.Video.Cams)
@@ -724,11 +729,19 @@ class MainWindow(QMainWindow):
     def _add_camera_panel(self, cam_cfg: VideoCamConfig | None = None):
         if len(self.cam_panels) >= self.max_cams:
             return
-        is_default = cam_cfg is None
-        cam_cfg = cam_cfg or VideoCamConfig()
-        panel = CameraPanel(cam_cfg)
-        if is_default:
-            panel.enabled.setChecked(True)
+        # cam_cfg is None exactly when there's no real config entry for this tab;
+        # such a panel gets no pre-selected device:
+        # the combo starts on "Select a camera...", and device-dependent controls stay
+        # grayed out until the user actually picks one
+        is_new = cam_cfg is None
+        if is_new:
+            cam_cfg = VideoCamConfig()
+            # Pre-enable so preview starts as soon as a device is chosen,
+            # without an extra click; to_config() reports Enabled=False
+            # anyway until a real device is actually selected
+            cam_cfg.Enabled = True
+            cam_cfg.Label = f"Cam{len(self.cam_panels) + 1}"
+        panel = CameraPanel(cam_cfg, preselect_device=not is_new)
         panel.applyStarted.connect(self.preview_mgr.stop_all_previews)
         panel.applyStarted.connect(self._on_apply_started)
         panel.applyFinished.connect(self._on_apply_finished)
@@ -744,8 +757,8 @@ class MainWindow(QMainWindow):
         self.cam_panels.append(panel)
         self.tabs.addTab(panel, f"Camera {len(self.cam_panels)}")
         self._update_add_camera_button()
-        should_probe = (not is_default) or (len(self.cam_panels) == 1)
-        if should_probe:
+        # Nothing to probe for a panel with no device selected yet
+        if not is_new:
             panel.refresh_capabilities()
 
     def _on_add_camera(self):
@@ -1296,5 +1309,7 @@ class MainWindow(QMainWindow):
 
         initial_count = self._determine_initial_camera_count()
         for i in range(initial_count):
-            cam_cfg = self.cfg.Video.Cams[i] if i < len(self.cfg.Video.Cams) else VideoCamConfig()
-            self._add_camera_panel(cam_cfg)
+            if i < len(self.cfg.Video.Cams):
+                self._add_camera_panel(self.cfg.Video.Cams[i])
+            else:
+                self._add_camera_panel()
