@@ -726,9 +726,9 @@ class MainWindow(QMainWindow):
         for panel in self.cam_panels:
             panel.set_remove_enabled(enabled)
 
-    def _add_camera_panel(self, cam_cfg: VideoCamConfig | None = None):
+    def _add_camera_panel(self, cam_cfg: VideoCamConfig | None = None) -> Optional[CameraPanel]:
         if len(self.cam_panels) >= self.max_cams:
-            return
+            return None
         # cam_cfg is None exactly when there's no real config entry for this tab;
         # such a panel gets no pre-selected device:
         # the combo starts on "Select a camera...", and device-dependent controls stay
@@ -760,9 +760,12 @@ class MainWindow(QMainWindow):
         # Nothing to probe for a panel with no device selected yet
         if not is_new:
             panel.refresh_capabilities()
+        return panel
 
     def _on_add_camera(self):
-        self._add_camera_panel()
+        panel = self._add_camera_panel()
+        if panel is not None:
+            self.tabs.setCurrentWidget(panel)
         self._refresh_previews_from_panels()
 
     def _on_remove_camera(self, panel: CameraPanel):
