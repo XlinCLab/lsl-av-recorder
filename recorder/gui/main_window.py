@@ -160,6 +160,7 @@ class MainWindow(QMainWindow):
         self.btn_start = QPushButton("Start")
         self.btn_stop = QPushButton("Stop")
         self.btn_stop.setEnabled(False)
+        self.btn_close_app = QPushButton("Close app")
         btn_row.addWidget(self.btn_load)
         btn_row.addWidget(self.btn_add_camera)
         btn_row.addStretch(1)
@@ -168,6 +169,7 @@ class MainWindow(QMainWindow):
         btn_row.addWidget(self.btn_test_recording)
         btn_row.addWidget(self.btn_start)
         btn_row.addWidget(self.btn_stop)
+        btn_row.addWidget(self.btn_close_app)
 
         self.tabs = QTabWidget()
         self.btn_remove_camera = QPushButton("Remove camera")
@@ -346,6 +348,7 @@ class MainWindow(QMainWindow):
         self.btn_add_camera.clicked.connect(self._on_add_camera)
         self.btn_start.clicked.connect(self.on_start)
         self.btn_stop.clicked.connect(self.on_stop)
+        self.btn_close_app.clicked.connect(self.on_close_app)
         self.btn_test_recording.clicked.connect(self.on_test_recording)
         self.labrec_connect_btn.clicked.connect(self.on_connect_labrecorder)
         self.labrec_disconnect_btn.clicked.connect(self.on_disconnect_labrecorder)
@@ -459,9 +462,39 @@ class MainWindow(QMainWindow):
             self.log(f"Could not copy session log to {target_dir}: {exc}", loglevel="WARNING")
 
     def closeEvent(self, event):
+        # Logged unconditionally, on every close path (the "Close app" button,
+        # the window's native close control, or any other call to close()).
+        # Distinguishes a graceful shutdown from a crash: 
+        # if the log simply stops with no matching line here, that means
+        # the app went down some other way (native crash, force-kill).
+        self.log("Closing app.")
+        if self._recording_active and self.controller:
+            self.log(
+                "App closing while a recording was still active; stopping it first.",
+                loglevel="WARNING",
+            )
+            try:
+                self.controller.stop()
+                self._copy_app_log_to(self.controller.outdir)
+            except Exception as exc:
+                self.log(f"Error stopping recording during app close: {exc}", loglevel="ERROR")
         self._close_run_log()
         self._close_app_session_log()
         super().closeEvent(event)
+
+    def on_close_app(self):
+        if self._recording_active:
+            confirm = QMessageBox.question(
+                self,
+                "Close app",
+                "A recording is currently active. Stop it and close the app?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if confirm != QMessageBox.StandardButton.Yes:
+                return
+        self.log("Close app button clicked by user.")
+        self.close()
 
     def _open_run_log(self):
         self._close_run_log()
