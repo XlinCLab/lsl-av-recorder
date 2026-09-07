@@ -7,7 +7,7 @@ import subprocess
 
 from recorder.utils import utils
 from recorder.utils.utils import (_extract_default, _extract_range,
-                                  get_commit_hash)
+                                  get_commit_hash, get_environment_info)
 
 # Example of `v4l2-ctl -L` output
 V4L2_CTRLS = """
@@ -89,3 +89,32 @@ def test_get_commit_hash_falls_back_to_date_on_failure(monkeypatch, tmp_path):
     monkeypatch.setattr(utils.subprocess, "run", fake_run)
     result = get_commit_hash(root=tmp_path)
     assert re.fullmatch(r"\d{8}", result)
+
+
+# ---------------------------------------------------------------------------
+# get_environment_info
+# ---------------------------------------------------------------------------
+
+def test_get_environment_info_has_all_expected_fields(monkeypatch, tmp_path):
+    """The environment dict identifies the exact code (commit) and machine
+    (platform/hostname/python version) a session ran on."""
+    monkeypatch.setattr(utils, "get_commit_hash", lambda root: "abc123def456")
+    info = get_environment_info(root=tmp_path)
+    assert info.keys() == {"commit", "platform", "hostname", "python_version"}
+    assert info["commit"] == "abc123def456"
+    assert all(isinstance(v, str) and v for v in info.values())
+
+
+def test_get_environment_info_uses_get_commit_hash(monkeypatch, tmp_path):
+    """The commit field is whatever get_commit_hash resolves for `root`, not
+    re-derived independently."""
+    seen_roots = []
+
+    def fake_commit_hash(root):
+        seen_roots.append(root)
+        return "lalalala01234"
+
+    monkeypatch.setattr(utils, "get_commit_hash", fake_commit_hash)
+    info = get_environment_info(root=tmp_path)
+    assert info["commit"] == "lalalala01234"
+    assert seen_roots == [tmp_path]
