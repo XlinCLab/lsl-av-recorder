@@ -3,8 +3,9 @@
 .venv/
 .vscode/
 **/*.pyc
-recordings/
+dev/
+logs/
 notes/
+recordings/
 *.egg-info/
 LabRecorder/
-dev/

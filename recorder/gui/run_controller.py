@@ -19,6 +19,8 @@ from ..config import AppConfig, VideoCamConfig
 from ..lsl.lsl_inlet_recorder import (LslInletRecorder, extract_channel_info,
                                       lsl_format_to_xdf)
 from ..naming import build_paths
+from ..utils.constants import _project_root
+from ..utils.utils import get_environment_info
 from ..video.video_recorder import VideoRecorder
 from ..xdf.xdf_writer import (FULL_BUFFER_BLOCK_THREAD_POLICY,
                               FULL_BUFFER_DEFAULT_POLICY,
@@ -128,6 +130,7 @@ class RunController:
         with open(meta_path, "w", encoding="utf-8") as f:
             json.dump(
                 {
+                    "environment": get_environment_info(_project_root()),
                     "prompts": asdict(self.cfg.Prompts),
                     "output": asdict(self.cfg.Output),
                     "audio": asdict(self.cfg.Audio),

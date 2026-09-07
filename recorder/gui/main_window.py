@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import copy
+import faulthandler
+import json
 import os
 import shutil
 import tempfile
 import threading
 import time
+from dataclasses import asdict
 from datetime import datetime
 from typing import List, Optional
 
@@ -24,6 +27,8 @@ from ..audio.devices import (default_input_device_index,
                              is_input_config_supported, list_input_devices)
 from ..config import AppConfig, VideoCamConfig, load_cfg
 from ..lsl.labrecorder_rcs import LabRecorderRCS
+from ..utils.constants import _logs_path, _project_root
+from ..utils.utils import get_environment_info
 from ..video.camera_settings import apply_camera_controls
 from ..video.devices import list_video_devices
 from ..xdf.xdf_validation import ValidationReport, validate_test_recording
@@ -36,6 +41,17 @@ from .camera_worker import CAMERA_PREVIEW_STREAM_TYPE
 from .preview_manager import PreviewManager
 from .preview_panel import PreviewPanel
 from .run_controller import RunController
+
+
+def build_config_log_payload(label: str, cfg: AppConfig) -> str:
+    """Build a single JSON log line combining environment info
+    with a full config snapshot."""
+    payload = {
+        "event": label,
+        "environment": get_environment_info(_project_root()),
+        "config": asdict(cfg),
+    }
+    return json.dumps(payload, indent=2, default=str, ensure_ascii=False)
 
 
 def _exclude_camera_preview_streams(streams: List[StreamInfo]) -> List[StreamInfo]:
@@ -96,10 +112,26 @@ class MainWindow(QMainWindow):
         self.debug_logs.setChecked(self._show_debug)
         self.debug_logs.stateChanged.connect(self._on_debug_logs_changed)
         self.log_signal.connect(self._append_log)
-        self._log_file = None
+        self._run_log_file = None
         self._log_lock = threading.Lock()
         self._log_path = None
+        # Persistent app-level session log:
+        # opened for the lifetime of the app, independent of any specific recording run,
+        # so activity before a run ever starts (config loads, setting changes,
+        # capability-probe failures, or native crash) still leaves a trace on disk.
+        # The per-run `run.log` (opened in _open_run_log) mirrors the same lines
+        # for the duration of that run only, alongside its own output.
+        self._app_session_log_file = None
+        self._app_session_log_path = None
+        self._open_app_session_log()
+        env = get_environment_info(_project_root())
+        self.log(
+            f"App started (PID {os.getpid()}): commit={env['commit']} "
+            f"platform={env['platform']} hostname={env['hostname']} "
+            f"python={env['python_version']}"
+        )
         self.cfg: AppConfig = load_cfg(cfg_path) if cfg_path else load_cfg("example.cfg")
+        self.log(build_config_log_payload("config_loaded_at_startup", self.cfg))
         self.controller: RunController = None
 
         form = QFormLayout()
@@ -128,6 +160,7 @@ class MainWindow(QMainWindow):
         self.btn_start = QPushButton("Start")
         self.btn_stop = QPushButton("Stop")
         self.btn_stop.setEnabled(False)
+        self.btn_close_app = QPushButton("Close app")
         btn_row.addWidget(self.btn_load)
         btn_row.addWidget(self.btn_add_camera)
         btn_row.addStretch(1)
@@ -136,6 +169,7 @@ class MainWindow(QMainWindow):
         btn_row.addWidget(self.btn_test_recording)
         btn_row.addWidget(self.btn_start)
         btn_row.addWidget(self.btn_stop)
+        btn_row.addWidget(self.btn_close_app)
 
         self.tabs = QTabWidget()
         self.btn_remove_camera = QPushButton("Remove camera")
@@ -144,7 +178,7 @@ class MainWindow(QMainWindow):
         # Audio tab
         audio_widget = QWidget()
         af = QFormLayout()
-        self.audio_enabled = QCheckBox("Enable audio (LSL stream, no WAV)")
+        self.audio_enabled = QCheckBox("Enable audio")
         self.audio_enabled.setChecked(bool(self.cfg.Audio.Enabled))
         self.audio_device = QComboBox()
         self.audio_sr = QComboBox()
@@ -154,6 +188,14 @@ class MainWindow(QMainWindow):
         self._populate_audio_devices()
         self._refresh_audio_capabilities()
         self.audio_device.currentIndexChanged.connect(self._on_audio_device_changed)
+        self.audio_enabled.toggled.connect(lambda checked: self._log_gui_change("Audio.Enabled", checked))
+        self.audio_sr.currentIndexChanged.connect(
+            lambda _i: self._log_gui_change("Audio.SampleRate", self.audio_sr.currentData())
+        )
+        self.audio_bit.currentIndexChanged.connect(
+            lambda _i: self._log_gui_change("Audio.BitDepth", self.audio_bit.currentData())
+        )
+        self.audio_ch.valueChanged.connect(lambda v: self._log_gui_change("Audio.Channels", v))
 
         self.audio_stream_name = QLineEdit(getattr(self.cfg.Audio, "StreamName", "Audio") or "Audio")
 
@@ -194,6 +236,18 @@ class MainWindow(QMainWindow):
         bf.addRow("When full", self.writer_drop_policy)
         buffering_widget.setLayout(bf)
         self.tabs.addTab(buffering_widget, "Buffering")
+        self.audio_buffer_seconds.valueChanged.connect(
+            lambda v: self._log_gui_change("Buffering.AudioBufferSeconds", v)
+        )
+        self.video_buffer_frames.valueChanged.connect(
+            lambda v: self._log_gui_change("Buffering.VideoBufferFrames", v)
+        )
+        self.writer_queue_size.valueChanged.connect(
+            lambda v: self._log_gui_change("Buffering.WriterQueueSize", v)
+        )
+        self.writer_drop_policy.currentIndexChanged.connect(
+            lambda _i: self._log_gui_change("Buffering.WriterDropPolicy", self.writer_drop_policy.currentData())
+        )
 
         # LabRecorder tab
         labrec_widget = QWidget()
@@ -233,6 +287,9 @@ class MainWindow(QMainWindow):
         self.lsl_streams_table.horizontalHeader().setStretchLastSection(True)
         lf.addRow(self.lsl_discover_btn)
         lf.addRow(self.lsl_streams_table)
+        self.labrec_enabled.toggled.connect(lambda checked: self._log_gui_change("LabRecorder.Enabled", checked))
+        self.labrec_port.valueChanged.connect(lambda v: self._log_gui_change("LabRecorder.Port", v))
+        self.lsl_streams_table.itemChanged.connect(self._on_lsl_stream_item_changed)
 
         # Preview wall
         self.preview_panel = PreviewPanel()
@@ -291,6 +348,7 @@ class MainWindow(QMainWindow):
         self.btn_add_camera.clicked.connect(self._on_add_camera)
         self.btn_start.clicked.connect(self.on_start)
         self.btn_stop.clicked.connect(self.on_stop)
+        self.btn_close_app.clicked.connect(self.on_close_app)
         self.btn_test_recording.clicked.connect(self.on_test_recording)
         self.labrec_connect_btn.clicked.connect(self.on_connect_labrecorder)
         self.labrec_disconnect_btn.clicked.connect(self.on_disconnect_labrecorder)
@@ -328,14 +386,19 @@ class MainWindow(QMainWindow):
         self.logbox.append(line)
 
     def _write_log_line(self, line: str):
-        if not self._log_file:
-            return
         with self._log_lock:
-            try:
-                self._log_file.write(line + "\n")
-                self._log_file.flush()
-            except Exception:
-                pass
+            if self._app_session_log_file:
+                try:
+                    self._app_session_log_file.write(line + "\n")
+                    self._app_session_log_file.flush()
+                except Exception:
+                    pass
+            if self._run_log_file:
+                try:
+                    self._run_log_file.write(line + "\n")
+                    self._run_log_file.flush()
+                except Exception:
+                    pass
 
     def log(self, msg: str, loglevel: str = "INFO"):
         if loglevel == "DEBUG" and not self._show_debug:
@@ -350,25 +413,108 @@ class MainWindow(QMainWindow):
     def _on_debug_logs_changed(self, _state: int):
         self._show_debug = self.debug_logs.isChecked()
 
+    def _log_gui_change(self, field: str, value):
+        """Log a GUI setting change."""
+        self.log(f"Setting changed: {field} = {value!r}")
+
+    def _open_app_session_log(self):
+        """Open the app-level session log file for the lifetime of this
+        process, at a fixed location independent of any run."""
+        try:
+            logs_dir = _logs_path()
+            logs_dir.mkdir(parents=True, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            self._app_session_log_path = str(logs_dir / f"session_{timestamp}.log")
+            self._app_session_log_file = open(self._app_session_log_path, "a", encoding="utf-8")
+            faulthandler.enable(file=self._app_session_log_file, all_threads=True)
+        except Exception:
+            self._app_session_log_file = None
+            self._app_session_log_path = None
+
+    def _close_app_session_log(self):
+        if self._app_session_log_file:
+            try:
+                self._app_session_log_file.close()
+            except Exception:
+                pass
+        self._app_session_log_file = None
+
+    def _copy_app_log_to(self, target_dir: str):
+        """Copy the app-level session log's current contents (everything
+        logged since app launch, including any pre-Start activity) into
+        `target_dir` (output directory where run.log is written)
+        as session.log, without disturbing the live file, which keeps being
+        written at its original _logs_path() location (see _open_app_log).
+
+        Called twice per run: right after Start (so even a crash mid-run
+        still leaves that run's folder with everything up to when it began)
+        and again at Stop (so a clean run ends up with the fully up-to-date log)."""
+        if not self._app_session_log_file or not self._app_session_log_path:
+            return
+        try:
+            self._app_session_log_file.flush()
+        except Exception:
+            pass
+        try:
+            os.makedirs(target_dir, exist_ok=True)
+            shutil.copyfile(self._app_session_log_path, os.path.join(target_dir, "session.log"))
+        except Exception as exc:
+            self.log(f"Could not copy session log to {target_dir}: {exc}", loglevel="WARNING")
+
+    def closeEvent(self, event):
+        # Logged unconditionally, on every close path (the "Close app" button,
+        # the window's native close control, or any other call to close()).
+        # Distinguishes a graceful shutdown from a crash: 
+        # if the log simply stops with no matching line here, that means
+        # the app went down some other way (native crash, force-kill).
+        self.log("Closing app.")
+        if self._recording_active and self.controller:
+            self.log(
+                "App closing while a recording was still active; stopping it first.",
+                loglevel="WARNING",
+            )
+            try:
+                self.controller.stop()
+                self._copy_app_log_to(self.controller.outdir)
+            except Exception as exc:
+                self.log(f"Error stopping recording during app close: {exc}", loglevel="ERROR")
+        self._close_run_log()
+        self._close_app_session_log()
+        super().closeEvent(event)
+
+    def on_close_app(self):
+        if self._recording_active:
+            confirm = QMessageBox.question(
+                self,
+                "Close app",
+                "A recording is currently active. Stop it and close the app?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if confirm != QMessageBox.StandardButton.Yes:
+                return
+        self.log("Close app button clicked by user.")
+        self.close()
+
     def _open_run_log(self):
         self._close_run_log()
         if not self.controller:
             return
         try:
             self._log_path = os.path.join(self.controller.outdir, "run.log")
-            self._log_file = open(self._log_path, "a", encoding="utf-8")
+            self._run_log_file = open(self._log_path, "a", encoding="utf-8")
         except Exception as exc:
-            self._log_file = None
+            self._run_log_file = None
             self._log_path = None
             self.log(f"Could not open run log: {exc}", loglevel="WARNING")
 
     def _close_run_log(self):
-        if self._log_file:
+        if self._run_log_file:
             try:
-                self._log_file.close()
+                self._run_log_file.close()
             except Exception:
                 pass
-        self._log_file = None
+        self._run_log_file = None
         self._log_path = None
 
     def _ensure_progress_dialog(self, title: str, message: str) -> QProgressDialog:
@@ -481,6 +627,7 @@ class MainWindow(QMainWindow):
         self.audio_device.blockSignals(False)
 
     def _on_audio_device_changed(self, _index: int):
+        self._log_gui_change("Audio.Device", self.audio_device.currentText())
         self._refresh_audio_capabilities()
 
     def _refresh_audio_capabilities(
@@ -593,6 +740,7 @@ class MainWindow(QMainWindow):
         panel.capabilitiesLoadFinished.connect(self._refresh_previews_from_panels)
         panel.capabilitiesLoadProgress.connect(self._on_caps_load_progress)
         panel.removeRequested.connect(self._on_remove_camera)
+        panel.log.connect(self.log)
         self.cam_panels.append(panel)
         self.tabs.addTab(panel, f"Camera {len(self.cam_panels)}")
         self._update_add_camera_button()
@@ -662,6 +810,7 @@ class MainWindow(QMainWindow):
             self.cfg = load_cfg(path)
             self._apply_cfg_to_gui()
             self.log(f"Loaded config: {path}")
+            self.log(build_config_log_payload("config_loaded", self.cfg))
         except Exception as e:
             QMessageBox.critical(self, "Load failed", str(e))
 
@@ -782,6 +931,8 @@ class MainWindow(QMainWindow):
                 preview_frame_cb=self.preview_frame_signal.emit,
             )
             self._open_run_log()
+            self._copy_app_log_to(self.controller.outdir)
+            self.log(build_config_log_payload("recording_started", self.cfg))
             self.controller.start()
             self.btn_start.setEnabled(False)
             self.btn_stop.setEnabled(True)
@@ -807,6 +958,7 @@ class MainWindow(QMainWindow):
             self.preview_mgr.stop_all_previews()
             self.controller.stop()
             outdir = os.path.abspath(self.controller.outdir)
+            self._copy_app_log_to(outdir)
             msg = f"Results written to:\n{outdir}\n\nClose the app now?"
             confirm = QMessageBox.question(
                 self,
@@ -858,6 +1010,7 @@ class MainWindow(QMainWindow):
         test_cfg = copy.deepcopy(self.cfg)
         test_cfg.Output.StudyRoot = tempfile.mkdtemp(prefix="lsl_av_recorder_test_")
 
+        self.log(build_config_log_payload("test_recording_started", self.cfg))
         self.preview_mgr.stop_all_previews()
         self.btn_start.setEnabled(False)
         self.btn_test_recording.setEnabled(False)
@@ -1014,37 +1167,53 @@ class MainWindow(QMainWindow):
             self.log("LabRecorder RCS disconnected")
 
     def on_discover_lsl_streams(self):
-        self.lsl_streams_table.setRowCount(0)
+        # Population below fires itemChanged per cell
+        # block signals so _on_lsl_stream_item_changed only reacts
+        # to genuine user clicks, not this programmatic (re)population
+        self.lsl_streams_table.blockSignals(True)
         try:
-            from pylsl import resolve_streams
-            streams = _exclude_camera_preview_streams(resolve_streams(wait_time=2.0))
-            if not streams:
-                self.lsl_streams_table.setRowCount(0)
-                return
-            self.lsl_streams_table.setRowCount(len(streams))
-            for row, stream in enumerate(streams):
-                chk = QTableWidgetItem()
-                chk.setCheckState(Qt.CheckState.Unchecked)
-                chk.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
-                chk.setData(Qt.ItemDataRole.UserRole, stream)
-                self.lsl_streams_table.setItem(row, 0, chk)
-
-                values = [
-                    stream.name(),
-                    stream.type(),
-                    str(stream.channel_count()),
-                    str(stream.nominal_srate()),
-                    stream.source_id(),
-                    stream.uid(),
-                    stream.hostname(),
-                ]
-                for col, val in enumerate(values, start=1):
-                    item = QTableWidgetItem(val)
-                    item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-                    self.lsl_streams_table.setItem(row, col, item)
-        except Exception as e:
             self.lsl_streams_table.setRowCount(0)
-            QMessageBox.critical(self, "LSL stream discovery failed", str(e))
+            try:
+                from pylsl import resolve_streams
+                streams = _exclude_camera_preview_streams(resolve_streams(wait_time=2.0))
+                if not streams:
+                    self.lsl_streams_table.setRowCount(0)
+                    return
+                self.lsl_streams_table.setRowCount(len(streams))
+                for row, stream in enumerate(streams):
+                    chk = QTableWidgetItem()
+                    chk.setCheckState(Qt.CheckState.Unchecked)
+                    chk.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
+                    chk.setData(Qt.ItemDataRole.UserRole, stream)
+                    self.lsl_streams_table.setItem(row, 0, chk)
+
+                    values = [
+                        stream.name(),
+                        stream.type(),
+                        str(stream.channel_count()),
+                        str(stream.nominal_srate()),
+                        stream.source_id(),
+                        stream.uid(),
+                        stream.hostname(),
+                    ]
+                    for col, val in enumerate(values, start=1):
+                        item = QTableWidgetItem(val)
+                        item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                        self.lsl_streams_table.setItem(row, col, item)
+            except Exception as e:
+                self.lsl_streams_table.setRowCount(0)
+                QMessageBox.critical(self, "LSL stream discovery failed", str(e))
+        finally:
+            self.lsl_streams_table.blockSignals(False)
+        self.log(f"Discovered {self.lsl_streams_table.rowCount()} LSL stream(s)")
+
+    def _on_lsl_stream_item_changed(self, item: QTableWidgetItem):
+        if item.column() != 0:
+            return
+        stream = item.data(Qt.ItemDataRole.UserRole)
+        name = stream.name() if stream is not None else "?"
+        checked = item.checkState() == Qt.CheckState.Checked
+        self._log_gui_change(f"LSL stream selected for recording <{name}>", checked)
 
     def _get_selected_lsl_streams(self):
         selected: List[StreamInfo] = []

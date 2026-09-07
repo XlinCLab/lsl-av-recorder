@@ -1,8 +1,10 @@
 import logging
+import platform
 import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Dict
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
@@ -49,6 +51,17 @@ def _extract_default(text: str, name: str):
     if not m:
         return None
     return int(m.group(1))
+
+
+def get_environment_info(root: Path) -> Dict[str, str]:
+    """Identify the exact code and machine a session ran on:
+    git commit, OS/platform description, hostname, and Python version."""
+    return {
+        "commit": get_commit_hash(root),
+        "platform": platform.platform(),
+        "hostname": platform.node(),
+        "python_version": platform.python_version(),
+    }
 
 
 def get_commit_hash(root: Path) -> str:

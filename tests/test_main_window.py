@@ -1,8 +1,13 @@
 """Tests for the pure logic in recorder.gui.main_window that does not require running QApplication."""
 from __future__ import annotations
 
+import json
+
+from recorder.config import AppConfig, VideoCamConfig
+from recorder.gui import main_window
 from recorder.gui.camera_worker import CAMERA_PREVIEW_STREAM_TYPE
-from recorder.gui.main_window import _exclude_camera_preview_streams
+from recorder.gui.main_window import (_exclude_camera_preview_streams,
+                                      build_config_log_payload)
 from tests.shared import MARKER_STREAM_NAME
 
 
@@ -39,3 +44,44 @@ def test_keeps_non_preview_streams_unchanged():
         FakeStream(name="EEG", stype="EEG"),
     ]
     assert _exclude_camera_preview_streams(streams) == streams
+
+
+# ---------------------------------------------------------------------------
+# build_config_log_payload
+# ---------------------------------------------------------------------------
+
+def test_build_config_log_payload_is_valid_json_with_expected_shape(monkeypatch):
+    """The logged payload is valid JSON carrying the event label, environment
+    info, and the full config -- so a single log line is self-contained and
+    self-identifying (no need to cross-reference a separate line/file)."""
+    fake_env = {
+        "commit": "abc123def456",
+        "platform": "macOS-test",
+        "hostname": "test-host",
+        "python_version": "3.12.0",
+    }
+    monkeypatch.setattr(
+        main_window,
+        "get_environment_info",
+        lambda root: fake_env,
+    )
+    cfg = AppConfig()
+    cfg.Prompts.Subject = "01"
+    event = "recording_started"
+    line = build_config_log_payload(event, cfg)
+    parsed = json.loads(line)
+
+    assert parsed["event"] == event
+    assert parsed["environment"] == fake_env
+    assert parsed["config"]["Prompts"]["Subject"] == "01"
+
+
+def test_build_config_log_payload_serializes_full_nested_config(monkeypatch):
+    """Nested dataclasses (e.g. per-camera configs) round-trip through JSON."""
+    monkeypatch.setattr(main_window, "get_environment_info", lambda root: {})
+    cfg = AppConfig()
+    cfg.Video.Cams = [VideoCamConfig(Label="Face", FPS=30)]
+
+    parsed = json.loads(build_config_log_payload("config_loaded", cfg))
+    assert parsed["config"]["Video"]["Cams"][0]["Label"] == "Face"
+    assert parsed["config"]["Video"]["Cams"][0]["FPS"] == 30
