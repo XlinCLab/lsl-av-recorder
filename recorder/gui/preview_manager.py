@@ -57,6 +57,7 @@ class PreviewManager(QObject):
             hue=cam_cfg.Hue,
             saturation=cam_cfg.Saturation,
             pixel_format=cam_cfg.PixelFormat,
+            device_name=cam_cfg.DeviceName,
         )
         thread = QThread()
         worker.moveToThread(thread)

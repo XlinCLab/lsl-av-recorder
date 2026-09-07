@@ -9,6 +9,7 @@ from pylsl import local_clock
 
 from .color_adjust import apply_color_adjustments
 from .constants import DEFAULT_BRIGHTNESS, DEFAULT_HUE, DEFAULT_SATURATION
+from .devices import resolve_cv2_device_index
 
 
 class VideoRecorder:
@@ -129,7 +130,10 @@ class VideoRecorder:
 
     def start(self):
         if sys.platform == "darwin":
-            self.cap = cv2.VideoCapture(self.cam.DeviceIndex, cv2.CAP_AVFOUNDATION)
+            cv2_index = resolve_cv2_device_index(
+                getattr(self.cam, "DeviceName", None), self.cam.DeviceIndex
+            )
+            self.cap = cv2.VideoCapture(cv2_index, cv2.CAP_AVFOUNDATION)
         elif sys.platform.startswith("linux"):
             source = self.cam.DevNode if getattr(self.cam, "DevNode", "") else self.cam.DeviceIndex
             self.cap = cv2.VideoCapture(source, cv2.CAP_V4L2)

@@ -13,6 +13,7 @@ from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
 from ..video.color_adjust import apply_color_adjustments
 from ..video.constants import (DEFAULT_BRIGHTNESS, DEFAULT_HUE,
                                DEFAULT_SATURATION)
+from ..video.devices import resolve_cv2_device_index
 
 # LSL stream type published by CameraWorker's preview outlet
 CAMERA_PREVIEW_STREAM_TYPE = "VideoFrame"
@@ -43,11 +44,13 @@ class CameraWorker(QObject):
         hue: Optional[int] = None,
         saturation: Optional[int] = None,
         pixel_format: Optional[str] = None,
+        device_name: Optional[str] = None,
     ):
         super().__init__()
         self.cam_index = int(cam_index)
         self.devnode = devnode
         self.label = label
+        self.device_name = device_name
         self.fps = int(fps)
         self.w, self.h = int(size[0]), int(size[1])
         self.preview_fps = max(1, int(preview_fps))
@@ -88,7 +91,8 @@ class CameraWorker(QObject):
 
     def _open_cap(self):
         if sys.platform == "darwin":  # MacOS
-            self.cap = cv2.VideoCapture(self.cam_index, cv2.CAP_AVFOUNDATION)
+            cv2_index = resolve_cv2_device_index(self.device_name, self.cam_index)
+            self.cap = cv2.VideoCapture(cv2_index, cv2.CAP_AVFOUNDATION)
         elif sys.platform.startswith("linux"):
             source = self.devnode if self.devnode else self.cam_index
             self.cap = cv2.VideoCapture(source, cv2.CAP_V4L2)

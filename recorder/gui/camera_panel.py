@@ -667,6 +667,24 @@ class CameraPanel(QWidget):
             self._update_resolution_choices_for_selected_fps(prefer_current=True)
         self.previewConfigChanged.emit()
 
+    @staticmethod
+    def _resolve_device_identity_by_name(
+        name: Optional[str], fallback_index: int, fallback_devnode: str
+    ) -> tuple[int, str]:
+        """On macOS, resolve the current index/devnode for a device by
+        name via a fresh list_video_devices() query, rather than trusting
+        self.device_index/self.devnode, which only reflect whatever
+        list_video_devices() returned the last time the combo box was
+        populated or changed. Falls back to the given values if no device
+        with this name is found (or off Mac)."""
+        if not IS_MAC or not name:
+            # Skip if non-MacOS or no device name provided 
+            return fallback_index, fallback_devnode
+        for dev in list_video_devices():
+            if str(dev.get("name")) == name:
+                return int(dev.get("index", fallback_index)), str(dev.get("devnode") or fallback_devnode)
+        return fallback_index, fallback_devnode
+
     def refresh_capabilities(self):
         if self._caps_loading:
             return
@@ -678,6 +696,7 @@ class CameraPanel(QWidget):
             device_name = str(dev_info.get("name") or "").strip() or None
         if not device_name:
             device_name = self._device_name
+        idx, dev = self._resolve_device_identity_by_name(device_name, idx, dev)
         self._caps_loading = True
         # Logged as its own event before the probe starts,
         # so if the app goes down mid-probe,
@@ -921,13 +940,9 @@ class CameraPanel(QWidget):
         c.DeviceIndex = int(self.device_index.value())
         c.DevNode = self.devnode.text().strip()
         c.DeviceName = self._device_name
-        if IS_MAC and c.DeviceName:
-            devices = list_video_devices()
-            for dev in devices:
-                if str(dev.get("name")) == c.DeviceName:
-                    c.DeviceIndex = int(dev.get("index", c.DeviceIndex))
-                    c.DevNode = str(dev.get("devnode") or c.DevNode)
-                    break
+        c.DeviceIndex, c.DevNode = self._resolve_device_identity_by_name(
+            c.DeviceName, c.DeviceIndex, c.DevNode
+        )
         c.Label = self.label.text().strip()
         c.FPS = int(self.fps.currentData() or DEFAULT_CAMERA_FPS)
         width, height = self._selected_resolution()

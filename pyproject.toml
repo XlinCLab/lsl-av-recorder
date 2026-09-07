@@ -12,6 +12,7 @@ dependencies = [
   "pylsl>=1.16.2",
   "numpy>=1.24",
   "opencv-python>=4.8",
+  "cv2-enumerate-cameras>=1.3.3",
   "sounddevice>=0.4.6",
   "PyQt6>=6.5",
   "pygrabber>=0.2; sys_platform == 'win32'",
