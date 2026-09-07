@@ -977,6 +977,7 @@ class MainWindow(QMainWindow):
         test_cfg = copy.deepcopy(self.cfg)
         test_cfg.Output.StudyRoot = tempfile.mkdtemp(prefix="lsl_av_recorder_test_")
 
+        self.log(build_config_log_payload("test_recording_started", self.cfg))
         self.preview_mgr.stop_all_previews()
         self.btn_start.setEnabled(False)
         self.btn_test_recording.setEnabled(False)
