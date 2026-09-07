@@ -667,20 +667,22 @@ class CameraPanel(QWidget):
             self._update_resolution_choices_for_selected_fps(prefer_current=True)
         self.previewConfigChanged.emit()
 
-    @staticmethod
     def _resolve_device_identity_by_name(
-        name: Optional[str], fallback_index: int, fallback_devnode: str
+        self,
+        name: Optional[str],
+        fallback_index: int,
+        fallback_devnode: str,
     ) -> tuple[int, str]:
-        """On macOS, resolve the current index/devnode for a device by
-        name via a fresh list_video_devices() query, rather than trusting
-        self.device_index/self.devnode, which only reflect whatever
-        list_video_devices() returned the last time the combo box was
-        populated or changed. Falls back to the given values if no device
-        with this name is found (or off Mac)."""
+        """On macOS, resolve the current index/devnode for a device by name
+        against `devices` (this panel's cached device list from the last
+        populate/refresh), rather than trusting self.device_index/self.devnode as-is.
+
+        Falls back to the given values if no device with this name is found
+        in `devices` (or off Mac)."""
         if not IS_MAC or not name:
             # Skip if non-MacOS or no device name provided 
             return fallback_index, fallback_devnode
-        for dev in list_video_devices():
+        for dev in self._video_devices:
             if str(dev.get("name")) == name:
                 return int(dev.get("index", fallback_index)), str(dev.get("devnode") or fallback_devnode)
         return fallback_index, fallback_devnode

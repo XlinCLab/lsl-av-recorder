@@ -66,24 +66,33 @@ FAKE_DEVICES = [
 ]
 
 
+class _FakePanel:
+    """Minimal stand-in exposing just the instance state
+    _resolve_device_identity_by_name reads (self._video_devices), so it can
+    be exercised without instantiating a real CameraPanel/QApplication."""
+
+    def __init__(self, devices):
+        self._video_devices = devices
+
+
 def test_resolve_device_identity_by_name_finds_current_index(monkeypatch):
-    """Resolves to whatever index/devnode list_video_devices() currently
+    """Resolves to whatever index/devnode the panel's cached device list
     reports for this name, not the fallback."""
     monkeypatch.setattr(camera_panel_module, "IS_MAC", True)
-    monkeypatch.setattr(camera_panel_module, "list_video_devices", lambda: FAKE_DEVICES)
+    panel = _FakePanel(FAKE_DEVICES)
 
-    idx, devnode = CameraPanel._resolve_device_identity_by_name("External Webcam", 0, "0")
+    idx, devnode = CameraPanel._resolve_device_identity_by_name(panel, "External Webcam", 0, "0")
     assert (idx, devnode) == (1, "1")
 
 
 def test_resolve_device_identity_by_name_falls_back_when_not_found(monkeypatch):
-    """A name no longer present in the current device list (e.g. unplugged)
-    falls back to the given values rather than raising or silently picking
-    a different device."""
+    """A name not present in the cached device list (e.g. unplugged, or
+    connected since the list was last cached) falls back to the given
+    values rather than raising or silently picking a different device."""
     monkeypatch.setattr(camera_panel_module, "IS_MAC", True)
-    monkeypatch.setattr(camera_panel_module, "list_video_devices", lambda: FAKE_DEVICES)
+    panel = _FakePanel(FAKE_DEVICES)
 
-    idx, devnode = CameraPanel._resolve_device_identity_by_name("Unplugged Cam", 7, "7")
+    idx, devnode = CameraPanel._resolve_device_identity_by_name(panel, "Unplugged Cam", 7, "7")
     assert (idx, devnode) == (7, "7")
 
 
@@ -91,24 +100,31 @@ def test_resolve_device_identity_by_name_falls_back_without_name(monkeypatch):
     """No name to match against (e.g. a brand-new default panel) means no
     lookup is attempted; the fallback is returned as-is."""
     monkeypatch.setattr(camera_panel_module, "IS_MAC", True)
-    called = []
-    monkeypatch.setattr(
-        camera_panel_module, "list_video_devices", lambda: called.append(1) or FAKE_DEVICES
-    )
+    panel = _FakePanel(FAKE_DEVICES)
 
-    idx, devnode = CameraPanel._resolve_device_identity_by_name(None, 3, "3")
+    idx, devnode = CameraPanel._resolve_device_identity_by_name(panel, None, 3, "3")
     assert (idx, devnode) == (3, "3")
-    assert not called
 
 
 def test_resolve_device_identity_by_name_skipped_off_mac(monkeypatch):
     """This re-resolution only applies on macOS; elsewhere the fallback is trusted as-is."""
     monkeypatch.setattr(camera_panel_module, "IS_MAC", False)
-    called = []
-    monkeypatch.setattr(
-        camera_panel_module, "list_video_devices", lambda: called.append(1) or FAKE_DEVICES
-    )
+    panel = _FakePanel(FAKE_DEVICES)
 
-    idx, devnode = CameraPanel._resolve_device_identity_by_name("External Webcam", 5, "/dev/video5")
+    idx, devnode = CameraPanel._resolve_device_identity_by_name(panel, "External Webcam", 5, "/dev/video5")
     assert (idx, devnode) == (5, "/dev/video5")
-    assert not called
+
+
+def test_resolve_device_identity_by_name_does_not_query_live(monkeypatch):
+    """This must resolve purely against the panel's cached _video_devices --
+    never fall back to a fresh list_video_devices() subprocess call."""
+    monkeypatch.setattr(camera_panel_module, "IS_MAC", True)
+
+    def boom():
+        raise AssertionError("list_video_devices() must not be called here")
+
+    monkeypatch.setattr(camera_panel_module, "list_video_devices", boom)
+    panel = _FakePanel(FAKE_DEVICES)
+
+    idx, devnode = CameraPanel._resolve_device_identity_by_name(panel, "External Webcam", 0, "0")
+    assert (idx, devnode) == (1, "1")
