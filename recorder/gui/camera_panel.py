@@ -138,7 +138,7 @@ class _ValidateModeThread(QThread):
 
 
 class CameraPanel(QWidget):
-    log = pyqtSignal(str)
+    log = pyqtSignal(str, str)
     previewConfigChanged = pyqtSignal()
     removeRequested = pyqtSignal(object)
     applyStarted = pyqtSignal()
@@ -238,10 +238,25 @@ class CameraPanel(QWidget):
         self.btn_remove.clicked.connect(lambda: self.removeRequested.emit(self))
         self.device_name.currentIndexChanged.connect(self._on_device_name_selected)
         self._selected_device_key = self._device_key(self.device_name.currentData())
-        self.enabled.toggled.connect(lambda _: self.previewConfigChanged.emit())
+        self.enabled.toggled.connect(self._on_enabled_toggled)
         self.fps.currentIndexChanged.connect(self._on_fps_changed)
         self.resolution.currentIndexChanged.connect(self._on_resolution_changed)
         self.pixel_format.currentIndexChanged.connect(self._on_pixel_format_changed)
+
+    def _tag(self) -> str:
+        """Short prefix identifying which camera panel a log message is
+        about, since several panels can share the same shared log stream."""
+        return f"Camera <{self.label.text().strip() or '?'}> (index={self.device_index.value()})"
+
+    def _log(self, msg: str, loglevel: str = "INFO"):
+        """Log to this panel's own local text box and emit it up
+        to MainWindow so it also reaches the persistent app/run logs."""
+        self.text.append(f"{loglevel}: {msg}")
+        self.log.emit(f"{self._tag()}: {msg}", loglevel)
+
+    def _on_enabled_toggled(self, checked: bool):
+        self._log(f"Enabled = {checked}")
+        self.previewConfigChanged.emit()
 
     def _init_fps(self, fps: int) -> QComboBox:
         widget = QComboBox()
@@ -612,15 +627,18 @@ class CameraPanel(QWidget):
         self._populate_video_devices(preferred_index, preferred_devnode, preferred_name)
 
     def _on_fps_changed(self):
+        self._log(f"FPS changed to {self.fps.currentData()}")
         self._update_resolution_choices_for_selected_fps(prefer_current=False)
         self.previewConfigChanged.emit()
 
     def _on_resolution_changed(self):
+        self._log(f"Resolution changed to {self.resolution.currentText()}")
         if self._modes:
             self._update_fps_choices_for_selected_resolution(prefer_current=True)
         self.previewConfigChanged.emit()
 
     def _on_pixel_format_changed(self):
+        self._log(f"Pixel format changed to {self.pixel_format.currentText()}")
         if self._modes or self._modes_by_format:
             self._mode_support_cache.clear()
             self._set_modes_for_pixel_format(self.pixel_format.currentText())
@@ -640,6 +658,10 @@ class CameraPanel(QWidget):
         if not device_name:
             device_name = self._device_name
         self._caps_loading = True
+        # Logged as its own event before the probe starts,
+        # so if the app goes down mid-probe,
+        # the log still shows exactly which device/step was being probed.
+        self._log(f"Starting capability refresh for [{idx}] {device_name or '?'} (devnode={dev})")
         self.capabilitiesLoadStarted.emit()
 
         thread = _CapabilitiesThread(dev, idx, device_name, parent=self)
@@ -723,7 +745,7 @@ class CameraPanel(QWidget):
                     self._update_fps_choices_for_selected_resolution(prefer_current=True)
         else:
             self.pixel_format.setEnabled(False)
-            self.text.append("INFO: Could not determine supported pixel formats for this device")
+            self._log("Could not determine supported pixel formats for this device", loglevel="WARNING")
 
         brightness_range = caps.get("brightness_range")
         brightness_default = caps.get("brightness_default")
@@ -792,6 +814,14 @@ class CameraPanel(QWidget):
             }
 
         self.setUpdatesEnabled(True)
+        self._log(
+            "Capabilities loaded "
+            f"(from_cache={self._caps_from_cache}): {len(self._modes)} mode(s), "
+            f"pixel_formats={sorted({str(f).upper() for f in (caps.get('pixel_formats') or [])})}, "
+            f"fps={sorted({int(v) for v in (caps.get('fps') or []) if int(v) > 0})}, "
+            f"auto_exposure={bool(caps.get('supports_auto_exposure'))}, "
+            f"auto_focus={bool(caps.get('supports_auto_focus'))}"
+        )
         self._finish_capabilities_load()
         self._kickoff_cached_validation()
 
@@ -847,7 +877,7 @@ class CameraPanel(QWidget):
         self.previewConfigChanged.emit()
 
     def _on_capabilities_error(self, msg: str):
-        self.text.append(f"ERROR: Failed to refresh capabilities: {msg}")
+        self._log(f"Failed to refresh capabilities: {msg}", loglevel="ERROR")
         self._finish_capabilities_load()
 
     def _on_capabilities_progress(self, pct: int, msg: str):
@@ -896,12 +926,13 @@ class CameraPanel(QWidget):
         controls = self.build_controls()
 
         if not controls:
-            self.text.append("No controls to apply")
+            self._log("No controls to apply")
             return
 
         if self._apply_loading:
             return
         self._apply_loading = True
+        self._log(f"Applying settings: {controls}")
         self.applyStarted.emit()
 
         thread = _ApplyControlsThread(
@@ -922,7 +953,7 @@ class CameraPanel(QWidget):
             rep.get("failed", {}),
             rep.get("unverified", {}),
         )
-        self.text.append(summary)
+        self._log(summary)
         failed = rep.get("failed", {})
         if failed:
             failed_items = "\n".join(f"• {k} = {v}" for k, v in failed.items())
@@ -935,7 +966,7 @@ class CameraPanel(QWidget):
         self._finish_apply()
 
     def _on_apply_error(self, msg: str):
-        self.text.append(f"ERROR: Failed to apply settings: {msg}")
+        self._log(f"Failed to apply settings: {msg}", loglevel="ERROR")
         self._finish_apply()
 
     def _finish_apply(self):

@@ -16,8 +16,8 @@ from ..video.constants import (CAMERA_CONTROL_EXPOSURE,
                                CAMERA_CONTROL_FOCUS, COMMON_FPS_VALUES,
                                DEFAULT_BRIGHTNESS, DEFAULT_HUE,
                                DEFAULT_SATURATION, VIDEO_PROC_AMP_BRIGHTNESS,
-                               VIDEO_PROC_AMP_FLAGS_MANUAL,
-                               VIDEO_PROC_AMP_HUE, VIDEO_PROC_AMP_SATURATION)
+                               VIDEO_PROC_AMP_FLAGS_MANUAL, VIDEO_PROC_AMP_HUE,
+                               VIDEO_PROC_AMP_SATURATION)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)

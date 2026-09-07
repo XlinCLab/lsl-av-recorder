@@ -186,6 +186,14 @@ class MainWindow(QMainWindow):
         self._populate_audio_devices()
         self._refresh_audio_capabilities()
         self.audio_device.currentIndexChanged.connect(self._on_audio_device_changed)
+        self.audio_enabled.toggled.connect(lambda checked: self._log_gui_change("Audio.Enabled", checked))
+        self.audio_sr.currentIndexChanged.connect(
+            lambda _i: self._log_gui_change("Audio.SampleRate", self.audio_sr.currentData())
+        )
+        self.audio_bit.currentIndexChanged.connect(
+            lambda _i: self._log_gui_change("Audio.BitDepth", self.audio_bit.currentData())
+        )
+        self.audio_ch.valueChanged.connect(lambda v: self._log_gui_change("Audio.Channels", v))
 
         self.audio_stream_name = QLineEdit(getattr(self.cfg.Audio, "StreamName", "Audio") or "Audio")
 
@@ -226,6 +234,18 @@ class MainWindow(QMainWindow):
         bf.addRow("When full", self.writer_drop_policy)
         buffering_widget.setLayout(bf)
         self.tabs.addTab(buffering_widget, "Buffering")
+        self.audio_buffer_seconds.valueChanged.connect(
+            lambda v: self._log_gui_change("Buffering.AudioBufferSeconds", v)
+        )
+        self.video_buffer_frames.valueChanged.connect(
+            lambda v: self._log_gui_change("Buffering.VideoBufferFrames", v)
+        )
+        self.writer_queue_size.valueChanged.connect(
+            lambda v: self._log_gui_change("Buffering.WriterQueueSize", v)
+        )
+        self.writer_drop_policy.currentIndexChanged.connect(
+            lambda _i: self._log_gui_change("Buffering.WriterDropPolicy", self.writer_drop_policy.currentData())
+        )
 
         # LabRecorder tab
         labrec_widget = QWidget()
@@ -265,6 +285,9 @@ class MainWindow(QMainWindow):
         self.lsl_streams_table.horizontalHeader().setStretchLastSection(True)
         lf.addRow(self.lsl_discover_btn)
         lf.addRow(self.lsl_streams_table)
+        self.labrec_enabled.toggled.connect(lambda checked: self._log_gui_change("LabRecorder.Enabled", checked))
+        self.labrec_port.valueChanged.connect(lambda v: self._log_gui_change("LabRecorder.Port", v))
+        self.lsl_streams_table.itemChanged.connect(self._on_lsl_stream_item_changed)
 
         # Preview wall
         self.preview_panel = PreviewPanel()
@@ -386,6 +409,10 @@ class MainWindow(QMainWindow):
 
     def _on_debug_logs_changed(self, _state: int):
         self._show_debug = self.debug_logs.isChecked()
+
+    def _log_gui_change(self, field: str, value):
+        """Log a GUI setting change."""
+        self.log(f"Setting changed: {field} = {value!r}")
 
     def _open_app_session_log(self):
         """Open the app-level session log file for the lifetime of this
@@ -567,6 +594,7 @@ class MainWindow(QMainWindow):
         self.audio_device.blockSignals(False)
 
     def _on_audio_device_changed(self, _index: int):
+        self._log_gui_change("Audio.Device", self.audio_device.currentText())
         self._refresh_audio_capabilities()
 
     def _refresh_audio_capabilities(
@@ -679,6 +707,7 @@ class MainWindow(QMainWindow):
         panel.capabilitiesLoadFinished.connect(self._refresh_previews_from_panels)
         panel.capabilitiesLoadProgress.connect(self._on_caps_load_progress)
         panel.removeRequested.connect(self._on_remove_camera)
+        panel.log.connect(self.log)
         self.cam_panels.append(panel)
         self.tabs.addTab(panel, f"Camera {len(self.cam_panels)}")
         self._update_add_camera_button()
@@ -1104,37 +1133,53 @@ class MainWindow(QMainWindow):
             self.log("LabRecorder RCS disconnected")
 
     def on_discover_lsl_streams(self):
-        self.lsl_streams_table.setRowCount(0)
+        # Population below fires itemChanged per cell
+        # block signals so _on_lsl_stream_item_changed only reacts
+        # to genuine user clicks, not this programmatic (re)population
+        self.lsl_streams_table.blockSignals(True)
         try:
-            from pylsl import resolve_streams
-            streams = _exclude_camera_preview_streams(resolve_streams(wait_time=2.0))
-            if not streams:
-                self.lsl_streams_table.setRowCount(0)
-                return
-            self.lsl_streams_table.setRowCount(len(streams))
-            for row, stream in enumerate(streams):
-                chk = QTableWidgetItem()
-                chk.setCheckState(Qt.CheckState.Unchecked)
-                chk.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
-                chk.setData(Qt.ItemDataRole.UserRole, stream)
-                self.lsl_streams_table.setItem(row, 0, chk)
-
-                values = [
-                    stream.name(),
-                    stream.type(),
-                    str(stream.channel_count()),
-                    str(stream.nominal_srate()),
-                    stream.source_id(),
-                    stream.uid(),
-                    stream.hostname(),
-                ]
-                for col, val in enumerate(values, start=1):
-                    item = QTableWidgetItem(val)
-                    item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-                    self.lsl_streams_table.setItem(row, col, item)
-        except Exception as e:
             self.lsl_streams_table.setRowCount(0)
-            QMessageBox.critical(self, "LSL stream discovery failed", str(e))
+            try:
+                from pylsl import resolve_streams
+                streams = _exclude_camera_preview_streams(resolve_streams(wait_time=2.0))
+                if not streams:
+                    self.lsl_streams_table.setRowCount(0)
+                    return
+                self.lsl_streams_table.setRowCount(len(streams))
+                for row, stream in enumerate(streams):
+                    chk = QTableWidgetItem()
+                    chk.setCheckState(Qt.CheckState.Unchecked)
+                    chk.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
+                    chk.setData(Qt.ItemDataRole.UserRole, stream)
+                    self.lsl_streams_table.setItem(row, 0, chk)
+
+                    values = [
+                        stream.name(),
+                        stream.type(),
+                        str(stream.channel_count()),
+                        str(stream.nominal_srate()),
+                        stream.source_id(),
+                        stream.uid(),
+                        stream.hostname(),
+                    ]
+                    for col, val in enumerate(values, start=1):
+                        item = QTableWidgetItem(val)
+                        item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                        self.lsl_streams_table.setItem(row, col, item)
+            except Exception as e:
+                self.lsl_streams_table.setRowCount(0)
+                QMessageBox.critical(self, "LSL stream discovery failed", str(e))
+        finally:
+            self.lsl_streams_table.blockSignals(False)
+        self.log(f"Discovered {self.lsl_streams_table.rowCount()} LSL stream(s)")
+
+    def _on_lsl_stream_item_changed(self, item: QTableWidgetItem):
+        if item.column() != 0:
+            return
+        stream = item.data(Qt.ItemDataRole.UserRole)
+        name = stream.name() if stream is not None else "?"
+        checked = item.checkState() == Qt.CheckState.Checked
+        self._log_gui_change(f"LSL stream selected for recording <{name}>", checked)
 
     def _get_selected_lsl_streams(self):
         selected: List[StreamInfo] = []
