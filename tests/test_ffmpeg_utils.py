@@ -9,8 +9,8 @@ from recorder.video import ffmpeg_utils
 from recorder.video.ffmpeg_utils import (_build_mode_args,
                                          _parse_supported_modes,
                                          _pixel_format_probe_succeeded,
-                                         _probe_mac_supported_fps,
-                                         _probe_mac_supported_ui_formats)
+                                         _probe_mac_modes_by_format,
+                                         _probe_mac_supported_fps)
 
 SUPPORTED_MODES_TEXT = """
 [avfoundation @ 0x1] Supported modes:
@@ -150,38 +150,75 @@ def test_pixel_format_probe_succeeded_false_on_not_supported():
 
 
 # ---------------------------------------------------------------------------
-# _probe_mac_supported_ui_formats
+# _probe_mac_modes_by_format
 # ---------------------------------------------------------------------------
 
-def test_probe_mac_supported_ui_formats_returns_only_working_formats(monkeypatch):
-    """Only UI pixel formats whose probe succeeds are returned; formats that
-    report 'not supported' for every mode are dropped."""
-    modes = [(1280, 720, [30])]
+def test_probe_mac_modes_by_format_only_keeps_confirmed_combinations(monkeypatch):
+    """Every (resolution, fps) candidate is tested independently against
+    every pixel format: a format that only opens successfully for some of
+    a resolution's fps values must not have the others attributed to it."""
+    candidate_modes = [(1280, 720, [15, 30])]
 
     def fake_probe(device, extra_args):
-        # Only YUYV (yuyv422) probes cleanly; everything else "not supported"
+        # yuyv422 opens at both 15 and 30fps
         if "yuyv422" in extra_args:
             return True, "ok"
+        # mjpeg opens only at 30fps
+        if "mjpeg" in extra_args and "30" in extra_args:
+            return True, "ok"
+        # everything else fails to open
         return True, "pixel format not supported"
 
     monkeypatch.setattr(ffmpeg_utils, "_ffmpeg_avfoundation_probe", fake_probe)
-    result = _probe_mac_supported_ui_formats(device="0", modes=modes)
-    assert result == ["YUYV"]
+    result = _probe_mac_modes_by_format(device="0", candidate_modes=candidate_modes)
+    assert result == {"YUYV": [(1280, 720, [15, 30])], "MJPG": [(1280, 720, [30])]}
 
 
-def test_probe_mac_supported_ui_formats_reports_progress(monkeypatch):
-    """The progress callback is invoked and never reports a 'done' count that exceeds the declared total."""
-    modes = [(1280, 720, [30])]
+def test_probe_mac_modes_by_format_does_not_generalize_across_fps(monkeypatch):
+    """A format/resolution succeeding at one fps must NOT be assumed to succeed
+    at another fps that was never itself confirmed."""
+    candidate_modes = [(640, 480, [15, 30, 60])]
+
+    def fake_probe(device, extra_args):
+        # yuyv422 only opens at 30fps and 60fps; 15fps always fails for every format
+        if "yuyv422" in extra_args and "15" not in extra_args:
+            return True, "ok"
+        return False, "error"
+
+    monkeypatch.setattr(ffmpeg_utils, "_ffmpeg_avfoundation_probe", fake_probe)
+    result = _probe_mac_modes_by_format(device="0", candidate_modes=candidate_modes)
+    assert result == {"YUYV": [(640, 480, [30, 60])]}
+
+
+def test_probe_mac_modes_by_format_no_candidates_falls_back_to_default_fps(monkeypatch):
+    """With no candidate modes at all (e.g. AVFoundation's dump was empty),
+    a single default-fps probe is still attempted for each pixel format."""
+    seen_args = []
+
+    def fake_probe(device, extra_args):
+        seen_args.append(extra_args)
+        return True, "ok"
+
+    monkeypatch.setattr(ffmpeg_utils, "_ffmpeg_avfoundation_probe", fake_probe)
+    result = _probe_mac_modes_by_format(device="0", candidate_modes=[])
+    assert all("-video_size" not in args for args in seen_args)
+    assert set(result.keys()) == set(ffmpeg_utils.PIXEL_FORMAT_MAP.keys())
+
+
+def test_probe_mac_modes_by_format_reports_progress(monkeypatch):
+    """The progress callback is invoked once per (format, candidate) probe
+    and never reports a 'done' count that exceeds the declared total."""
+    candidate_modes = [(1280, 720, [30])]
     monkeypatch.setattr(
         ffmpeg_utils,
         "_ffmpeg_avfoundation_probe",
         lambda device, extra_args: (True, "ok"),
     )
     seen = []
-    _probe_mac_supported_ui_formats(
+    _probe_mac_modes_by_format(
         device="0",
-        modes=modes,
+        candidate_modes=candidate_modes,
         progress_cb=lambda done, total, fmt: seen.append((done, total, fmt)),
     )
-    assert len(seen) > 0
+    assert len(seen) == len(ffmpeg_utils.PIXEL_FORMAT_MAP)
     assert all(done <= total for done, total, _ in seen)

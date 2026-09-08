@@ -85,32 +85,37 @@ def _build_mode_args(width: int | None, height: int | None, fps: int) -> list[st
     return args
 
 
-def _probe_mac_supported_ui_formats(
+def _probe_mac_modes_by_format(
     device: str,
-    modes: List[Tuple[int, int, list[int]]] | None = None,
+    candidate_modes: List[Tuple[int, int, list[int]]] | None = None,
     progress_cb=None,
-) -> list[str]:
-    modes = modes if modes is not None else _get_supported_modes(device)
-    mode_probe_args: list[list[str]] = []
-    if modes:
-        for width, height, fps_values in modes:
+) -> dict[str, List[Tuple[int, int, list[int]]]]:
+    """Exhaustively verify every (resolution, fps) candidate against every
+    pixel format, by actually attempting to open the device at that exact
+    combination, and return only the combinations ffmpeg confirms it can
+    open, grouped by pixel format.
+    """
+    candidate_modes = (
+        candidate_modes if candidate_modes is not None else _get_supported_modes(device)
+    )
+    candidates: list[tuple[int | None, int | None, int]] = []
+    if candidate_modes:
+        for width, height, fps_values in candidate_modes:
             for fps in (fps_values or [DEFAULT_CAMERA_FPS]):
-                mode_probe_args.append(_build_mode_args(width, height, fps))
+                candidates.append((width, height, fps))
     else:
-        mode_probe_args.append(_build_mode_args(None, None, DEFAULT_CAMERA_FPS))
+        candidates.append((None, None, DEFAULT_CAMERA_FPS))
 
-    supported: list[str] = []
-    # Report progress per individual probe attempt (format x mode), not just
-    # once per pixel format, since a single format can require looping over
-    # many mode/fps combinations before it can be marked supported or not.
-    total_probes = max(1, len(PIXEL_FORMAT_MAP) * len(mode_probe_args))
+    # Report progress per individual probe attempt (format x candidate), since
+    # every candidate must be tested for every format; there is no shortcut
+    # that can skip any of them without risking a false "supported" result
+    total_probes = max(1, len(PIXEL_FORMAT_MAP) * len(candidates))
     completed = 0
+    verified: dict[str, dict[tuple[int | None, int | None], set[int]]] = {}
     for ui_fmt, ff_fmt in PIXEL_FORMAT_MAP.items():
-        for mode_args in mode_probe_args:
-            ok, text = _ffmpeg_avfoundation_probe(
-                device,
-                mode_args + ["-pixel_format", ff_fmt],
-            )
+        for width, height, fps in candidates:
+            args = _build_mode_args(width, height, fps) + ["-pixel_format", ff_fmt]
+            ok, text = _ffmpeg_avfoundation_probe(device, args)
             completed += 1
             if progress_cb:
                 try:
@@ -118,9 +123,17 @@ def _probe_mac_supported_ui_formats(
                 except Exception:
                     pass
             if _pixel_format_probe_succeeded(text, ok):
-                supported.append(ui_fmt)
-                break
-    return sorted(set(supported))
+                verified.setdefault(ui_fmt, {}).setdefault((width, height), set()).add(fps)
+
+    return {
+        fmt: [
+            (w, h, sorted(fps_values))
+            for (w, h), fps_values in sorted(
+                res_map.items(), key=lambda item: (item[0][0] or 0, item[0][1] or 0)
+            )
+        ]
+        for fmt, res_map in verified.items()
+    }
 
 
 def _probe_mac_supported_fps(modes: List[Tuple[int, int, list[int]]]) -> list[int]:
