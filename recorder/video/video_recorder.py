@@ -54,7 +54,11 @@ class VideoRecorder:
         self._fps_probe_frames = []
         self._fps_probe_min_frames = 10
         self._fps_probe_min_duration = 0.5
-        self._fps_probe_max_wait = 2.0
+        # Frames captured in this initial window are still buffered/written
+        # normally (nothing is lost), but excluded from the FPS measurement
+        # to avoid biasing based on the first few samples, which may have lower FPS
+        self._fps_probe_warmup = 1.0
+        self._fps_probe_max_wait = 3.5
         self._probe_logged = False
         self._read_fail_count = 0
         self._last_read_fail_log = None
@@ -93,11 +97,13 @@ class VideoRecorder:
         self.log(msg, loglevel="DEBUG")
 
     def _expected_fps(self) -> float:
-        if self.writer_fps is not None:
-            return float(self.writer_fps)
+        if self.cam.FPS:
+            return float(self.cam.FPS)
         if self._reported_fps is not None:
             return float(self._reported_fps)
-        return float(self.cam.FPS or 0.0)
+        if self.writer_fps is not None:
+            return float(self.writer_fps)
+        return 0.0
 
     def _maybe_warn_fps(self, inst_fps: float, now: float):
         expected = self._expected_fps()
@@ -228,7 +234,8 @@ class VideoRecorder:
                     if self._fps_probe_start is None:
                         self._fps_probe_start = now
                     self._fps_probe_frames.append(frame)
-                    self._fps_probe_times.append(now)
+                    if (now - self._fps_probe_start) >= self._fps_probe_warmup:
+                        self._fps_probe_times.append(now)
 
                     if self.writer_fps is None:
                         if len(self._fps_probe_times) >= self._fps_probe_min_frames:

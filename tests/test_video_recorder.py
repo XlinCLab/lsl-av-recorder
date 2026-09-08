@@ -61,22 +61,31 @@ def test_preview_interval_none_for_nonpositive_fps():
 # _expected_fps precedence
 # ---------------------------------------------------------------------------
 
-def test_expected_fps_prefers_writer_fps():
-    """writer_fps (the actual configured output rate) wins over everything else."""
+def test_expected_fps_prefers_configured_fps():
+    """cam.FPS (what the operator actually configured/expects) wins over
+    everything else -- deliberately NOT writer_fps, which is a short,
+    early-in-capture measurement used only so the VideoWriter's own
+    declared fps matches real elapsed time. A camera whose genuinely
+    achievable rate differs from what was configured should keep being
+    compared against the configured value for the whole recording, not
+    silently re-baseline to whatever writer_fps happened to measure."""
     rec = _recorder(fps=30)
     rec.writer_fps = 25.0
     rec._reported_fps = 60.0
-    assert rec._expected_fps() == 25.0
+    assert rec._expected_fps() == 30.0
 
 
-def test_expected_fps_falls_back_to_reported_then_config():
-    """Without writer_fps, the driver-reported fps is used; without that, the configured cam.FPS."""
-    rec = _recorder(fps=30)
-    rec.writer_fps = None
+def test_expected_fps_falls_back_to_reported_then_writer_fps():
+    """Without a configured cam.FPS, the driver-reported fps is used;
+    without that, the measured writer_fps as a last resort."""
+    rec = _recorder(fps=0)
     rec._reported_fps = 24.0
+    rec.writer_fps = 18.0
     assert rec._expected_fps() == 24.0
     rec._reported_fps = None
-    assert rec._expected_fps() == 30.0
+    assert rec._expected_fps() == 18.0
+    rec.writer_fps = None
+    assert rec._expected_fps() == 0.0
 
 
 # ---------------------------------------------------------------------------
