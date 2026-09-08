@@ -777,6 +777,7 @@ class MainWindow(QMainWindow):
         panel = self._add_camera_panel()
         if panel is not None:
             self.tabs.setCurrentWidget(panel)
+            self.log(f"Added camera tab: {panel.label.text().strip() or panel._default_label}")
         self._refresh_previews_from_panels()
 
     def _on_remove_camera(self, panel: CameraPanel):
@@ -785,6 +786,13 @@ class MainWindow(QMainWindow):
         if panel not in self.cam_panels:
             return
 
+        # Logged before the panel is actually torn down, so the log still
+        # shows which camera/device was removed even if something in the
+        # teardown itself goes wrong.
+        self.log(
+            f"Removing camera tab: {panel.label.text().strip() or panel._default_label} "
+            f"(device={panel._device_name or '?'}, index={panel.device_index.value()})"
+        )
         cam_index = self.cam_panels.index(panel)
         self.cam_panels.pop(cam_index)
         tab_index = self.tabs.indexOf(panel)
