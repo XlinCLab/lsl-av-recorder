@@ -761,15 +761,15 @@ class MainWindow(QMainWindow):
         existing_label = "" if is_new else cam_cfg.Label
         cam_cfg.Label = _default_camera_label(existing_label, len(self.cam_panels) + 1)
         panel = CameraPanel(cam_cfg, preselect_device=not is_new)
-        panel.applyStarted.connect(self.preview_mgr.stop_all_previews)
+        panel.applyStarted.connect(lambda p=panel: self._stop_preview_for_cam(p.to_config()))
         panel.applyStarted.connect(self._on_apply_started)
         panel.applyFinished.connect(self._on_apply_finished)
-        panel.applyFinished.connect(self._refresh_previews_from_panels)
+        panel.applyFinished.connect(lambda p=panel: self._start_preview_for_cam(p.to_config()))
         panel.previewConfigChanged.connect(self._refresh_previews_from_panels)
-        panel.capabilitiesLoadStarted.connect(self.preview_mgr.stop_all_previews)
+        panel.capabilitiesLoadStarted.connect(lambda p=panel: self._stop_preview_for_cam(p.to_config()))
         panel.capabilitiesLoadStarted.connect(self._on_caps_load_started)
         panel.capabilitiesLoadFinished.connect(self._on_caps_load_finished)
-        panel.capabilitiesLoadFinished.connect(self._refresh_previews_from_panels)
+        panel.capabilitiesLoadFinished.connect(lambda p=panel: self._start_preview_for_cam(p.to_config()))
         panel.capabilitiesLoadProgress.connect(self._on_caps_load_progress)
         panel.removeRequested.connect(self._on_remove_camera)
         panel.log.connect(self.log)
@@ -1018,6 +1018,12 @@ class MainWindow(QMainWindow):
             return False
         self.log(f"Stopping preview for camera {cam_cfg.Label} ({key})")
         return self.preview_mgr.stop_cam_preview(key)
+
+    def _start_preview_for_cam(self, cam_cfg: VideoCamConfig):
+        if not self.btn_start.isEnabled():
+            return
+        if getattr(cam_cfg, "Enabled", False):
+            self.preview_mgr.start_cam_preview(cam_cfg)
 
     def on_stop(self):
         try:
