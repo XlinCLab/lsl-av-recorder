@@ -91,7 +91,17 @@ class PreviewManager(QObject):
             self.start_cam_preview(cam_cfg)
 
     def on_frame(self, cam_index: int, frame_bgr):
-        lbl = self.main.preview_panel.ensure_label(int(cam_index))
+        idx = int(cam_index)
+        # A worker can emit one more frame after stop_preview() sets its
+        # _running flag False -- it may already be past that check, mid-loop,
+        # when the flag flips. That frame's frameReady signal is queued 
+        # and can be delivered here after this index has already been torn down
+        # or reassigned to a different camera, so it must be dropped rather
+        # than rendered. Otherwise, it resurrects a stale preview label 
+        # showing a frozen last frame.
+        if idx not in self.workers:
+            return
+        lbl = self.main.preview_panel.ensure_label(idx)
         h, w, ch = frame_bgr.shape
         rgb = frame_bgr[:, :, ::-1].copy()
         qimg = QImage(rgb.data, w, h, ch * w, QImage.Format.Format_RGB888)
