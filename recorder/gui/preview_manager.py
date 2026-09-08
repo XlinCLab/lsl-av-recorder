@@ -2,10 +2,30 @@ from __future__ import annotations
 
 from typing import Dict
 
-from PyQt6.QtCore import QObject, Qt, QThread
-from PyQt6.QtGui import QImage, QPixmap
+from PyQt6.QtCore import QObject, QRect, Qt, QThread
+from PyQt6.QtGui import QColor, QImage, QPainter, QPixmap
 
 from .camera_worker import CameraWorker, compute_preview_key
+
+
+def _draw_caption(pix: QPixmap, text: str) -> None:
+    """Burn a semi-transparent caption bar containing device label
+    into the bottom of a preview frame."""
+    if not text:
+        return
+    painter = QPainter(pix)
+    try:
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        bar_height = max(18, int(pix.height() * 0.12))
+        bar_rect = QRect(0, pix.height() - bar_height, pix.width(), bar_height)
+        painter.fillRect(bar_rect, QColor(0, 0, 0, 160))
+        painter.setPen(QColor(255, 255, 255))
+        font = painter.font()
+        font.setPointSize(max(9, bar_height // 2))
+        painter.setFont(font)
+        painter.drawText(bar_rect, Qt.AlignmentFlag.AlignCenter, text)
+    finally:
+        painter.end()
 
 
 def preview_key(cam_cfg) -> str:
@@ -102,7 +122,8 @@ class PreviewManager(QObject):
         # or reassigned to a different camera, so it must be dropped rather
         # than rendered. Otherwise, it resurrects a stale preview label
         # showing a frozen last frame.
-        if key not in self.workers:
+        worker = self.workers.get(key)
+        if worker is None:
             return
         lbl = self.main.preview_panel.ensure_label(key)
         h, w, ch = frame_bgr.shape
@@ -114,5 +135,6 @@ class PreviewManager(QObject):
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.FastTransformation,
         )
+        _draw_caption(pix, worker.label or key)
         lbl.setPixmap(pix)
         lbl.setText("")
