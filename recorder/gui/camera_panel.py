@@ -10,7 +10,6 @@ from PyQt6.QtWidgets import (QCheckBox, QComboBox, QFormLayout, QLineEdit,
 from ..config import VideoCamConfig
 from ..video.camera_settings import (apply_camera_controls,
                                      get_camera_capabilities,
-                                     probe_mac_mode_support,
                                      summarize_control_application)
 from ..video.constants import (BRIGHTNESS_RANGE, DEFAULT_BRIGHTNESS,
                                DEFAULT_CAMERA_FPS, DEFAULT_HUE,
@@ -80,63 +79,6 @@ class _ApplyControlsThread(QThread):
             self.failed.emit(str(exc))
 
 
-class _ValidateModeThread(QThread):
-    validated = pyqtSignal(object)
-
-    def __init__(
-        self,
-        devnode: str,
-        device_index: int,
-        pixel_format: str,
-        modes: list[tuple[int, int, set[int]]],
-        current_resolution: tuple[int, int],
-        current_fps: int,
-        parent: Optional[QWidget] = None,
-    ):
-        super().__init__(parent)
-        self._devnode = devnode
-        self._device_index = device_index
-        self._pixel_format = pixel_format
-        self._modes = [(int(w), int(h), {int(f) for f in fps}) for w, h, fps in modes]
-        self._current_resolution = (int(current_resolution[0]), int(current_resolution[1]))
-        self._current_fps = int(current_fps)
-
-    def _supports(self, w: int, h: int, fps: int) -> bool:
-        return probe_mac_mode_support(
-            devnode=self._devnode,
-            device_index=self._device_index,
-            width=int(w),
-            height=int(h),
-            fps=int(fps),
-            pixel_format=str(self._pixel_format),
-        )
-
-    def run(self):
-        if not IS_MAC or not self._modes:
-            self.validated.emit(None)
-            return
-        cw, ch = self._current_resolution
-        cfps = self._current_fps
-        try:
-            if self._supports(cw, ch, cfps):
-                self.validated.emit((cw, ch, cfps))
-                return
-            for mw, mh, fps_values in self._modes:
-                if mw == cw and mh == ch:
-                    for f in sorted(fps_values):
-                        if self._supports(mw, mh, f):
-                            self.validated.emit((mw, mh, f))
-                            return
-            for mw, mh, fps_values in self._modes:
-                for f in sorted(fps_values):
-                    if self._supports(mw, mh, f):
-                        self.validated.emit((mw, mh, f))
-                        return
-        except Exception:
-            pass
-        self.validated.emit(None)
-
-
 class CameraPanel(QWidget):
     log = pyqtSignal(str, str)
     previewConfigChanged = pyqtSignal()
@@ -148,6 +90,7 @@ class CameraPanel(QWidget):
     capabilitiesLoadProgress = pyqtSignal(int, str)
 
     _UNSELECTED_DEVICE_LABEL = "Select a camera..."
+    _UNSET_VALUE_LABEL = "Not set"
 
     def __init__(
         self,
@@ -158,13 +101,13 @@ class CameraPanel(QWidget):
         super().__init__(parent)
 
         self._default_resolution = (int(cam_cfg.Width), int(cam_cfg.Height))
-        self._modes: list[tuple[int, int, set[int]]] = []
         self._modes_by_format: dict[str, list[tuple[int, int, set[int]]]] = {}
-        self._mode_support_cache: dict[tuple[int, int, int, str], bool] = {}
+        # Flattened (pixel_format, width, height, fps) verified combinations
+        self._combos: list[tuple[str, int, int, int]] = []
+        self._combos_set: set[tuple[str, int, int, int]] = set()
         self._caps_loading = False
         self._caps_thread: Optional[_CapabilitiesThread] = None
         self._caps_from_cache = False
-        self._caps_validation_thread: Optional[_ValidateModeThread] = None
         self._apply_loading = False
         self._apply_thread: Optional[_ApplyControlsThread] = None
 
@@ -216,6 +159,14 @@ class CameraPanel(QWidget):
         form.addRow("Hue", self.hue)
         form.addRow("Saturation", self.saturation)
         form.addRow("Pixel format", self.pixel_format)
+
+        self.btn_mode_help = QPushButton("? Supported combinations")
+        self.btn_mode_help.setToolTip(
+            "Show every FPS/resolution/pixel-format combination confirmed to "
+            "work on this camera."
+        )
+        form.addRow("", self.btn_mode_help)
+
         form.addRow("Auto-exposure", self.auto_exposure)
         form.addRow("Auto-focus", self.auto_focus)
 
@@ -241,6 +192,7 @@ class CameraPanel(QWidget):
             self.fps,
             self.resolution,
             self.pixel_format,
+            self.btn_mode_help,
             self.auto_exposure,
             self.auto_focus,
             self.btn_refresh_caps,
@@ -262,6 +214,7 @@ class CameraPanel(QWidget):
         self.btn_refresh_devices.clicked.connect(self.refresh_video_devices)
         self.btn_refresh_caps.clicked.connect(self.refresh_capabilities)
         self.btn_apply.clicked.connect(self.on_apply)
+        self.btn_mode_help.clicked.connect(self._show_supported_combinations)
         self.btn_remove.clicked.connect(lambda: self.removeRequested.emit(self))
         self.device_name.currentIndexChanged.connect(self._on_device_name_selected)
         self._selected_device_key = self._device_key(self.device_name.currentData())
@@ -326,10 +279,9 @@ class CameraPanel(QWidget):
 
     def _init_pixel_format(self, value: str) -> QComboBox:
         widget = QComboBox()
-        pf = value.upper()
-        widget.addItems([pf] if pf else [])
-        idx = widget.findText(pf) if pf else -1
-        widget.setCurrentIndex(idx if idx >= 0 else 0)
+        self.pixel_format = widget
+        pf = value.upper() if value else None
+        self._set_pixel_format_choices([pf] if pf else [], pf)
         return widget
 
     def build_controls(self) -> dict[str, Any]:
@@ -361,45 +313,49 @@ class CameraPanel(QWidget):
 
     def validate_settings(self) -> list[str]:
         messages: list[str] = []
-        if not self._modes and not self._modes_by_format:
+        missing = [
+            name
+            for name, value in (
+                ("pixel format", self._selected_pixel_format()),
+                ("resolution", self._selected_resolution()),
+                ("FPS", self._selected_fps()),
+            )
+            if value is None
+        ]
+        if missing:
+            messages.append(
+                f"Please select a {', '.join(missing)} for this camera before continuing."
+            )
             return messages
-        fps = int(self.fps.currentData() or DEFAULT_CAMERA_FPS)
+        if not self._combos:
+            return messages
+        pf = self._selected_pixel_format()
         width, height = self._selected_resolution()
-        pf = self.pixel_format.currentText().strip().upper()
-        fmt_info = f" with pixel format {pf}" if pf else ""
-        if self._modes_by_format and pf and pf not in self._modes_by_format:
-            messages.append(f"Pixel format {pf} is not supported for this camera.")
-            return messages
-        if self._modes:
-            if not any(mw == width and mh == height for mw, mh, _ in self._modes):
-                messages.append(f"Resolution {width}x{height} is not supported{fmt_info}.")
-                return messages
-            supported_fps = self._fps_for_resolution((width, height))
-            if fps not in supported_fps:
-                if supported_fps:
-                    fps_list = ", ".join(str(v) for v in supported_fps)
-                    messages.append(
-                        f"FPS {fps} is not supported for {width}x{height}{fmt_info}. "
-                        f"Supported FPS: {fps_list}."
-                    )
-                else:
-                    messages.append(f"FPS {fps} is not supported for {width}x{height}{fmt_info}.")
+        fps = self._selected_fps()
+        if (pf, width, height, fps) not in self._combos_set:
+            messages.append(
+                f"{width}x{height} @ {fps}fps with pixel format {pf} is not a "
+                "confirmed-supported combination for this camera."
+            )
         return messages
 
     def set_remove_enabled(self, enabled: bool):
         self.btn_remove.setEnabled(enabled)
 
-    def _set_fps_choices(self, fps_values: list[int], current_fps: int):
+    def _set_fps_choices(self, fps_values: list[int], current_fps: int | None):
         fps_sorted = sorted({int(x) for x in fps_values if int(x) > 0})
-        if not fps_sorted:
-            fps_sorted = [max(1, int(current_fps))]
         self.fps.blockSignals(True)
         self.fps.clear()
+        self.fps.addItem(self._UNSET_VALUE_LABEL, None)
         for f in fps_sorted:
             self.fps.addItem(str(f), f)
-        idx = self.fps.findData(int(current_fps))
+        idx = self.fps.findData(int(current_fps)) if current_fps is not None else 0
         self.fps.setCurrentIndex(idx if idx >= 0 else 0)
         self.fps.blockSignals(False)
+
+    def _selected_fps(self) -> Optional[int]:
+        data = self.fps.currentData()
+        return int(data) if data is not None else None
 
     def _resolution_label(self, resolution: tuple[int, int]) -> str:
         width, height = resolution
@@ -414,156 +370,138 @@ class CameraPanel(QWidget):
         selected_resolution: tuple[int, int] | None = None,
     ):
         ordered = self._sort_resolutions_desc(resolutions)
-        if not ordered:
-            ordered = [self._default_resolution]
-        if selected_resolution not in ordered:
-            selected_resolution = ordered[0]
-
         self.resolution.blockSignals(True)
         self.resolution.clear()
+        self.resolution.addItem(self._UNSET_VALUE_LABEL, None)
         selected_idx = 0
-        for i, r in enumerate(ordered):
+        for i, r in enumerate(ordered, start=1):
             self.resolution.addItem(self._resolution_label(r), r)
             # QComboBox.findData() does not reliably match tuple item data by
             # value in PyQt6 (only by object identity), so track the match
             # ourselves with a plain Python "==" while inserting instead.
-            if r == selected_resolution:
+            if selected_resolution is not None and r == selected_resolution:
                 selected_idx = i
         self.resolution.setCurrentIndex(selected_idx)
         self.resolution.blockSignals(False)
 
-    def _selected_resolution(self) -> tuple[int, int]:
+    def _selected_resolution(self) -> Optional[tuple[int, int]]:
         data = self.resolution.currentData()
         if isinstance(data, tuple) and len(data) == 2:
             width, height = data
             return (int(width), int(height))
-        return self._default_resolution
+        return None
 
-    def _update_resolution_choices_for_selected_fps(self, prefer_current: bool):
-        fps = int(self.fps.currentData() or DEFAULT_CAMERA_FPS)
-        compatible = []
-        for w, h, _fps_values in self._modes:
-            if fps in self._fps_for_resolution((w, h)):
-                compatible.append((w, h))
+    def _set_pixel_format_choices(self, formats: list[str], selected: str | None):
+        ordered = sorted({str(f).upper() for f in formats if f})
+        self.pixel_format.blockSignals(True)
+        self.pixel_format.clear()
+        self.pixel_format.addItem(self._UNSET_VALUE_LABEL, None)
+        selected_idx = 0
+        for i, fmt in enumerate(ordered, start=1):
+            self.pixel_format.addItem(fmt, fmt)
+            if selected is not None and fmt == selected:
+                selected_idx = i
+        self.pixel_format.setCurrentIndex(selected_idx)
+        self.pixel_format.blockSignals(False)
 
-        if compatible:
-            current = self._selected_resolution() if prefer_current else None
-            self._set_resolution_choices(compatible, selected_resolution=current)
-            self.resolution.setEnabled(True)
-            return
+    def _selected_pixel_format(self) -> Optional[str]:
+        data = self.pixel_format.currentData()
+        return str(data).upper() if data else None
 
-        if not self._modes:
-            self._set_resolution_choices([self._default_resolution], selected_resolution=self._default_resolution)
-            self.resolution.setEnabled(False)
-            return
+    def _build_combos(self) -> None:
+        """Flatten _modes_by_format into the (pixel_format, width, height, fps)
+        triples used to drive cascading selection and validation."""
+        combos: list[tuple[str, int, int, int]] = []
+        for fmt, modes in self._modes_by_format.items():
+            for w, h, fps_values in modes:
+                for f in fps_values:
+                    combos.append((fmt, int(w), int(h), int(f)))
+        self._combos = combos
+        self._combos_set = set(combos)
 
-        # Fallback to a valid mode if the selected FPS has no compatible resolutions.
-        w, h, fps_values = self._modes[0]
-        fps_values = sorted({int(f) for f in fps_values if int(f) > 0})
-        fallback_fps = int(fps_values[0]) if fps_values else DEFAULT_CAMERA_FPS
-        compatible = [
-            (mw, mh)
-            for mw, mh, mfps in self._modes
-            if fallback_fps in mfps
+    def _combos_matching(
+        self,
+        pixel_format: Optional[str] = None,
+        resolution: Optional[tuple[int, int]] = None,
+        fps: Optional[int] = None,
+    ) -> list[tuple[str, int, int, int]]:
+        return [
+            c for c in self._combos
+            if (pixel_format is None or c[0] == pixel_format)
+            and (resolution is None or (c[1], c[2]) == resolution)
+            and (fps is None or c[3] == fps)
         ]
-        self._set_resolution_choices(compatible or [(w, h)], selected_resolution=(w, h))
-        self.resolution.setEnabled(True)
-        self._set_fps_choices(sorted({int(f) for f in fps_values if int(f) > 0}) or [fallback_fps], fallback_fps)
-        self.fps.setEnabled(True)
 
-    def _populate_all_resolutions_for_current_format(self, prefer_current: bool) -> bool:
-        """Show every resolution the current pixel format supports, without
-        pre-filtering by whatever FPS happens to already be selected.
+    def _refresh_combo_choices(self, changed: Optional[str]) -> None:
+        """Repopulate the FPS/resolution/pixel-format combos to show exactly
+        the values compatible with whatever is currently selected, per the
+        verified combination set.
 
-        Used right after capabilities first load (or the pixel format list is
-        rebuilt), where the FPS combo can still hold a leftover value from
-        before probing (e.g. a config default) that happens to be valid for
-        only one resolution -- filtering by it there (as
-        _update_resolution_choices_for_selected_fps does, appropriately, when
-        the user deliberately changes FPS) would incorrectly narrow the
-        resolution list down to just that one, and recalculating FPS for that
-        same resolution afterward wouldn't break the loop, since the stale FPS
-        is still technically valid there.
+        `changed` names the control the user just explicitly set, if any;
+        its new value is treated as fixed and never re-examined here.
+        The other two are then each recomputed in a fixed order
+        (pixel format, then resolution, then FPS, skipping whichever one is `changed`),
+        each filtered only by whichever of the three are already settled at
+        that point. 
+        At each step, the control's previous selection is kept only if
+        it is still present among the newly computed options;
+        otherwise it resets to "Not set" rather than jumping to an arbitrary fallback value.
+
+        `changed=None` (initial load from a saved config) has no already
+        fixed control, so the same walk starts with nothing settled
+        and progressively accumulates constraints from whichever earlier
+        controls in the fixed order still validly resolve.
         """
-        resolutions = sorted({(w, h) for w, h, _ in self._modes})
-        if not resolutions:
-            return False
-        current = self._selected_resolution() if prefer_current else None
-        selected = current if current in resolutions else None
-        self._set_resolution_choices(resolutions, selected_resolution=selected)
-        self.resolution.setEnabled(True)
-        return True
-
-    def _fps_for_resolution(self, resolution: tuple[int, int]) -> list[int]:
-        if not self._modes:
-            return []
-        w, h = resolution
-        for mw, mh, fps_values in self._modes:
-            if mw == w and mh == h:
-                fps_list = sorted({int(f) for f in fps_values if int(f) > 0})
-                if not IS_MAC or not fps_list:
-                    return fps_list
-                pf = self.pixel_format.currentText().strip()
-                return [f for f in fps_list if self._is_mode_supported(w, h, f, pf)]
-        return []
-
-    def _set_modes_for_pixel_format(self, pixel_format: str) -> bool:
-        if not self._modes_by_format:
-            return True
-        fmt = str(pixel_format).upper()
-        if not fmt:
-            return False
-        fmt_modes = self._modes_by_format.get(fmt)
-        if fmt_modes:
-            self._modes = fmt_modes
-            return True
-        self._modes = []
-        return False
-
-    def _is_mode_supported(self, width: int, height: int, fps: int, pixel_format: str) -> bool:
-        if not IS_MAC:
-            return True
-        if self._caps_from_cache:
-            return True
-        key = (int(width), int(height), int(fps), str(pixel_format).upper())
-        cached = self._mode_support_cache.get(key)
-        if cached is not None:
-            return cached
-        devnode = self.devnode.text().strip()
-        device_index = int(self.device_index.value())
-        ok = probe_mac_mode_support(
-            devnode=devnode,
-            device_index=device_index,
-            width=int(width),
-            height=int(height),
-            fps=int(fps),
-            pixel_format=str(pixel_format),
-        )
-        self._mode_support_cache[key] = ok
-        return ok
-
-    def _update_fps_choices_for_selected_resolution(self, prefer_current: bool):
-        resolution = self._selected_resolution()
-        fps_values = self._fps_for_resolution(resolution)
-        if not fps_values:
-            if not self._modes:
-                return
-            # Current resolution not supported: fall back to the first available mode.
-            w, h, fallback_fps_values = self._modes[0]
-            fallback_fps_values = sorted({int(f) for f in fallback_fps_values if int(f) > 0})
-            if not fallback_fps_values:
-                return
-            self._set_resolution_choices([(w, h)], selected_resolution=(w, h))
-            self.resolution.setEnabled(True)
-            self._set_fps_choices(fallback_fps_values, fallback_fps_values[0])
-            self.fps.setEnabled(True)
+        if not self._combos:
             return
-        current_fps = int(self.fps.currentData() or DEFAULT_CAMERA_FPS)
-        selected = current_fps if prefer_current else None
-        if selected is None or selected not in fps_values:
-            selected = fps_values[0]
-        self._set_fps_choices(fps_values, selected)
+
+        getters = {
+            "pixel_format": self._selected_pixel_format,
+            "resolution": self._selected_resolution,
+            "fps": self._selected_fps,
+        }
+        setters = {
+            "pixel_format": lambda opts, sel: self._set_pixel_format_choices(opts, sel),
+            "resolution": lambda opts, sel: self._set_resolution_choices(opts, sel),
+            "fps": lambda opts, sel: self._set_fps_choices(opts, sel),
+        }
+        extractors = {
+            "pixel_format": lambda c: c[0],
+            "resolution": lambda c: (c[1], c[2]),
+            "fps": lambda c: c[3],
+        }
+
+        settled: dict[str, object] = {}
+        if changed is not None:
+            settled[changed] = getters[changed]()
+
+        for dim in ("pixel_format", "resolution", "fps"):
+            if dim == changed:
+                continue
+            current = getters[dim]()
+            options = sorted({extractors[dim](c) for c in self._combos_matching(**settled)})
+            setters[dim](options, current if current in options else None)
+            settled[dim] = getters[dim]()
+
+        self.pixel_format.setEnabled(True)
+        self.resolution.setEnabled(True)
         self.fps.setEnabled(True)
+
+    def _show_supported_combinations(self):
+        if not self._modes_by_format:
+            QMessageBox.information(
+                self,
+                "Supported combinations",
+                "No verified modes available yet. Refresh device capabilities first.",
+            )
+            return
+        lines = []
+        for fmt in sorted(self._modes_by_format.keys()):
+            lines.append(fmt + ":")
+            for w, h, fps_values in sorted(self._modes_by_format[fmt], key=lambda m: (m[0], m[1])):
+                fps_str = ", ".join(str(f) for f in sorted(fps_values))
+                lines.append(f"    {w}x{h}: {fps_str} fps")
+        QMessageBox.information(self, "Supported combinations", "\n".join(lines))
 
     def _populate_video_devices(
         self,
@@ -702,22 +640,17 @@ class CameraPanel(QWidget):
 
     def _on_fps_changed(self):
         self._log(f"FPS changed to {self.fps.currentData()}")
-        self._update_resolution_choices_for_selected_fps(prefer_current=False)
+        self._refresh_combo_choices(changed="fps")
         self.previewConfigChanged.emit()
 
     def _on_resolution_changed(self):
         self._log(f"Resolution changed to {self.resolution.currentText()}")
-        if self._modes:
-            self._update_fps_choices_for_selected_resolution(prefer_current=True)
+        self._refresh_combo_choices(changed="resolution")
         self.previewConfigChanged.emit()
 
     def _on_pixel_format_changed(self):
         self._log(f"Pixel format changed to {self.pixel_format.currentText()}")
-        if self._modes or self._modes_by_format:
-            self._mode_support_cache.clear()
-            self._set_modes_for_pixel_format(self.pixel_format.currentText())
-            self._update_fps_choices_for_selected_resolution(prefer_current=True)
-            self._update_resolution_choices_for_selected_fps(prefer_current=True)
+        self._refresh_combo_choices(changed="pixel_format")
         self.previewConfigChanged.emit()
 
     def _resolve_device_identity_by_name(
@@ -769,20 +702,8 @@ class CameraPanel(QWidget):
     def _on_capabilities_ready(self, caps: dict):
         self.setUpdatesEnabled(False)
         self._caps_from_cache = bool(caps.pop("_from_cache", False))
-        self._mode_support_cache.clear()
 
-        raw_modes = caps.get("modes") or []
-        self._modes = []
         self._modes_by_format = {}
-        for m in raw_modes:
-            try:
-                width = int(m["width"])
-                height = int(m["height"])
-                fps_values = {int(v) for v in (m.get("fps") or []) if int(v) > 0}
-                if width > 0 and height > 0 and fps_values:
-                    self._modes.append((width, height, fps_values))
-            except Exception:
-                continue
         raw_modes_by_format = caps.get("modes_by_format") or {}
         for fmt, modes in raw_modes_by_format.items():
             try:
@@ -797,50 +718,24 @@ class CameraPanel(QWidget):
                     self._modes_by_format[str(fmt).upper()] = fmt_modes
             except Exception:
                 continue
+        self._build_combos()
 
-        current_fps = int(self.fps.currentData() or DEFAULT_CAMERA_FPS)
-        current_pf = self.pixel_format.currentText()
-        if self._modes:
-            if self._modes_by_format:
-                self._set_modes_for_pixel_format(current_pf)
-            # Show every resolution for this format first (not pre-filtered by
-            # whatever FPS the combo still holds from before capabilities
-            # loaded, e.g. a config default) then compute valid FPS choices
-            # for whichever resolution ends up selected. Filtering resolution
-            # by FPS here instead can get stuck: if that leftover FPS happens
-            # to be valid for the also-defaulted current resolution, it stays
-            # selected, and filtering resolutions by it narrows the list down
-            # to just that one -- a self-consistent but overly narrow result.
-            self._populate_all_resolutions_for_current_format(prefer_current=True)
-            self._update_fps_choices_for_selected_resolution(prefer_current=True)
+        if self._combos:
+            # _refresh_combo_choices reads whatever is still selected in each
+            # combo (left over from construction or the previous refresh) and
+            # keeps it if the newly-verified data still supports it;
+            # otherwise, reset to "Not set" otherwise
+            self._refresh_combo_choices(changed=None)
         else:
-            fps_values = caps.get("fps") or [current_fps]
-            self._set_fps_choices(list(fps_values), current_fps)
-            self.fps.setEnabled(bool(caps.get("fps")))
-            self._set_resolution_choices([self._default_resolution], selected_resolution=self._default_resolution)
+            fps_values = sorted({int(v) for v in (caps.get("fps") or []) if int(v) > 0})
+            current_fps = self._selected_fps()
+            self._set_fps_choices(fps_values, current_fps if current_fps in fps_values else None)
+            self.fps.setEnabled(bool(fps_values))
+            self._set_resolution_choices([], None)
             self.resolution.setEnabled(False)
-
-        pixel_formats = list(caps.get("pixel_formats") or [])
-        if not pixel_formats and self._modes_by_format:
-            pixel_formats = sorted(self._modes_by_format.keys())
-        if pixel_formats:
-            self.pixel_format.setEnabled(True)
-            self.pixel_format.blockSignals(True)
-            self.pixel_format.clear()
-            for fmt in sorted({str(f).upper() for f in pixel_formats}):
-                self.pixel_format.addItem(fmt)
-            idx = self.pixel_format.findText(str(current_pf).upper())
-            self.pixel_format.setCurrentIndex(idx if idx >= 0 else 0)
-            self.pixel_format.blockSignals(False)
-            if self._modes_by_format:
-                if self._set_modes_for_pixel_format(self.pixel_format.currentText()):
-                    # Same reasoning as above: show all resolutions for the
-                    # format first, then compute FPS for whichever is selected.
-                    self._populate_all_resolutions_for_current_format(prefer_current=True)
-                    self._update_fps_choices_for_selected_resolution(prefer_current=True)
-        else:
+            self._set_pixel_format_choices([], None)
             self.pixel_format.setEnabled(False)
-            self._log("Could not determine supported pixel formats for this device", loglevel="WARNING")
+            self._log("Could not determine supported modes for this device", loglevel="WARNING")
 
         brightness_range = caps.get("brightness_range")
         brightness_default = caps.get("brightness_default")
@@ -911,73 +806,13 @@ class CameraPanel(QWidget):
         self.setUpdatesEnabled(True)
         self._log(
             "Capabilities loaded "
-            f"(from_cache={self._caps_from_cache}): {len(self._modes)} mode(s), "
-            f"pixel_formats={sorted({str(f).upper() for f in (caps.get('pixel_formats') or [])})}, "
+            f"(from_cache={self._caps_from_cache}): {len(self._combos)} verified combination(s), "
+            f"pixel_formats={sorted(self._modes_by_format.keys())}, "
             f"fps={sorted({int(v) for v in (caps.get('fps') or []) if int(v) > 0})}, "
             f"auto_exposure={bool(caps.get('supports_auto_exposure'))}, "
             f"auto_focus={bool(caps.get('supports_auto_focus'))}"
         )
         self._finish_capabilities_load()
-        self._kickoff_cached_validation()
-
-    def _kickoff_cached_validation(self):
-        if not IS_MAC or not self._caps_from_cache or not self._modes:
-            return
-        if self._caps_validation_thread and self._caps_validation_thread.isRunning():
-            return
-        devnode = self.devnode.text().strip()
-        device_index = int(self.device_index.value())
-        pixel_format = self.pixel_format.currentText().strip()
-        current_res = self._selected_resolution()
-        current_fps = int(self.fps.currentData() or DEFAULT_CAMERA_FPS)
-        thread = _ValidateModeThread(
-            devnode=devnode,
-            device_index=device_index,
-            pixel_format=pixel_format,
-            modes=self._modes,
-            current_resolution=current_res,
-            current_fps=current_fps,
-            parent=self,
-        )
-        self._caps_validation_thread = thread
-        thread.validated.connect(self._apply_validated_mode)
-        thread.start()
-
-    def _apply_validated_mode(self, result):
-        if self._caps_validation_thread:
-            try:
-                self._caps_validation_thread.quit()
-                self._caps_validation_thread.deleteLater()
-            except Exception:
-                pass
-            self._caps_validation_thread = None
-        if not result:
-            return
-        width, height, fps = result
-        previous_resolution = self._selected_resolution()
-        previous_fps = int(self.fps.currentData() or DEFAULT_CAMERA_FPS)
-        unchanged = (width, height, fps) == (previous_resolution[0], previous_resolution[1], previous_fps)
-
-        existing = [
-            int(self.fps.itemData(i))
-            for i in range(self.fps.count())
-            if self.fps.itemData(i) is not None
-        ]
-        self.fps.blockSignals(True)
-        self._set_fps_choices([int(fps)] + existing, int(fps))
-        self.fps.blockSignals(False)
-        compatible = []
-        for w, h, _fps_values in self._modes:
-            if fps in self._fps_for_resolution((w, h)):
-                compatible.append((w, h))
-        self.resolution.blockSignals(True)
-        self._set_resolution_choices(compatible or [(width, height)], selected_resolution=(width, height))
-        self.resolution.blockSignals(False)
-
-        if unchanged:
-            # No reason to restart preview if unchanged
-            return
-        self.previewConfigChanged.emit()
 
     def _on_capabilities_error(self, msg: str):
         self._log(f"Failed to refresh capabilities: {msg}", loglevel="ERROR")
@@ -999,7 +834,12 @@ class CameraPanel(QWidget):
 
     def to_config(self) -> VideoCamConfig:
         c = VideoCamConfig()
-        c.Enabled = self.enabled.isChecked() and self._device_name is not None
+        mode_selected = (
+            self._selected_fps() is not None
+            and self._selected_resolution() is not None
+            and self._selected_pixel_format() is not None
+        )
+        c.Enabled = self.enabled.isChecked() and self._device_name is not None and mode_selected
         c.DeviceIndex = int(self.device_index.value())
         c.DevNode = self.devnode.text().strip()
         c.DeviceName = self._device_name
@@ -1007,19 +847,31 @@ class CameraPanel(QWidget):
             c.DeviceName, c.DeviceIndex, c.DevNode
         )
         c.Label = self.label.text().strip()
-        c.FPS = int(self.fps.currentData() or DEFAULT_CAMERA_FPS)
-        width, height = self._selected_resolution()
+        # Width/Height/FPS/PixelFormat are non-optional on VideoCamConfig, so
+        # a still-unselected control needs some concrete placeholder value
+        # here, but it is never acted on: c.Enabled above is already False
+        # whenever any of them is unset, and every consumer (live preview,
+        # recording) skips a disabled camera before ever reading these
+        # fields, so an unsupported-by-the-device placeholder cannot leak into
+        # an actual capture or get persisted as if it were a real selection.
+        c.FPS = int(self._selected_fps() or DEFAULT_CAMERA_FPS)
+        width, height = self._selected_resolution() or self._default_resolution
         c.Width = int(width)
         c.Height = int(height)
         c.Brightness = int(self.brightness.value()) if self.brightness.isEnabled() else None
         c.Hue = int(self.hue.value()) if self.hue.isEnabled() else None
         c.Saturation = int(self.saturation.value()) if self.saturation.isEnabled() else None
-        c.PixelFormat = self.pixel_format.currentText()
+        c.PixelFormat = self._selected_pixel_format() or DEFAULT_PIXEL_FORMAT
         c.AutoExposure = self.auto_exposure.isChecked()
         c.AutoFocus = self.auto_focus.isChecked()
         return c
 
     def on_apply(self):
+        messages = self.validate_settings()
+        if messages:
+            QMessageBox.warning(self, "Camera Settings Incomplete", "\n".join(messages))
+            return
+
         dev = self.devnode.text().strip()
         # Gather controls from the UI
         controls = self.build_controls()
