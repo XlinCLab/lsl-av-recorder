@@ -806,6 +806,15 @@ class MainWindow(QMainWindow):
             if idx >= 0:
                 self.tabs.setTabText(idx, f"Camera {i + 1}")
 
+        # A removed camera's device slot can free up (or otherwise shift)
+        # device numbering (seen on MacOS), which each panel's device list
+        # is only a snapshot of from whenever it was last populated/refreshed:
+        # Refresh video devices on camera removal to avoid this issue
+        if self.cam_panels:
+            self.log(f"Refreshing video devices for {len(self.cam_panels)} remaining camera(s) after removal")
+            for cam_panel in self.cam_panels:
+                cam_panel.refresh_video_devices(quiet=True)
+
         self._update_add_camera_button()
         self._refresh_previews_from_panels()
 

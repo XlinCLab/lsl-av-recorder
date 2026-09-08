@@ -624,7 +624,13 @@ class CameraPanel(QWidget):
         self._saturation_configured = False
         self._saturation_auto_defaulted = False
 
-    def refresh_video_devices(self):
+    def refresh_video_devices(self, quiet: bool = False):
+        """Re-resolve this panel's device against a fresh enumeration.
+
+        `quiet=True` suppresses the "device changed, refresh capabilities?"
+        popup that would otherwise fire whenever the resolved index shifts
+        (even for the same device name, e.g. another camera being
+        removed)."""
         dev = self.device_name.currentData()
         if isinstance(dev, dict):
             preferred_index = int(dev.get("index", self.device_index.value()))
@@ -634,14 +640,21 @@ class CameraPanel(QWidget):
             preferred_index = int(self.device_index.value())
             preferred_devnode = self.devnode.text().strip()
             preferred_name = self._device_name
-        self._populate_video_devices(
-            preferred_index=preferred_index,
-            preferred_devnode=preferred_devnode,
-            preferred_name=preferred_name,
-            # Only allow falling back to index/devnode matching when a real
-            # device has already been selected
-            allow_preselect=isinstance(dev, dict),
-        )
+        if quiet:
+            self.device_name.blockSignals(True)
+        try:
+            self._populate_video_devices(
+                preferred_index=preferred_index,
+                preferred_devnode=preferred_devnode,
+                preferred_name=preferred_name,
+                # Only allow falling back to index/devnode matching when a real
+                # device has already been selected
+                allow_preselect=isinstance(dev, dict),
+            )
+        finally:
+            if quiet:
+                self.device_name.blockSignals(False)
+                self._selected_device_key = self._device_key(self.device_name.currentData())
 
     def _on_fps_changed(self):
         self._log(f"FPS changed to {self.fps.currentData()}")
