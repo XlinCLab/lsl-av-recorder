@@ -62,6 +62,11 @@ def _exclude_camera_preview_streams(streams: List[StreamInfo]) -> List[StreamInf
     return [s for s in streams if s.type() != CAMERA_PREVIEW_STREAM_TYPE]
 
 
+def _default_camera_label(label: str, position: int) -> str:
+    """Fall back to "Cam{position}" (1-based tab position) when `label` is blank."""
+    return label.strip() or f"Cam{position}"
+
+
 class _ApplyAllThread(QThread):
     finished_apply = pyqtSignal(list)
     failed = pyqtSignal(str)
@@ -743,7 +748,10 @@ class MainWindow(QMainWindow):
             # without an extra click; to_config() reports Enabled=False
             # anyway until a real device is actually selected
             cam_cfg.Enabled = True
-            cam_cfg.Label = f"Cam{len(self.cam_panels) + 1}"
+        # For a brand-new panel, VideoCamConfig()'s own dataclass default
+        # ("Cam", not blank) must not be mistaken for a real label
+        existing_label = "" if is_new else cam_cfg.Label
+        cam_cfg.Label = _default_camera_label(existing_label, len(self.cam_panels) + 1)
         panel = CameraPanel(cam_cfg, preselect_device=not is_new)
         panel.applyStarted.connect(self.preview_mgr.stop_all_previews)
         panel.applyStarted.connect(self._on_apply_started)

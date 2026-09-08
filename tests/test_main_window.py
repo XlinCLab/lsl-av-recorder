@@ -6,7 +6,8 @@ import json
 from recorder.config import AppConfig, VideoCamConfig
 from recorder.gui import main_window
 from recorder.gui.camera_worker import CAMERA_PREVIEW_STREAM_TYPE
-from recorder.gui.main_window import (_exclude_camera_preview_streams,
+from recorder.gui.main_window import (_default_camera_label,
+                                      _exclude_camera_preview_streams,
                                       build_config_log_payload)
 from tests.shared import MARKER_STREAM_NAME
 
@@ -34,6 +35,18 @@ def test_excludes_camera_preview_streams():
     result = _exclude_camera_preview_streams([preview, eeg])
 
     assert result == [eeg]
+
+
+def test_default_camera_label_fills_blank_with_numbered_default():
+    """A blank camera label (whitespace-only or empty) falls back to Cam{position}."""
+    assert _default_camera_label("", 1) == "Cam1"
+    assert _default_camera_label("   ", 2) == "Cam2"
+
+
+def test_default_camera_label_preserves_explicit_label():
+    """A real, non-blank label is kept verbatim regardless of position."""
+    assert _default_camera_label("FaceTime", 1) == "FaceTime"
+    assert _default_camera_label("  Left Cam  ", 3) == "Left Cam"
 
 
 def test_keeps_non_preview_streams_unchanged():

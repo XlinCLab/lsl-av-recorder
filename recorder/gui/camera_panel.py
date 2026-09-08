@@ -123,6 +123,11 @@ class CameraPanel(QWidget):
         self.devnode = QLineEdit(cam_cfg.DevNode)
         self.devnode.setVisible(False)
         self.label = QLineEdit(cam_cfg.Label)
+        # _tag()'s fallback for a since-cleared label field: whatever label
+        # this panel actually started with (normally already a non-blank
+        # default assigned by MainWindow._add_camera_panel before this panel
+        # was even constructed)
+        self._default_label = cam_cfg.Label.strip() or "?"
 
         self.fps = self._init_fps(int(cam_cfg.FPS))
         self.resolution = self._init_resolution(self._default_resolution)
@@ -232,7 +237,7 @@ class CameraPanel(QWidget):
     def _tag(self) -> str:
         """Short prefix identifying which camera panel a log message is
         about, since several panels can share the same shared log stream."""
-        return f"Camera <{self.label.text().strip() or '?'}> (index={self.device_index.value()})"
+        return f"Camera <{self.label.text().strip() or self._default_label}> (index={self.device_index.value()})"
 
     def _log(self, msg: str, loglevel: str = "INFO"):
         """Log to this panel's own local text box and emit it up
