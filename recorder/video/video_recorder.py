@@ -112,7 +112,7 @@ class VideoRecorder:
             or (now - self._last_fps_warn_ts) >= self._fps_warn_interval
         ):
             self.warning(
-                "Capture FPS deviation: "
+                f"Capture FPS deviation ({self.cam.Label}): "
                 f"expected≈{expected:.2f}, observed={inst_fps:.2f}"
             )
             self._last_fps_warn_ts = now
