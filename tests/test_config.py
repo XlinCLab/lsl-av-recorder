@@ -6,8 +6,8 @@ import configparser
 
 from recorder.audio.constants import DEFAULT_SAMPLING_RATE
 from recorder.config import (AppConfig, AppPrompts, AudioConfig,
-                             LabRecorderConfig, OutputConfig, VideoConfig,
-                             _get_bool, load_cfg)
+                             LabRecorderConfig, OutputConfig, VideoCamConfig,
+                             VideoConfig, _get_bool, load_cfg, save_cfg)
 from recorder.xdf.xdf_writer import (FULL_BUFFER_BLOCK_THREAD_POLICY,
                                      FULL_BUFFER_DEFAULT_POLICY,
                                      FULL_BUFFER_POLICIES)
@@ -319,3 +319,134 @@ def test_get_bool_falls_back_on_missing_or_invalid(write_cfg):
     cp.read_string("[S]\nbad = maybe\n")
     assert _get_bool(cp=cp, section="S", key="absent", default=True) is True
     assert _get_bool(cp=cp, section="S", key="bad", default=False) is False
+
+
+# ---------------------------------------------------------------------------
+# save_cfg
+# ---------------------------------------------------------------------------
+
+def test_save_cfg_round_trips_session_output_audio_labrecorder(tmp_path):
+    """Every scalar field across Session/Output/Audio/LabRecorder survives a
+    save then load unchanged."""
+    cfg = AppConfig()
+    cfg.Prompts.ExperimentName = "MyStudy"
+    cfg.Prompts.Subject = "S02"
+    cfg.Prompts.Session = "2"
+    cfg.Prompts.Block = "reading"
+    cfg.Prompts.Acquisition = "default"
+    cfg.Prompts.Run = "03"
+    cfg.Output.StudyRoot = "/data/study"
+    cfg.Output.PathTemplate = "sub-%p/rec"
+    cfg.Audio.Enabled = True
+    cfg.Audio.Device = "USB Mic"
+    cfg.Audio.SampleRate = 44100
+    cfg.Audio.BitDepth = 24
+    cfg.Audio.Channels = 2
+    cfg.Audio.StreamName = "Mic"
+    cfg.LabRecorder.Enabled = True
+    cfg.LabRecorder.Host = "192.168.1.5"
+    cfg.LabRecorder.Port = 9999
+
+    path = str(tmp_path / "out.cfg")
+    save_cfg(cfg, path)
+    reloaded = load_cfg(path)
+
+    assert reloaded.Prompts == cfg.Prompts
+    assert reloaded.Output == cfg.Output
+    assert reloaded.Audio == cfg.Audio
+    assert reloaded.LabRecorder == cfg.LabRecorder
+
+
+def test_save_cfg_empty_audio_device_round_trips_to_none(tmp_path):
+    """A None Device (auto-select) is written as blank and reloads to None,
+    matching load_cfg's own blank-Device convention."""
+    cfg = AppConfig()
+    cfg.Audio.Device = None
+
+    path = str(tmp_path / "out.cfg")
+    save_cfg(cfg, path)
+    assert load_cfg(path).Audio.Device is None
+
+
+def test_save_cfg_omits_none_camera_fields_without_corrupting_reload(tmp_path):
+    """DeviceName/Brightness/Hue/Saturation left at None (e.g. a camera
+    whose controls were never applied) must not be written as the literal
+    string "None". Omitting the key entirely lets load_cfg's own
+    fallback-to-None apply, exactly as if the key had never been set."""
+    cfg = AppConfig()
+    cam = VideoCamConfig()
+    cam.Enabled = True
+    cam.DeviceName = None
+    cam.Brightness = None
+    cam.Hue = None
+    cam.Saturation = None
+    cfg.Video.Cams = [cam]
+    cfg.Video.MaxCams = 1
+
+    path = str(tmp_path / "out.cfg")
+    save_cfg(cfg, path)
+    reloaded = load_cfg(path)
+
+    assert len(reloaded.Video.Cams) == 1
+    reloaded_cam = reloaded.Video.Cams[0]
+    assert reloaded_cam.DeviceName is None
+    assert reloaded_cam.Brightness is None
+    assert reloaded_cam.Hue is None
+    assert reloaded_cam.Saturation is None
+
+
+def test_save_cfg_round_trips_camera_with_all_fields_set(tmp_path):
+    """A fully-configured camera (every optional field populated) survives
+    a save/reload unchanged."""
+    cfg = AppConfig()
+    cam = VideoCamConfig()
+    cam.Enabled = True
+    cam.DeviceIndex = 1
+    cam.DevNode = "1"
+    cam.DeviceName = "FaceTime HD Camera"
+    cam.Label = "Cam2"
+    cam.FPS = 15
+    cam.Width = 1280
+    cam.Height = 720
+    cam.AutoExposure = True
+    cam.AutoFocus = False
+    cam.Brightness = 128
+    cam.Hue = 0
+    cam.Saturation = 100
+    cam.PixelFormat = "YUYV"
+    cfg.Video.Cams = [cam]
+    cfg.Video.MaxCams = 1
+
+    path = str(tmp_path / "out.cfg")
+    save_cfg(cfg, path)
+    reloaded_cam = load_cfg(path).Video.Cams[0]
+
+    assert reloaded_cam == cam
+
+
+def test_save_cfg_bumps_maxcams_to_fit_actual_camera_count(tmp_path):
+    """load_cfg only scans VideoCam sections up to Video.MaxCams.
+    If MaxCams is stale (e.g. lower than the number of cameras actually
+    configured), save_cfg must widen it so every camera is still found on
+    reload, not silently dropped."""
+    cfg = AppConfig()
+    cfg.Video.MaxCams = 1
+    cfg.Video.Cams = [VideoCamConfig(Label="Cam1"), VideoCamConfig(Label="Cam2")]
+
+    path = str(tmp_path / "out.cfg")
+    save_cfg(cfg, path)
+    reloaded = load_cfg(path)
+
+    assert reloaded.Video.MaxCams >= 2
+    assert [c.Label for c in reloaded.Video.Cams] == ["Cam1", "Cam2"]
+
+
+def test_save_cfg_no_cameras_writes_no_camera_sections(tmp_path):
+    """An empty camera list produces no VideoCam sections, and reloading
+    yields an empty camera list back."""
+    cfg = AppConfig()
+    cfg.Video.Cams = []
+
+    path = str(tmp_path / "out.cfg")
+    save_cfg(cfg, path)
+    assert load_cfg(path).Video.Cams == []

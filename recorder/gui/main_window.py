@@ -25,7 +25,7 @@ from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
 from ..audio.devices import (default_input_device_index,
                              get_audio_device_capabilities,
                              is_input_config_supported, list_input_devices)
-from ..config import AppConfig, VideoCamConfig, load_cfg
+from ..config import AppConfig, VideoCamConfig, load_cfg, save_cfg
 from ..lsl.labrecorder_rcs import LabRecorderRCS
 from ..utils.constants import _logs_path, _project_root
 from ..utils.utils import get_environment_info
@@ -151,6 +151,7 @@ class MainWindow(QMainWindow):
 
         btn_row = QHBoxLayout()
         self.btn_load = QPushButton("Load config")
+        self.btn_save = QPushButton("Save config")
         self.btn_add_camera = QPushButton("Add camera")
         self.test_duration_spin = QSpinBox()
         self.test_duration_spin.setRange(5, 60)
@@ -162,6 +163,7 @@ class MainWindow(QMainWindow):
         self.btn_stop.setEnabled(False)
         self.btn_close_app = QPushButton("Close app")
         btn_row.addWidget(self.btn_load)
+        btn_row.addWidget(self.btn_save)
         btn_row.addWidget(self.btn_add_camera)
         btn_row.addStretch(1)
         btn_row.addWidget(QLabel("Test duration:"))
@@ -345,6 +347,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(root)
 
         self.btn_load.clicked.connect(self.on_load)
+        self.btn_save.clicked.connect(self.on_save)
         self.btn_add_camera.clicked.connect(self._on_add_camera)
         self.btn_start.clicked.connect(self.on_start)
         self.btn_stop.clicked.connect(self.on_stop)
@@ -829,6 +832,20 @@ class MainWindow(QMainWindow):
             self.log(build_config_log_payload("config_loaded", self.cfg))
         except Exception as e:
             QMessageBox.critical(self, "Load failed", str(e))
+
+    def on_save(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Save config", ".", "CFG files (*.cfg);;All files (*)")
+        if not path:
+            return
+        if not path.lower().endswith(".cfg"):
+            path += ".cfg"
+        try:
+            self.pull_gui_into_cfg()
+            save_cfg(self.cfg, path)
+            self.log(f"Saved config: {path}")
+            self.log(build_config_log_payload("config_saved", self.cfg))
+        except Exception as e:
+            QMessageBox.critical(self, "Save failed", str(e))
 
     def on_start(self):
         if self._testing_active:
