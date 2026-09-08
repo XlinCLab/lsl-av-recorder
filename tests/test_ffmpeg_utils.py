@@ -46,6 +46,42 @@ def test_parse_supported_modes_rounds_and_dedups_fps():
     assert modes == [(640, 480, [30])]
 
 
+DUPLICATE_RESOLUTION_LINES_TEXT = """
+[avfoundation @ 0x1] Supported modes:
+[avfoundation @ 0x1]   176x144@[30.000030 30.000030]fps
+[avfoundation @ 0x1]   176x144@[24.000038 24.000038]fps
+[avfoundation @ 0x1]   176x144@[20.000000 20.000000]fps
+[avfoundation @ 0x1]   176x144@[15.000015 15.000015]fps
+[avfoundation @ 0x1]   160x120@[30.000030 30.000030]fps
+[avfoundation @ 0x1]   176x144@[30.000030 30.000030]fps
+[avfoundation @ 0x1]   176x144@[24.000038 24.000038]fps
+"""
+
+
+def test_parse_supported_modes_merges_repeated_resolution_lines():
+    """Some AVFoundation devices report the same resolution across multiple
+    lines, one per discrete rate they support, and/or once per pixel format.
+    Test that this format is parsed correctly."""
+    modes = _parse_supported_modes(text=DUPLICATE_RESOLUTION_LINES_TEXT)
+    assert modes == [
+        (176, 144, [15, 20, 24, 30]),
+        (160, 120, [30]),
+    ]
+
+
+def test_parse_supported_modes_preserves_first_seen_resolution_order():
+    """Resolutions are ordered by when they were first seen, even when a
+    later duplicate line for an earlier resolution appears further down."""
+    text = """
+    100x100@[10.0 10.0]fps
+    200x200@[20.0 20.0]fps
+    100x100@[15.0 15.0]fps
+    """
+    modes = _parse_supported_modes(text=text)
+    assert [(w, h) for w, h, _ in modes] == [(100, 100), (200, 200)]
+    assert modes == [(100, 100, [10, 15]), (200, 200, [20])]
+
+
 # ---------------------------------------------------------------------------
 # _probe_mac_supported_fps
 # ---------------------------------------------------------------------------
@@ -54,6 +90,13 @@ def test_probe_mac_supported_fps_unions_all_modes():
     """The supported-fps list is the sorted union of every mode's frame rates."""
     modes = _parse_supported_modes(text=SUPPORTED_MODES_TEXT)
     assert _probe_mac_supported_fps(modes=modes) == [1, 15, 30, 60]
+
+
+def test_probe_mac_supported_fps_matches_per_resolution_merge():
+    """The supported-fps list is the sorted union of every mode's frame rates.
+    This tests the ffmpeg output with multiple/duplicate lines."""
+    modes = _parse_supported_modes(text=DUPLICATE_RESOLUTION_LINES_TEXT)
+    assert _probe_mac_supported_fps(modes=modes) == [15, 20, 24, 30]
 
 
 def test_probe_mac_supported_fps_empty_when_no_modes():

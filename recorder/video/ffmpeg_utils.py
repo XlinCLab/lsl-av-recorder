@@ -29,22 +29,35 @@ def _ffmpeg_avfoundation_probe(device: str, extra_args: list[str]) -> tuple[bool
 
 
 def _parse_supported_modes(text: str) -> List[Tuple[int, int, list[int]]]:
-    modes: List[Tuple[int, int, list[int]]] = []
+    """Parse ffmpeg's forced-error "Supported modes" dump into one entry per
+    resolution, with every reported fps value for that resolution merged
+    together.
+
+    AVFoundation devices report this in more than one shape:
+      - a single line per resolution with a genuine-looking range, e.g.
+        "1280x720@[15.000000 30.000000]fps"
+      - multiple lines for the same resolution, each a single-value "range"
+        (min == max) -- one line per discrete rate the device actually supports,
+        e.g. "176x144@[30.000030 30.000030]fps", "176x144@[24.000038 24.000038]fps"
+        This probe doesn't expose which pixel format each line belongs to,
+        so the same resolution can also appear once per pixel format that supports it.
+    """
+    fps_by_resolution: dict[tuple[int, int], set[int]] = {}
+    order: list[tuple[int, int]] = []
     for line in text.splitlines():
         m = re.search(r"(\d+)x(\d+)@\[(.+)\]fps", line)
         if not m:
             continue
-        width = int(m.group(1))
-        height = int(m.group(2))
-        fps_values = sorted(
-            {
-                int(round(float(f)))
-                for f in re.findall(r"[\d.]+", m.group(3))
-                if float(f) > 0
-            }
+        resolution = (int(m.group(1)), int(m.group(2)))
+        if resolution not in fps_by_resolution:
+            fps_by_resolution[resolution] = set()
+            order.append(resolution)
+        fps_by_resolution[resolution].update(
+            int(round(float(f)))
+            for f in re.findall(r"[\d.]+", m.group(3))
+            if float(f) > 0
         )
-        modes.append((width, height, fps_values))
-    return modes
+    return [(w, h, sorted(fps_by_resolution[(w, h)])) for w, h in order]
 
 
 def _get_supported_modes(device: str) -> List[Tuple[int, int, list[int]]]:
