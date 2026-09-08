@@ -26,6 +26,7 @@ from ..xdf.xdf_writer import (FULL_BUFFER_BLOCK_THREAD_POLICY,
                               FULL_BUFFER_DEFAULT_POLICY,
                               FULL_BUFFER_DROP_NEWEST_POLICY,
                               FULL_BUFFER_POLICIES, XDFWriter)
+from .preview_manager import preview_key
 
 
 class RunController:
@@ -35,7 +36,7 @@ class RunController:
         status_cb: Optional[Callable[[str], None]] = None,
         lsl_streams: Optional[List[StreamInfo]] = None,
         preview_release_cb: Optional[Callable[[VideoCamConfig], bool]] = None,
-        preview_frame_cb: Optional[Callable[[int, object], None]] = None,
+        preview_frame_cb: Optional[Callable[[str, object], None]] = None,
     ):
         self.cfg = cfg
         self.status_cb = status_cb
@@ -383,8 +384,8 @@ class RunController:
         video_path = self._get_video_output_path(cam)
         preview_cb = None
         if self.preview_frame_cb:
-            cam_index = int(cam.DeviceIndex)
-            preview_cb = lambda frame, idx=cam_index: self.preview_frame_cb(idx, frame)
+            key = preview_key(cam)
+            preview_cb = lambda frame, k=key: self.preview_frame_cb(k, frame)
         vr = VideoRecorder(
             cam_cfg=cam,
             output_path=video_path,

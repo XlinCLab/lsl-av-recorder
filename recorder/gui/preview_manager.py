@@ -5,28 +5,33 @@ from typing import Dict
 from PyQt6.QtCore import QObject, Qt, QThread
 from PyQt6.QtGui import QImage, QPixmap
 
-from .camera_worker import CameraWorker
+from .camera_worker import CameraWorker, compute_preview_key
+
+
+def preview_key(cam_cfg) -> str:
+    """preview_manager's view of compute_preview_key
+    reading straight from a VideoCamConfig."""
+    return compute_preview_key(cam_cfg.DeviceName, cam_cfg.DevNode, cam_cfg.DeviceIndex)
 
 
 class PreviewManager(QObject):
     def __init__(self, main_window):
         super().__init__()
         self.main = main_window
-        self.threads: Dict[int, QThread] = {}
-        self.workers: Dict[int, CameraWorker] = {}
+        self.threads: Dict[str, QThread] = {}
+        self.workers: Dict[str, CameraWorker] = {}
 
-    def _request_stop(self, cam_index: int):
-        idx = int(cam_index)
-        # Pop immediately so a new preview can be registered for the same index.
-        worker = self.workers.pop(idx, None)
-        thread = self.threads.pop(idx, None)
+    def _request_stop(self, key: str):
+        # Pop immediately so a new preview can be registered for the same key.
+        worker = self.workers.pop(key, None)
+        thread = self.threads.pop(key, None)
         self.main.preview_panel.set_active_cameras(self.workers.keys())
         if not thread:
             return
         if worker:
             worker.stop_preview()
         # Capture specific objects so the finished handler never touches the dict
-        # (which may already hold a new worker/thread for the same index by the
+        # (which may already hold a new worker/thread for the same key by the
         # time the signal fires, causing the new thread to be erroneously deleted)
         _w, _t = worker, thread
 
@@ -38,16 +43,16 @@ class PreviewManager(QObject):
         thread.finished.connect(_cleanup)
         thread.quit()
         # Wait briefly so the old camera releases its device before a new capture
-        # for the same index tries to open it.
+        # for the same key tries to open it.
         thread.wait(2000)
 
     def start_cam_preview(self, cam_cfg):
-        idx = int(cam_cfg.DeviceIndex)
-        if idx in self.workers:
+        key = preview_key(cam_cfg)
+        if key in self.workers:
             return
 
         worker = CameraWorker(
-            cam_index=idx,
+            cam_index=int(cam_cfg.DeviceIndex),
             devnode=cam_cfg.DevNode,
             label=cam_cfg.Label,
             fps=cam_cfg.FPS,
@@ -66,21 +71,20 @@ class PreviewManager(QObject):
         worker.status.connect(self.main.log)
         thread.started.connect(worker.start_preview)
 
-        self.workers[idx] = worker
-        self.threads[idx] = thread
+        self.workers[key] = worker
+        self.threads[key] = thread
         thread.start()
         self.main.preview_panel.set_active_cameras(self.workers.keys())
 
     def stop_all_previews(self):
-        for idx in list(self.workers.keys()):
-            self._request_stop(idx)
+        for key in list(self.workers.keys()):
+            self._request_stop(key)
         self.main.preview_panel.set_active_cameras([])
 
-    def stop_cam_preview(self, cam_index: int) -> bool:
-        idx = int(cam_index)
-        exists = idx in self.workers
+    def stop_cam_preview(self, key: str) -> bool:
+        exists = key in self.workers
         if exists:
-            self._request_stop(idx)
+            self._request_stop(key)
         return exists
 
     def start_preview_all(self):
@@ -90,18 +94,17 @@ class PreviewManager(QObject):
                 continue
             self.start_cam_preview(cam_cfg)
 
-    def on_frame(self, cam_index: int, frame_bgr):
-        idx = int(cam_index)
+    def on_frame(self, key: str, frame_bgr):
         # A worker can emit one more frame after stop_preview() sets its
         # _running flag False -- it may already be past that check, mid-loop,
-        # when the flag flips. That frame's frameReady signal is queued 
-        # and can be delivered here after this index has already been torn down
+        # when the flag flips. That frame's frameReady signal is queued
+        # and can be delivered here after this key has already been torn down
         # or reassigned to a different camera, so it must be dropped rather
-        # than rendered. Otherwise, it resurrects a stale preview label 
+        # than rendered. Otherwise, it resurrects a stale preview label
         # showing a frozen last frame.
-        if idx not in self.workers:
+        if key not in self.workers:
             return
-        lbl = self.main.preview_panel.ensure_label(idx)
+        lbl = self.main.preview_panel.ensure_label(key)
         h, w, ch = frame_bgr.shape
         rgb = frame_bgr[:, :, ::-1].copy()
         qimg = QImage(rgb.data, w, h, ch * w, QImage.Format.Format_RGB888)

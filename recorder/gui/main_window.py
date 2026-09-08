@@ -38,7 +38,7 @@ from ..xdf.xdf_writer import (FULL_BUFFER_BLOCK_THREAD_POLICY,
                               FULL_BUFFER_DROP_OLDEST_POLICY)
 from .camera_panel import CameraPanel
 from .camera_worker import CAMERA_PREVIEW_STREAM_TYPE
-from .preview_manager import PreviewManager
+from .preview_manager import PreviewManager, preview_key
 from .preview_panel import PreviewPanel
 from .run_controller import RunController
 
@@ -101,7 +101,7 @@ class _ApplyAllThread(QThread):
 
 class MainWindow(QMainWindow):
     log_signal = pyqtSignal(str)
-    preview_frame_signal = pyqtSignal(int, object)
+    preview_frame_signal = pyqtSignal(object, object)
 
     def __init__(self, cfg_path: Optional[str] = None):
         super().__init__()
@@ -1005,11 +1005,11 @@ class MainWindow(QMainWindow):
             self._hide_start_progress()
 
     def _stop_preview_for_cam(self, cam_cfg: VideoCamConfig) -> bool:
-        cam_index = int(cam_cfg.DeviceIndex)
-        if cam_index not in self.preview_mgr.workers:
+        key = preview_key(cam_cfg)
+        if key not in self.preview_mgr.workers:
             return False
-        self.log(f"Stopping preview for camera {cam_cfg.Label} (index {cam_index})")
-        return self.preview_mgr.stop_cam_preview(cam_index)
+        self.log(f"Stopping preview for camera {cam_cfg.Label} ({key})")
+        return self.preview_mgr.stop_cam_preview(key)
 
     def on_stop(self):
         try:
