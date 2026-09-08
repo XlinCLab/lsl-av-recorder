@@ -347,6 +347,17 @@ class CameraPanel(QWidget):
     def set_remove_enabled(self, enabled: bool):
         self.btn_remove.setEnabled(enabled)
 
+    def set_settings_controls_enabled(self, enabled: bool):
+        """Enable/disable Apply settings and Refresh device capabilities --
+        both shell out to ffmpeg/AVFoundation to probe or reconfigure this
+        camera's device, which must not run while a recording is active,
+        since RunController's own capture may be holding that same device
+        open."""
+        has_device = isinstance(self.device_name.currentData(), dict)
+        final = enabled and has_device
+        self.btn_apply.setEnabled(final)
+        self.btn_refresh_caps.setEnabled(final)
+
     def _set_fps_choices(self, fps_values: list[int], current_fps: int | None):
         fps_sorted = sorted({int(x) for x in fps_values if int(x) > 0})
         self.fps.blockSignals(True)

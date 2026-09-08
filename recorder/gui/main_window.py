@@ -728,11 +728,19 @@ class MainWindow(QMainWindow):
             (len(self.cam_panels) < self.max_cams) and not self._recording_active
         )
         self._update_remove_buttons()
+        self._update_camera_settings_controls()
 
     def _update_remove_buttons(self):
         enabled = (len(self.cam_panels) > 1) and not self._recording_active
         for panel in self.cam_panels:
             panel.set_remove_enabled(enabled)
+
+    def _update_camera_settings_controls(self):
+        # Apply settings / Refresh device capabilities both shell out to
+        # ffmpeg/AVFoundation to probe or reconfigure a camera's device,
+        # which must not run while a recording is active.
+        for panel in self.cam_panels:
+            panel.set_settings_controls_enabled(not self._recording_active)
 
     def _add_camera_panel(self, cam_cfg: VideoCamConfig | None = None) -> Optional[CameraPanel]:
         if len(self.cam_panels) >= self.max_cams:
