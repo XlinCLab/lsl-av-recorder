@@ -2,6 +2,7 @@ import json
 import logging
 import re
 import sys
+import time
 from typing import Any, Dict
 
 from ..utils.constants import _project_root
@@ -408,14 +409,22 @@ def probe_mac_mode_support(
     height: int | None,
     fps: int,
     pixel_format: str | None = None,
+    retries: int = 2,
+    retry_delay: float = 1.0,
 ) -> bool:
+    """Returns True if ffmpeg/AVFoundation confirms this exact mode actually opens."""
     if not IS_MAC:
         return True
     device = str(device_index) if device_index is not None else reformat_devnode_for_ffmpeg(devnode)
     ff_pf = None
     if pixel_format:
         ff_pf = PIXEL_FORMAT_MAP.get(str(pixel_format).upper(), str(pixel_format).lower())
-    return probe_avfoundation_mode(device, width, height, fps, ff_pf)
+    for attempt in range(retries):
+        if attempt > 0:
+            time.sleep(retry_delay)
+        if probe_avfoundation_mode(device, width, height, fps, ff_pf):
+            return True
+    return False
 
 
 def get_control_settings_string(controls: dict) -> str:
