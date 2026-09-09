@@ -1,10 +1,12 @@
 """Tests for recorder.video.avfoundation_capture."""
 from __future__ import annotations
 
+from recorder.video import avfoundation_capture as af
 from recorder.video.avfoundation_capture import (_build_modes_by_format,
                                                  _decode_fourcc,
                                                  _expand_frame_rate_range,
                                                  _resolve_device_position,
+                                                 _select_frame_rate_range,
                                                  modes_match,
                                                  pixel_format_label)
 
@@ -154,3 +156,121 @@ def test_modes_match_searches_across_formats_when_none_given():
 def test_modes_match_false_when_no_capabilities_known():
     """Fails closed: with nothing to check against, nothing is confirmed."""
     assert modes_match({}, 1280, 720, 30) is False
+
+
+# ---------------------------------------------------------------------------
+# _select_frame_rate_range
+# ---------------------------------------------------------------------------
+
+def test_select_frame_rate_range_picks_tightest_covering_range():
+    """When multiple ranges cover the requested fps, the one with the lowest
+    max fps wins -- e.g. an exact discrete-60fps range over a broader 5-90fps
+    sibling that also happens to cover it, so we land on the device's
+    precise match rather than an unnecessarily higher one."""
+    ranges = [(5.0, 90.0), (60.0, 60.0), (5.0, 30.0)]
+    assert _select_frame_rate_range(ranges=ranges, fps=60.0) == 1
+
+
+def test_select_frame_rate_range_none_when_nothing_covers():
+    assert _select_frame_rate_range(ranges=[(5.0, 30.0)], fps=60.0) is None
+
+
+def test_select_frame_rate_range_tolerates_near_boundary_float_noise():
+    """AVFoundation frame rates often carry float noise (e.g. 30.00003000003
+    was observed on real hardware); a small tolerance keeps a request of
+    exactly 30 matching a range reported as (29.999, 30.0)."""
+    assert _select_frame_rate_range([(29.999, 30.0)], 30.0) == 0
+
+
+def test_select_frame_rate_range_empty_ranges_returns_none():
+    assert _select_frame_rate_range([], 30.0) is None
+
+
+# ---------------------------------------------------------------------------
+# force_active_format
+# ---------------------------------------------------------------------------
+
+class _FakeFrameRateRange:
+    def __init__(self, min_duration):
+        self._min_duration = min_duration
+
+    def minFrameDuration(self):
+        return self._min_duration
+
+
+class _FakeDevice:
+    def __init__(self, name, lock_ok=True):
+        self._name = name
+        self.lock_ok = lock_ok
+        self.locked = False
+        self.unlocked = False
+        self.active_format = None
+        self.min_duration = None
+        self.max_duration = None
+
+    def localizedName(self):
+        return self._name
+
+    def lockForConfiguration_(self, _err):
+        self.locked = self.lock_ok
+        return (self.lock_ok, None)
+
+    def setActiveFormat_(self, fmt):
+        self.active_format = fmt
+
+    def setActiveVideoMinFrameDuration_(self, duration):
+        self.min_duration = duration
+
+    def setActiveVideoMaxFrameDuration_(self, duration):
+        self.max_duration = duration
+
+    def unlockForConfiguration(self):
+        self.unlocked = True
+
+
+def test_force_active_format_false_when_device_not_found(monkeypatch):
+    monkeypatch.setattr(af, "_discovered_devices", lambda: [_FakeDevice("Other Cam")])
+    assert af.force_active_format(None, 1280, 720, 60, device_name="Missing") is False
+
+
+def test_force_active_format_false_when_no_matching_format(monkeypatch):
+    """A matching device is found but nothing in its native formats covers
+    the requested combination: must not lock/touch the device at all."""
+    device = _FakeDevice("Cam")
+    monkeypatch.setattr(af, "_discovered_devices", lambda: [device])
+    monkeypatch.setattr(af, "_find_native_format_and_range", lambda *a, **k: None)
+
+    assert af.force_active_format(0, 1280, 720, 60, device_name="Cam") is False
+    assert device.locked is False
+
+
+def test_force_active_format_false_when_lock_fails(monkeypatch):
+    device = _FakeDevice("Cam", lock_ok=False)
+    monkeypatch.setattr(af, "_discovered_devices", lambda: [device])
+    monkeypatch.setattr(
+        af, "_find_native_format_and_range",
+        lambda *a, **k: ("TARGET_FMT", _FakeFrameRateRange(5)),
+    )
+
+    assert af.force_active_format(0, 1280, 720, 60, device_name="Cam") is False
+    assert device.active_format is None
+
+
+def test_force_active_format_applies_format_and_frame_duration_on_success(monkeypatch):
+    """On success: the target format and matching min/max frame duration are
+    set while locked, and the device is unlocked afterward."""
+    device = _FakeDevice("Cam")
+    target_range = _FakeFrameRateRange(min_duration=123)
+    monkeypatch.setattr(af, "_discovered_devices", lambda: [device])
+    monkeypatch.setattr(
+        af, "_find_native_format_and_range",
+        lambda *a, **k: ("TARGET_FMT", target_range),
+    )
+
+    result = af.force_active_format(0, 1280, 720, 60, pixel_format="NV12", device_name="Cam")
+
+    assert result is True
+    assert device.active_format == "TARGET_FMT"
+    assert device.min_duration == 123
+    assert device.max_duration == 123
+    assert device.unlocked is True

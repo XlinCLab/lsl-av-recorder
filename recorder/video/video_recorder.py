@@ -7,6 +7,8 @@ from typing import Callable, Optional
 import cv2
 from pylsl import local_clock
 
+from ..video.constants import IS_MAC
+from .avfoundation_capture import force_active_format
 from .color_adjust import apply_color_adjustments
 from .constants import DEFAULT_BRIGHTNESS, DEFAULT_HUE, DEFAULT_SATURATION
 from .devices import resolve_cv2_device_index
@@ -212,6 +214,33 @@ class VideoRecorder:
 
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.cam.Width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.cam.Height)
+
+        # Workaround for setting pixel format on MacOS
+        if IS_MAC and self.cam.FPS:
+            # cv2's AVFoundation backend never selects among a device's native
+            # AVCaptureDeviceFormats itself, rather only adjusts frame duration
+            # within whatever format the OS already happens to have active.
+            # Forcing the device onto the configured native format via a
+            # second independent AVCaptureDevice reference persists for the
+            # rest of this capture session since cv2 never overwrites it.
+            pixel_format = getattr(self.cam, "PixelFormat", None)
+            forced = force_active_format(
+                device_index=self.cam.DeviceIndex,
+                width=int(self.cam.Width),
+                height=int(self.cam.Height),
+                fps=float(self.cam.FPS),
+                pixel_format=pixel_format,
+                device_name=getattr(self.cam, "DeviceName", None),
+            )
+            if forced:
+                self.info(f"Force-set active pixel format to {pixel_format} for {self.cam.Label}")
+            if not forced:
+                self.warning(
+                    f"Could not force native capture pixel format {pixel_format} for {self.cam.Label}; "
+                    "the achieved frame rate may fall back to whatever "
+                    "AVFoundation's default active format allows."
+                )
+
         self.cap.set(cv2.CAP_PROP_FPS, self.cam.FPS)
 
         reported_fps = float(self.cap.get(cv2.CAP_PROP_FPS) or 0.0)

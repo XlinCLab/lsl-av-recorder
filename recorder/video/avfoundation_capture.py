@@ -193,3 +193,111 @@ def mode_supported(
         fps=fps,
         pixel_format=pixel_format,
     )
+
+
+def _select_frame_rate_range(ranges: List[Tuple[float, float]], fps: float) -> Optional[int]:
+    """Pick the index of the range (from however many AVCaptureDeviceFormat
+    objects/frame-rate-ranges cover a given resolution/pixel_format) that
+    covers `fps`, preferring the tightest one (lowest max fps) that still
+    reaches it, e.g. for a camera reporting a separate discrete-rate format
+    per fps, this picks the exact-match one rather than an unnecessarily
+    higher-capability sibling. Returns None if nothing covers `fps`."""
+    best_idx = None
+    best_max = None
+    for i, (lo, hi) in enumerate(ranges):
+        if lo - 0.5 <= fps <= hi + 0.5:
+            if best_max is None or hi < best_max:
+                best_max = hi
+                best_idx = i
+    return best_idx
+
+
+def _find_native_format_and_range(
+        device,
+        width: int,
+        height: int,
+        fps: float,
+        pixel_format: Optional[str],
+    ):
+    """Among this device's native AVCaptureDeviceFormats, find the one
+    matching width/height[/pixel_format] together with the specific
+    AVFrameRateRange (of possibly several such formats) that best covers
+    `fps`. Returns (format, frame_rate_range) or None."""
+    import AVFoundation
+
+    candidates = []
+    for fmt in device.formats():
+        desc = fmt.formatDescription()
+        dims = AVFoundation.CMVideoFormatDescriptionGetDimensions(desc)
+        if int(dims.width) != width or int(dims.height) != height:
+            continue
+        if pixel_format is not None:
+            fourcc_int = AVFoundation.CMFormatDescriptionGetMediaSubType(desc)
+            if pixel_format_label(fourcc_int) != str(pixel_format).upper():
+                continue
+        for frame_rate_range in fmt.videoSupportedFrameRateRanges():
+            candidates.append((fmt, frame_rate_range))
+
+    ranges = [(r.minFrameRate(), r.maxFrameRate()) for _, r in candidates]
+    idx = _select_frame_rate_range(ranges=ranges, fps=fps)
+    return candidates[idx] if idx is not None else None
+
+
+def force_active_format(
+    device_index: Optional[int],
+    width: int,
+    height: int,
+    fps: float,
+    pixel_format: Optional[str] = None,
+    device_name: Optional[str] = None,
+) -> bool:
+    """Force the physical camera onto the exact native AVCaptureDeviceFormat
+    matching width/height/fps[/pixel_format], bypassing cv2's own capture
+    negotiation. Returns True if the format was found and applied.
+
+    Must be called AFTER cv2.VideoCapture has already opened the device and
+    its capture session has started running -- calling this before the
+    session starts has no effect, since AVCaptureSession renegotiates the
+    active format according to its own preset as soon as it starts running.
+
+    This works because AVCaptureDevice.activeFormat is a property of the
+    physical device, not of whichever AVCaptureSession happens to be
+    attached to it; cv2's AVFoundation backend never calls setActiveFormat
+    itself after opening (it only adjusts min/max frame duration within
+    whatever format is already active, and hardcodes delivered frames to
+    BGRA regardless of the native format), so forcing it via this second,
+    independent device reference persists for the rest of cv2's capture
+    session.
+    """
+    devices = _discovered_devices()
+    names = [str(d.localizedName()) for d in devices]
+    position = _resolve_device_position(
+        names=names,
+        device_name=device_name,
+        fallback_index=device_index
+    )
+    if position is None:
+        return False
+    device = devices[position]
+
+    found = _find_native_format_and_range(
+        device=device,
+        width=width,
+        height=height,
+        fps=fps,
+        pixel_format=pixel_format,
+    )
+    if found is None:
+        return False
+    target_format, target_range = found
+
+    ok, _err = device.lockForConfiguration_(None)
+    if not ok:
+        return False
+    try:
+        device.setActiveFormat_(target_format)
+        device.setActiveVideoMinFrameDuration_(target_range.minFrameDuration())
+        device.setActiveVideoMaxFrameDuration_(target_range.minFrameDuration())
+    finally:
+        device.unlockForConfiguration()
+    return True
