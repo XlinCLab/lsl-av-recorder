@@ -214,15 +214,17 @@ class VideoRecorder:
 
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.cam.Width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.cam.Height)
+        self.cap.set(cv2.CAP_PROP_FPS, self.cam.FPS)
 
         # Workaround for setting pixel format on MacOS
         if IS_MAC and self.cam.FPS:
             # cv2's AVFoundation backend never selects among a device's native
             # AVCaptureDeviceFormats itself, rather only adjusts frame duration
             # within whatever format the OS already happens to have active.
-            # Forcing the device onto the configured native format via a
-            # second independent AVCaptureDevice reference persists for the
-            # rest of this capture session since cv2 never overwrites it.
+            # For a continuous frame-rate range (e.g. 15-30fps), cv2's
+            # CAP_PROP_FPS handling pins BOTH min and max duration to the
+            # range's fastest rate rather than the one actually requested.
+            # This MUST run after cv2's CAP_PROP_FPS call above.
             pixel_format = getattr(self.cam, "PixelFormat", None)
             forced = force_active_format(
                 device_index=self.cam.DeviceIndex,
@@ -240,8 +242,6 @@ class VideoRecorder:
                     "the achieved frame rate may fall back to whatever "
                     "AVFoundation's default active format allows."
                 )
-
-        self.cap.set(cv2.CAP_PROP_FPS, self.cam.FPS)
 
         reported_fps = float(self.cap.get(cv2.CAP_PROP_FPS) or 0.0)
         if reported_fps > 0 and abs(reported_fps - float(self.cam.FPS)) > 0.1:
