@@ -224,6 +224,45 @@ def test_maybe_warn_fps_reject_does_not_update_baseline():
 
 
 # ---------------------------------------------------------------------------
+# _maybe_warn_fps grace period after VideoWriter opens
+# ---------------------------------------------------------------------------
+
+def test_maybe_warn_fps_silent_during_grace_period_after_writer_opens():
+    """Real capture rate can genuinely dip for a few seconds right after the
+    VideoWriter opens (e.g. two cameras starting simultaneously contending
+    for CPU/USB), then recover -- a large deviation within the grace period
+    must not warn at all, not even once."""
+    logs = []
+    rec = _recorder(fps=60, status_cb=lambda msg, level: logs.append((level, msg)))
+    rec._writer_opened_at = 100.0
+    rec._maybe_warn_fps(inst_fps=10.0, now=105.0)  # 5s after open, big deviation
+    assert logs == []
+    assert rec._last_fps_warn_ts is None
+
+
+def test_maybe_warn_fps_warns_once_grace_period_has_elapsed():
+    """The same deviation, once the grace period has passed, warns normally."""
+    logs = []
+    rec = _recorder(fps=60, status_cb=lambda msg, level: logs.append((level, msg)))
+    rec._writer_opened_at = 100.0
+    rec._maybe_warn_fps(inst_fps=10.0, now=111.0)  # 11s after open, past the 10s grace period
+    warnings = _collect_warnings(logs)
+    assert len(warnings) == 1
+
+
+def test_maybe_warn_fps_grace_period_does_not_apply_before_writer_opens():
+    """With no VideoWriter open yet (_writer_opened_at is still None, e.g.
+    during fps probing), the grace period does not gate anything -- this
+    only guards the post-open settling window."""
+    logs = []
+    rec = _recorder(fps=60, status_cb=lambda msg, level: logs.append((level, msg)))
+    assert rec._writer_opened_at is None
+    rec._maybe_warn_fps(inst_fps=10.0, now=100.0)
+    warnings = _collect_warnings(logs)
+    assert len(warnings) == 1
+
+
+# ---------------------------------------------------------------------------
 # _prompt_size_divergence
 # ---------------------------------------------------------------------------
 

@@ -76,6 +76,13 @@ class VideoRecorder:
         self._fps_warn_rel = 0.10
         self._fps_warn_abs = 0.5
         self._last_fps_warn_ts = None
+        # How long to wait after the VideoWriter opens before the deviation
+        # check is allowed to warn at all: right after startup (especially
+        # with multiple cameras capturing simultaneously), capture rate can
+        # genuinely dip for a few seconds while things settle. A false
+        # warning here is worse than a real one arriving a few seconds late.
+        self._fps_warn_grace_period = 10.0
+        self._writer_opened_at: Optional[float] = None
         self._brightness = self.cam.Brightness
         self._hue = self.cam.Hue
         self._saturation = self.cam.Saturation
@@ -118,6 +125,11 @@ class VideoRecorder:
         return 0.0
 
     def _maybe_warn_fps(self, inst_fps: float, now: float):
+        if (
+            self._writer_opened_at is not None
+            and (now - self._writer_opened_at) < self._fps_warn_grace_period
+        ):
+            return
         expected = self._expected_fps()
         if expected <= 0:
             return
@@ -397,6 +409,16 @@ class VideoRecorder:
                         self.writer.write(buffered_frame)
                     self._fps_probe_frames = []
                     self._fps_probe_times = []
+
+                    # Restart the deviation-check window here rather than
+                    # leaving it dating back to _start_ts (set at the very
+                    # first captured frame): otherwise the first post-open
+                    # 2s window spans the probing/startup ramp-up period,
+                    # when frames arrive slower than steady-state, and
+                    # falsely reports a deviation right as the writer opens.
+                    self._last_log_ts = now
+                    self._last_log_frame_idx = self.frame_idx
+                    self._writer_opened_at = now
                 else:
                     self.writer.write(frame)
 
