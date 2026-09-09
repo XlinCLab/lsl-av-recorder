@@ -289,15 +289,19 @@ def force_active_format(
     )
     if found is None:
         return False
-    target_format, target_range = found
+    target_format, _target_range = found
+
+    # Build the frame duration from the requested fps directly
+    import AVFoundation
+    desired_duration = AVFoundation.CMTimeMake(1, int(round(fps)))
 
     ok, _err = device.lockForConfiguration_(None)
     if not ok:
         return False
     try:
         device.setActiveFormat_(target_format)
-        device.setActiveVideoMinFrameDuration_(target_range.minFrameDuration())
-        device.setActiveVideoMaxFrameDuration_(target_range.minFrameDuration())
+        device.setActiveVideoMinFrameDuration_(desired_duration)
+        device.setActiveVideoMaxFrameDuration_(desired_duration)
     finally:
         device.unlockForConfiguration()
     return True
