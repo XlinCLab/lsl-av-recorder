@@ -15,7 +15,13 @@ from recorder.config import VideoCamConfig
 from recorder.video.video_recorder import VideoRecorder
 
 
-def _recorder(*, fps=30, preview_cb=None, preview_fps=None, status_cb=None):
+def _recorder(*,
+              fps=30,
+              preview_cb=None,
+              preview_fps=None,
+              status_cb=None,
+              divergence_cb=None
+              ):
     """Build a VideoRecorder for a single camera without opening hardware."""
     return VideoRecorder(
         cam_cfg=VideoCamConfig(Enabled=True, Label="Cam", FPS=fps),
@@ -23,6 +29,7 @@ def _recorder(*, fps=30, preview_cb=None, preview_fps=None, status_cb=None):
         status_cb=status_cb,
         preview_cb=preview_cb,
         preview_fps=preview_fps,
+        divergence_cb=divergence_cb,
     )
 
 
@@ -88,8 +95,20 @@ def test_expected_fps_falls_back_to_reported_then_writer_fps():
     assert rec._expected_fps() == 0.0
 
 
+def test_expected_fps_prefers_accepted_override_over_everything():
+    """Once the user accepts an observed rate via the divergence
+    prompt, that becomes the new baseline -- it takes priority even over
+    cam.FPS, since the operator has explicitly overridden their original
+    configured intent for this run."""
+    rec = _recorder(fps=30)
+    rec._accepted_fps_override = 24.0
+    rec._reported_fps = 60.0
+    rec.writer_fps = 60.0
+    assert rec._expected_fps() == 24.0
+
+
 # ---------------------------------------------------------------------------
-# _maybe_warn_fps
+# _maybe_warn_fps / divergence_cb (the loud-failure popup hook)
 # ---------------------------------------------------------------------------
 
 def test_maybe_warn_fps_within_threshold_is_silent():
@@ -133,6 +152,106 @@ def test_maybe_warn_fps_noop_when_expected_unknown():
     rec._reported_fps = None
     rec._maybe_warn_fps(inst_fps=1000.0, now=100.0)
     assert logs == []
+
+
+def test_maybe_warn_fps_does_not_call_divergence_cb_without_one():
+    """No divergence_cb configured: warning still logs, but nothing
+    crashes trying to invoke a callback that isn't there."""
+    rec = _recorder(fps=30, status_cb=lambda msg, level: None)
+    rec._maybe_warn_fps(inst_fps=20.0, now=100.0)  # must not raise error
+
+
+def test_maybe_warn_fps_prompts_divergence_cb_on_warn():
+    """A genuine fps deviation that invokes divergence_cb
+    with a human-readable title/message naming the camera
+    and both expected and observed frame rates."""
+    calls = []
+    rec = _recorder(
+        fps=30,
+        status_cb=lambda msg, level: None,
+        divergence_cb=lambda title, msg: calls.append((title, msg)) or True,
+    )
+    rec._maybe_warn_fps(inst_fps=20.0, now=100.0)
+    assert len(calls) == 1
+    title, message = calls[0]
+    assert "Cam" in title
+    assert "30.00" in message and "20.00" in message
+
+
+def test_maybe_warn_fps_skips_divergence_cb_within_threshold():
+    """No deviation -> no log warning -> divergence_cb is never consulted."""
+    calls = []
+    rec = _recorder(
+        fps=30,
+        status_cb=lambda msg, level: None,
+        divergence_cb=lambda title, msg: calls.append(1) or True,
+    )
+    rec._maybe_warn_fps(inst_fps=29.9, now=100.0)
+    assert calls == []
+
+
+def test_maybe_warn_fps_accept_updates_expected_fps_baseline():
+    """Accepting the divergence (divergence_cb returns True) makes the
+    observed rate the new expected baseline going forward."""
+    rec = _recorder(
+        fps=30,
+        status_cb=lambda msg, level: None,
+        divergence_cb=lambda title, msg: True,
+    )
+    rec._maybe_warn_fps(inst_fps=20.0, now=100.0)
+    assert rec._accepted_fps_override == 20.0
+    assert rec._expected_fps() == 20.0
+    # A further reading matching the newly-accepted baseline no longer warns.
+    calls = []
+    rec.divergence_cb = lambda title, msg: calls.append(1) or True
+    rec._maybe_warn_fps(inst_fps=20.1, now=106.0)
+    assert calls == []
+
+
+def test_maybe_warn_fps_reject_does_not_update_baseline():
+    """Rejecting (divergence_cb returns False; the caller has already
+    triggered an abort itself) leaves _expected_fps() unchanged, so the
+    original configured value is still what's being compared against for
+    whatever brief remainder of the loop runs before it stops."""
+    rec = _recorder(
+        fps=30,
+        status_cb=lambda msg, level: None,
+        divergence_cb=lambda title, msg: False,
+    )
+    rec._maybe_warn_fps(inst_fps=20.0, now=100.0)
+    assert rec._accepted_fps_override is None
+    assert rec._expected_fps() == 30.0
+
+
+# ---------------------------------------------------------------------------
+# _prompt_size_divergence
+# ---------------------------------------------------------------------------
+
+def test_prompt_size_divergence_calls_cb_with_camera_and_sizes():
+    calls = []
+    rec = _recorder(
+        fps=30,
+        status_cb=lambda msg, level: None,
+        divergence_cb=lambda title, msg: calls.append((title, msg)) or True,
+    )
+    rec._prompt_size_divergence(actual_w=640, actual_h=480)
+    assert len(calls) == 1
+    title, message = calls[0]
+    assert "Cam" in title
+    assert "640x480" in message
+
+
+def test_prompt_size_divergence_only_fires_once_per_recording():
+    """The frame-size check only ever runs once (at writer-open time)."""
+    calls = []
+    rec = _recorder(
+        fps=30,
+        status_cb=lambda msg, level: None,
+        divergence_cb=lambda title, msg: calls.append(1) or True,
+    )
+    rec._prompt_size_divergence(actual_w=640, actual_h=480)
+    rec._prompt_size_divergence(actual_w=640, actual_h=480)
+    assert len(calls) == 1
 
 
 # ---------------------------------------------------------------------------

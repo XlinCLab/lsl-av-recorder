@@ -21,12 +21,20 @@ class VideoRecorder:
         frame_cb: Callable = None,
         preview_cb: Optional[Callable] = None,
         preview_fps: Optional[float] = None,
+        divergence_cb: Optional[Callable[[str, str], bool]] = None,
     ):
         self.cam = cam_cfg
         self.output_path = output_path
         self.status_cb = status_cb
         self.frame_cb = frame_cb
         self.preview_cb = preview_cb
+        # Called (title, message) -> bool when a measured setting diverges
+        # from what was configured; True = accept and keep recording, False = abort
+        self.divergence_cb = divergence_cb
+        # Set once the operator accepts an observed fps as the new baseline,
+        # so _expected_fps() stops comparing against the original configured value
+        self._accepted_fps_override: Optional[float] = None
+        self._size_divergence_prompted = False
         self._preview_interval = None
         self._next_preview_ts = None
         if self.preview_cb and preview_fps:
@@ -97,6 +105,8 @@ class VideoRecorder:
         self.log(msg, loglevel="DEBUG")
 
     def _expected_fps(self) -> float:
+        if self._accepted_fps_override is not None:
+            return float(self._accepted_fps_override)
         if self.cam.FPS:
             return float(self.cam.FPS)
         if self._reported_fps is not None:
@@ -122,6 +132,36 @@ class VideoRecorder:
                 f"expected≈{expected:.2f}, observed={inst_fps:.2f}"
             )
             self._last_fps_warn_ts = now
+            self._prompt_fps_divergence(expected, inst_fps)
+
+    def _prompt_fps_divergence(self, expected: float, observed: float):
+        if not self.divergence_cb:
+            return
+        accepted = self.divergence_cb(
+            f"Camera FPS deviation: {self.cam.Label}",
+            f"Camera {self.cam.Label} is configured to record at {expected:.2f} fps, "
+            f"but {observed:.2f} fps is actually being captured.\n\n"
+            "Accept the observed frame rate as the new expected frame rate "
+            "and continue recording, or abort the recording and adjust settings?",
+        )
+        if accepted:
+            # Set current observed rate as the new accepted baseline;
+            # further deviation from THIS value will still warn again
+            self._accepted_fps_override = observed
+        # If rejected, divergence_cb has already triggered the abort itself
+
+    def _prompt_size_divergence(self, actual_w: int, actual_h: int):
+        if not self.divergence_cb or self._size_divergence_prompted:
+            return
+        self._size_divergence_prompted = True
+        self.divergence_cb(
+            f"Camera frame size mismatch: {self.cam.Label}",
+            f"Camera {self.cam.Label} is configured for "
+            f"{self.cam.Width}x{self.cam.Height}, but is actually delivering "
+            f"{actual_w}x{actual_h}.\n\n"
+            "Accept the actual size and continue recording, or abort the "
+            "recording and adjust settings?",
+        )
 
     def _maybe_emit_preview(self, frame):
         if not self.preview_cb or self._preview_interval is None:
@@ -305,6 +345,7 @@ class VideoRecorder:
                             f"Camera frame size mismatch: requested={self.cam.Width}x{self.cam.Height} "
                             f"actual={actual_w}x{actual_h}"
                         )
+                        self._prompt_size_divergence(actual_w, actual_h)
 
                     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
                     self.writer = cv2.VideoWriter(
@@ -357,7 +398,21 @@ class VideoRecorder:
         self.running = False
         if self.thread:
             self.debug(f"VideoRecorder stopping (join): {self.cam.Label}")
-            self.thread.join()
+            # Bounded: if this camera's own worker thread is meanwhile
+            # blocked inside divergence_cb waiting on a DIFFERENT camera's
+            # still-open dialog, an unbounded join here (called from the
+            # GUI thread while handling that other camera's abort) would
+            # freeze the app forever -- the GUI thread would never get back
+            # to its event loop to show this camera's own dialog. A normal
+            # stop always finishes far under this, so it changes nothing in
+            # the common case.
+            self.thread.join(timeout=10.0)
+            if self.thread.is_alive():
+                self.warning(
+                    f"VideoRecorder thread for {self.cam.Label} did not stop "
+                    "within 10s (likely waiting on a settings-divergence "
+                    "prompt for another camera); continuing teardown anyway."
+                )
             self.debug(f"VideoRecorder joined: {self.cam.Label}")
 
         if self.writer:

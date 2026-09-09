@@ -67,6 +67,22 @@ def _default_camera_label(label: str, position: int) -> str:
     return label.strip() or f"Cam{position}"
 
 
+class _DivergenceRequest:
+    """A pending "measured setting diverges from configured" decision,
+    raised from a VideoRecorder's own worker thread and answered by a modal
+    dialog shown on the GUI thread. `event` is set once the dialog has been
+    answered (or the app decides not to show one), unblocking the worker
+    thread waiting in MainWindow.request_setting_divergence_decision."""
+
+    __slots__ = ("title", "message", "event", "accepted")
+
+    def __init__(self, title: str, message: str):
+        self.title = title
+        self.message = message
+        self.event = threading.Event()
+        self.accepted = False
+
+
 class _ApplyAllThread(QThread):
     finished_apply = pyqtSignal(list)
     failed = pyqtSignal(str)
@@ -102,6 +118,8 @@ class _ApplyAllThread(QThread):
 class MainWindow(QMainWindow):
     log_signal = pyqtSignal(str)
     preview_frame_signal = pyqtSignal(object, object)
+    divergence_signal = pyqtSignal(object)
+    abort_active_run_signal = pyqtSignal(str)
 
     def __init__(self, cfg_path: Optional[str] = None):
         super().__init__()
@@ -117,6 +135,8 @@ class MainWindow(QMainWindow):
         self.debug_logs.setChecked(self._show_debug)
         self.debug_logs.stateChanged.connect(self._on_debug_logs_changed)
         self.log_signal.connect(self._append_log)
+        self.divergence_signal.connect(self._on_divergence_request)
+        self.abort_active_run_signal.connect(self._abort_active_run)
         self._run_log_file = None
         self._log_lock = threading.Lock()
         self._log_path = None
@@ -995,6 +1015,7 @@ class MainWindow(QMainWindow):
                 lsl_streams=lsl_streams,
                 preview_release_cb=self._stop_preview_for_cam,
                 preview_frame_cb=self.preview_frame_signal.emit,
+                divergence_cb=self.request_setting_divergence_decision,
             )
             self._open_run_log()
             self._copy_app_log_to(self.controller.outdir)
@@ -1025,12 +1046,70 @@ class MainWindow(QMainWindow):
         if getattr(cam_cfg, "Enabled", False):
             self.preview_mgr.start_cam_preview(cam_cfg)
 
+    def request_setting_divergence_decision(self, title: str, message: str) -> bool:
+        """Blocks the calling thread until the user answers a modal dialog
+        shown on the GUI thread.
+        Returns True (accept: keep recording) or False (abort run).
+
+        Thread-safe: may be called from any thread, in particular a
+        VideoRecorder's own worker thread when a measured setting (fps,
+        frame size) diverges from what was configured.
+        """
+        req = _DivergenceRequest(title, message)
+        self.divergence_signal.emit(req)
+        req.event.wait()
+        if not req.accepted:
+            self.abort_active_run_signal.emit(f"{title}\n\n{message}")
+        return req.accepted
+
+    def _on_divergence_request(self, req: _DivergenceRequest):
+        try:
+            box = QMessageBox(self)
+            box.setWindowTitle(req.title)
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setText(req.message)
+            accept_btn = box.addButton("Accept and continue", QMessageBox.ButtonRole.AcceptRole)
+            abort_btn = box.addButton("Abort recording", QMessageBox.ButtonRole.RejectRole)
+            box.setDefaultButton(abort_btn)
+            box.exec()
+            # Closing the dialog any other way (e.g. the window's own close button)
+            # leaves clickedButton() as None; treat as an implicit abort
+            # rather than silently continuing on an unacknowledged mismatch
+            req.accepted = box.clickedButton() is accept_btn
+        finally:
+            req.event.set()
+
+    def _abort_active_run(self, reason: str):
+        # Only real recordings are wired to request_setting_divergence_decision
+        # (see on_test_recording: test recordings deliberately don't get a
+        # divergence_cb, since a test already validates these settings at
+        # the end with a detailed report).
+        if self._recording_active:
+            self._abort_real_recording(reason)
+
+    def _teardown_recording(self) -> str:
+        """Stop the active controller/previews and copy the run log to the
+        output directory. Returns that directory. Shared by the
+        user-initiated Stop button and an automatic abort triggered by a
+        rejected settings-divergence prompt."""
+        self.preview_mgr.stop_all_previews()
+        self.controller.stop()
+        outdir = os.path.abspath(self.controller.outdir)
+        self._copy_app_log_to(outdir)
+        return outdir
+
+    def _reset_recording_ui_state(self):
+        self.btn_start.setEnabled(True)
+        self.btn_stop.setEnabled(False)
+        self._recording_active = False
+        self._update_add_camera_button()
+        if self.cfg.Video.Enabled:
+            self._refresh_previews_from_panels()
+        self._close_run_log()
+
     def on_stop(self):
         try:
-            self.preview_mgr.stop_all_previews()
-            self.controller.stop()
-            outdir = os.path.abspath(self.controller.outdir)
-            self._copy_app_log_to(outdir)
+            outdir = self._teardown_recording()
             msg = f"Results written to:\n{outdir}\n\nClose the app now?"
             confirm = QMessageBox.question(
                 self,
@@ -1042,14 +1121,19 @@ class MainWindow(QMainWindow):
             if confirm == QMessageBox.StandardButton.Yes:
                 self.close()
         finally:
-            self.btn_start.setEnabled(True)
-            self.btn_stop.setEnabled(False)
-            self._recording_active = False
-            self._update_add_camera_button()
-            if self.cfg.Video.Enabled:
-                self._refresh_previews_from_panels()
-            self._close_run_log()
+            self._reset_recording_ui_state()
 
+    def _abort_real_recording(self, reason: str):
+        try:
+            outdir = self._teardown_recording()
+            QMessageBox.warning(
+                self,
+                "Recording aborted",
+                f"{reason}\n\nRecording stopped automatically. Partial results "
+                f"written to:\n{outdir}",
+            )
+        finally:
+            self._reset_recording_ui_state()
 
     def on_test_recording(self):
         """Runs a short, real recording with the currently configured streams
@@ -1093,6 +1177,7 @@ class MainWindow(QMainWindow):
                 test_cfg,
                 status_cb=lambda msg, loglevel: self.log(f"[Test] {msg}", loglevel),
                 lsl_streams=lsl_streams,
+                # NB: no divergence_cb needed for test recordings
             )
             controller.start()
         except Exception as exc:

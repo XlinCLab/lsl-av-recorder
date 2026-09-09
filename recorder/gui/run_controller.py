@@ -37,11 +37,13 @@ class RunController:
         lsl_streams: Optional[List[StreamInfo]] = None,
         preview_release_cb: Optional[Callable[[VideoCamConfig], bool]] = None,
         preview_frame_cb: Optional[Callable[[str, object], None]] = None,
+        divergence_cb: Optional[Callable[[str, str], bool]] = None,
     ):
         self.cfg = cfg
         self.status_cb = status_cb
         self.preview_release_cb = preview_release_cb
         self.preview_frame_cb = preview_frame_cb
+        self.divergence_cb = divergence_cb
         self._running = False
 
         # Audio and video streams
@@ -395,6 +397,7 @@ class RunController:
             ),
             preview_cb=preview_cb,
             preview_fps=getattr(self.cfg.Video, "PreviewFPS", 15),
+            divergence_cb=self.divergence_cb,
         )
         self.videos.append(vr)
         self.info(f"Initialized video stream for camera {cam.Label}")
