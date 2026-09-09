@@ -272,12 +272,13 @@ class VideoRecorder:
         reported_fps = float(self.cap.get(cv2.CAP_PROP_FPS) or 0.0)
         if reported_fps > 0 and abs(reported_fps - float(self.cam.FPS)) > 0.1:
             self.warning(
-                f"Camera FPS mismatch: requested={self.cam.FPS} reported={reported_fps:.3f}"
+                f"Camera FPS mismatch ({self.cam.Label}): "
+                f"requested={self.cam.FPS} reported={reported_fps:.3f}"
             )
         self.writer_fps = None
         self._reported_fps = reported_fps if reported_fps > 0 else None
         if self._reported_fps is not None:
-            self.info(f"Camera reported FPS: {reported_fps:.3f}")
+            self.info(f"Camera reported FPS ({self.cam.Label}): {reported_fps:.3f}")
 
         requested_fps = float(self.cam.FPS or 0.0)
         if requested_fps > 0:
@@ -302,8 +303,8 @@ class VideoRecorder:
                         or (now - self._last_read_fail_log) >= 2.0
                     ):
                         self.warning(
-                            "Camera read failed "
-                            f"({self._read_fail_count} consecutive failures)"
+                            f"Camera read failed ({self.cam.Label}): "
+                            f"{self._read_fail_count} consecutive failures"
                         )
                         self._last_read_fail_log = now
                     time.sleep(0.001)
@@ -344,7 +345,7 @@ class VideoRecorder:
                                 if fps > 0:
                                     self.writer_fps = fps
                                     self.info(
-                                        f"Measured capture FPS: {self.writer_fps:.2f}"
+                                        f"Measured capture FPS ({self.cam.Label}): {self.writer_fps:.2f}"
                                     )
                         if (
                             self.writer_fps is None
@@ -354,7 +355,7 @@ class VideoRecorder:
                             if self._reported_fps is not None:
                                 self.writer_fps = self._reported_fps
                                 self.warning(
-                                    "Falling back to reported FPS: "
+                                    f"Falling back to reported FPS ({self.cam.Label}): "
                                     f"{self.writer_fps:.2f}"
                                 )
                             else:
@@ -363,7 +364,7 @@ class VideoRecorder:
                                     fallback = 30.0
                                 self.writer_fps = fallback
                                 self.warning(
-                                    "Falling back to requested FPS: "
+                                    f"Falling back to requested FPS ({self.cam.Label}): "
                                     f"{self.writer_fps:.2f}"
                                 )
 
@@ -386,7 +387,7 @@ class VideoRecorder:
                             if dt > 0:
                                 inst_fps = frames / dt
                                 self.debug(
-                                    f"Capture FPS (last {dt:.1f}s): {inst_fps:.2f}"
+                                    f"Capture FPS ({self.cam.Label}, last {dt:.1f}s): {inst_fps:.2f}"
                                 )
                                 self._maybe_warn_fps(inst_fps, now)
                             self._last_log_ts = now
@@ -397,7 +398,8 @@ class VideoRecorder:
                     self.writer_size = (actual_w, actual_h)
                     if (actual_w, actual_h) != (self.cam.Width, self.cam.Height):
                         self.warning(
-                            f"Camera frame size mismatch: requested={self.cam.Width}x{self.cam.Height} "
+                            f"Camera frame size mismatch ({self.cam.Label}): "
+                            f"requested={self.cam.Width}x{self.cam.Height} "
                             f"actual={actual_w}x{actual_h}"
                         )
                         self._prompt_size_divergence(actual_w, actual_h)
@@ -416,7 +418,8 @@ class VideoRecorder:
                         break
 
                     self.info(
-                        f"VideoWriter opened: fps={self.writer_fps:.3f} size={actual_w}x{actual_h}"
+                        f"VideoWriter opened ({self.cam.Label}): "
+                        f"fps={self.writer_fps:.3f} size={actual_w}x{actual_h}"
                     )
 
                     for buffered_frame in self._fps_probe_frames:
@@ -450,7 +453,7 @@ class VideoRecorder:
                     frames = self.frame_idx - self._last_log_frame_idx
                     if dt > 0:
                         inst_fps = frames / dt
-                        self.debug(f"Capture FPS (last {dt:.1f}s): {inst_fps:.2f}")
+                        self.debug(f"Capture FPS ({self.cam.Label}, last {dt:.1f}s): {inst_fps:.2f}")
                         self._maybe_warn_fps(inst_fps, now)
                     self._last_log_ts = now
                     self._last_log_frame_idx = self.frame_idx
@@ -501,6 +504,6 @@ class VideoRecorder:
             total_dt = time.perf_counter() - self._start_ts
             if total_dt > 0:
                 avg_fps = self.frame_idx / total_dt
-                self.info(f"Capture FPS (avg): {avg_fps:.2f}")
+                self.info(f"Capture FPS (avg, {self.cam.Label}): {avg_fps:.2f}")
 
         self.info(f"VideoRecorder stopped: {self.cam.Label}")
