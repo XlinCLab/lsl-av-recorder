@@ -37,6 +37,13 @@ class VideoRecorder:
         # so _expected_fps() stops comparing against the original configured value
         self._accepted_fps_override: Optional[float] = None
         self._size_divergence_prompted = False
+        # Set once the operator has chosen to abort via a divergence prompt
+        # (fps or size); once true, no further prompt is shown for this
+        # recorder since the run is already shutting down, and any further
+        # deviation readings during teardown (capture rate dropping toward
+        # zero as the camera is released) are an artifact of that, not a
+        # new decision point.
+        self._abort_requested = False
         self._preview_interval = None
         self._next_preview_ts = None
         if self.preview_cb and preview_fps:
@@ -149,7 +156,7 @@ class VideoRecorder:
             self._prompt_fps_divergence(expected, inst_fps)
 
     def _prompt_fps_divergence(self, expected: float, observed: float):
-        if not self.divergence_cb:
+        if not self.divergence_cb or self._abort_requested:
             return
         accepted = self.divergence_cb(
             f"Camera FPS deviation: {self.cam.Label}",
@@ -162,13 +169,18 @@ class VideoRecorder:
             # Set current observed rate as the new accepted baseline;
             # further deviation from THIS value will still warn again
             self._accepted_fps_override = observed
-        # If rejected, divergence_cb has already triggered the abort itself
+        else:
+            # divergence_cb has already triggered the abort itself; suppress
+            # any further divergence prompt for the rest of this recorder's
+            # teardown, since e.g. the capture rate dropping toward zero as
+            # the camera is released is expected, not a new decision to make
+            self._abort_requested = True
 
     def _prompt_size_divergence(self, actual_w: int, actual_h: int):
-        if not self.divergence_cb or self._size_divergence_prompted:
+        if not self.divergence_cb or self._size_divergence_prompted or self._abort_requested:
             return
         self._size_divergence_prompted = True
-        self.divergence_cb(
+        accepted = self.divergence_cb(
             f"Camera frame size mismatch: {self.cam.Label}",
             f"Camera {self.cam.Label} is configured for "
             f"{self.cam.Width}x{self.cam.Height}, but is actually delivering "
@@ -176,6 +188,8 @@ class VideoRecorder:
             "Accept the actual size and continue recording, or abort the "
             "recording and adjust settings?",
         )
+        if not accepted:
+            self._abort_requested = True
 
     def _maybe_emit_preview(self, frame):
         if not self.preview_cb or self._preview_interval is None:

@@ -223,6 +223,29 @@ def test_maybe_warn_fps_reject_does_not_update_baseline():
     assert rec._expected_fps() == 30.0
 
 
+def test_maybe_warn_fps_reject_sets_abort_flag_and_suppresses_further_prompts():
+    """Once the operator has rejected (aborted) via the divergence prompt,
+    no further prompt is shown for this recorder -- e.g. the capture rate
+    dropping toward zero as the camera is released during teardown must not
+    pop up a second, redundant abort dialog. The warning log line itself
+    still fires each time (useful for diagnosing the teardown), only the
+    popup is suppressed."""
+    calls = []
+    rec = _recorder(
+        fps=30,
+        status_cb=lambda msg, level: None,
+        divergence_cb=lambda title, msg: calls.append(1) or False,
+    )
+    rec._maybe_warn_fps(inst_fps=20.0, now=100.0)
+    assert len(calls) == 1
+    assert rec._abort_requested is True
+
+    # A later deviation reading (e.g. fps collapsing toward zero as the
+    # camera is released during abort teardown) must not prompt again.
+    rec._maybe_warn_fps(inst_fps=0.2, now=110.0)
+    assert len(calls) == 1
+
+
 # ---------------------------------------------------------------------------
 # _maybe_warn_fps grace period after VideoWriter opens
 # ---------------------------------------------------------------------------
@@ -291,6 +314,16 @@ def test_prompt_size_divergence_only_fires_once_per_recording():
     rec._prompt_size_divergence(actual_w=640, actual_h=480)
     rec._prompt_size_divergence(actual_w=640, actual_h=480)
     assert len(calls) == 1
+
+
+def test_prompt_size_divergence_accept_does_not_set_abort_flag():
+    rec = _recorder(
+        fps=30,
+        status_cb=lambda msg, level: None,
+        divergence_cb=lambda title, msg: True,
+    )
+    rec._prompt_size_divergence(actual_w=640, actual_h=480)
+    assert rec._abort_requested is False
 
 
 # ---------------------------------------------------------------------------
