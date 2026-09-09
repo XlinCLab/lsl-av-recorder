@@ -10,6 +10,7 @@ from recorder.video import avfoundation_capture as af
 from recorder.video.avfoundation_capture import (_build_modes_by_format,
                                                  _decode_fourcc,
                                                  _expand_frame_rate_range,
+                                                 _is_discrete_range,
                                                  _resolve_device_position,
                                                  _select_frame_rate_range,
                                                  modes_match,
@@ -192,12 +193,37 @@ def test_select_frame_rate_range_empty_ranges_returns_none():
 
 
 # ---------------------------------------------------------------------------
+# _is_discrete_range
+# ---------------------------------------------------------------------------
+
+def test_is_discrete_range_true_for_equal_bounds():
+    assert _is_discrete_range(60.0, 60.0) is True
+
+
+def test_is_discrete_range_tolerates_float_noise():
+    """Tiny float noise must not be mistaken for a continuous range."""
+    assert _is_discrete_range(30.00003000003, 30.00004100003) is True
+
+
+def test_is_discrete_range_false_for_genuine_continuum():
+    assert _is_discrete_range(15.0, 30.0) is False
+
+
+# ---------------------------------------------------------------------------
 # force_active_format
 # ---------------------------------------------------------------------------
 
 class _FakeFrameRateRange:
-    def __init__(self, min_duration):
+    def __init__(self, min_fps, max_fps, min_duration):
+        self._min_fps = min_fps
+        self._max_fps = max_fps
         self._min_duration = min_duration
+
+    def minFrameRate(self):
+        return self._min_fps
+
+    def maxFrameRate(self):
+        return self._max_fps
 
     def minFrameDuration(self):
         return self._min_duration
@@ -266,20 +292,18 @@ def test_force_active_format_false_when_lock_fails(monkeypatch):
     monkeypatch.setattr(af, "_discovered_devices", lambda: [device])
     monkeypatch.setattr(
         af, "_find_native_format_and_range",
-        lambda *a, **k: ("TARGET_FMT", _FakeFrameRateRange(5)),
+        lambda *a, **k: ("TARGET_FMT", _FakeFrameRateRange(min_fps=60, max_fps=60, min_duration=5)),
     )
 
     assert af.force_active_format(0, 1280, 720, 60, device_name="Cam") is False
     assert device.active_format is None
 
 
-def test_force_active_format_applies_format_and_frame_duration_on_success(
-    monkeypatch, fake_avfoundation_module
-):
+def test_force_active_format_applies_format_and_frame_duration_on_success(monkeypatch):
     """On success: the target format is set, min/max frame duration are both
     pinned to the requested fps, and the device is unlocked afterward."""
     device = _FakeDevice("Cam")
-    target_range = _FakeFrameRateRange(min_duration=(1, 60))
+    target_range = _FakeFrameRateRange(min_fps=60, max_fps=60, min_duration=(1, 60))
     monkeypatch.setattr(af, "_discovered_devices", lambda: [device])
     monkeypatch.setattr(
         af, "_find_native_format_and_range",
@@ -295,16 +319,41 @@ def test_force_active_format_applies_format_and_frame_duration_on_success(
     assert device.unlocked is True
 
 
+def test_force_active_format_discrete_range_uses_native_duration_not_reconstruction(monkeypatch):
+    """Regression test for a real external webcam that raised 
+    NSInvalidArgumentException when given a reconstructed CMTimeMake(1, 60)
+    duration instead of its own exact declared duration --
+    its true 60fps duration was 1000000/60000240s, not 1/60s, and its
+    driver strictly rejects anything that doesn't bit-exactly match one of
+    its declared AVFrameRateRanges. For a discrete range (min == max fps),
+    the range's own minFrameDuration() must be reused as-is, never a
+    reconstructed approximation."""
+    device = _FakeDevice("Cam")
+    native_duration = ("native-exact-value", 60000240)  # not what CMTimeMake(1, 60) would produce
+    target_range = _FakeFrameRateRange(min_fps=60, max_fps=60, min_duration=native_duration)
+    monkeypatch.setattr(af, "_discovered_devices", lambda: [device])
+    monkeypatch.setattr(
+        af, "_find_native_format_and_range",
+        lambda *a, **k: ("TARGET_FMT", target_range),
+    )
+
+    result = af.force_active_format(0, 1280, 720, 60, pixel_format="NV12", device_name="Cam")
+
+    assert result is True
+    assert device.min_duration == native_duration
+    assert device.max_duration == native_duration
+
+
 def test_force_active_format_uses_requested_fps_not_range_min_duration(
     monkeypatch, fake_avfoundation_module
 ):
-    """Check that  a continuous frame-rate range's minFrameDuration,
-    which normally corresponds to the range's fastest fps, is overridden
-    in favor of the actually requested fps."""
+    """A genuine continuous range's minFrameDuration corresponds to the
+    range's fastest fps, not the fps actually requested -- the requested
+    fps must be used to build the duration instead."""
     device = _FakeDevice("Cam")
     # A wide continuous range: minFrameDuration() (fastest) would be 1/30,
     # which must NOT be what gets applied when 24fps was requested.
-    target_range = _FakeFrameRateRange(min_duration=(1, 30))
+    target_range = _FakeFrameRateRange(min_fps=15, max_fps=30, min_duration=(1, 30))
     monkeypatch.setattr(af, "_discovered_devices", lambda: [device])
     monkeypatch.setattr(
         af, "_find_native_format_and_range",

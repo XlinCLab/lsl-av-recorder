@@ -195,6 +195,13 @@ def mode_supported(
     )
 
 
+def _is_discrete_range(min_fps: float, max_fps: float) -> bool:
+    """True if a frame-rate range represents exactly one discrete rate
+    (min == max fps, modulo tiny float noise) rather than a genuine
+    continuum"""
+    return abs(min_fps - max_fps) < 0.05
+
+
 def _select_frame_rate_range(ranges: List[Tuple[float, float]], fps: float) -> Optional[int]:
     """Pick the index of the range (from however many AVCaptureDeviceFormat
     objects/frame-rate-ranges cover a given resolution/pixel_format) that
@@ -289,11 +296,25 @@ def force_active_format(
     )
     if found is None:
         return False
-    target_format, _target_range = found
+    target_format, target_range = found
 
-    # Build the frame duration from the requested fps directly
-    import AVFoundation
-    desired_duration = AVFoundation.CMTimeMake(1, int(round(fps)))
+    if _is_discrete_range(target_range.minFrameRate(), target_range.maxFrameRate()):
+        # A discrete-rate format's own native duration is the exact rational
+        # value the driver declared for it (e.g. a real 60fps range's true
+        # duration can be 1000000/60000240s, not the rounded 1/60s
+        # CMTimeMake(1, 60) constructs).
+        # Some camera drivers strictly reject anything that doesn't
+        # bit-exactly match one of their declared AVFrameRateRanges,
+        # so reuse the range's own value rather than reconstructing an approximation.
+        desired_duration = target_range.minFrameDuration()
+    else:
+        # A genuine continuous range (e.g. 15-30fps) accepts any duration
+        # within [min, max]; minFrameDuration here corresponds to the
+        # range's FASTEST fps, not the one actually requested, so build the
+        # exact duration for the requested fps directly instead.
+        import AVFoundation
+
+        desired_duration = AVFoundation.CMTimeMake(1, int(round(fps)))
 
     ok, _err = device.lockForConfiguration_(None)
     if not ok:
