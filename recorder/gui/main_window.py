@@ -756,9 +756,9 @@ class MainWindow(QMainWindow):
             panel.set_remove_enabled(enabled)
 
     def _update_camera_settings_controls(self):
-        # Apply settings / Refresh device capabilities both shell out to
-        # ffmpeg/AVFoundation to probe or reconfigure a camera's device,
-        # which must not run while a recording is active.
+        # Apply settings / Refresh device capabilities both probe or
+        # reconfigure a camera's device, which must not run while a
+        # recording is active.
         for panel in self.cam_panels:
             panel.set_settings_controls_enabled(not self._recording_active)
 

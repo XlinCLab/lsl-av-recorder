@@ -349,10 +349,9 @@ class CameraPanel(QWidget):
 
     def set_settings_controls_enabled(self, enabled: bool):
         """Enable/disable Apply settings and Refresh device capabilities --
-        both shell out to ffmpeg/AVFoundation to probe or reconfigure this
-        camera's device, which must not run while a recording is active,
-        since RunController's own capture may be holding that same device
-        open."""
+        both probe or reconfigure this camera's device, which must not run
+        while a recording is active, since RunController's own capture may
+        be holding that same device open."""
         has_device = isinstance(self.device_name.currentData(), dict)
         final = enabled and has_device
         self.btn_apply.setEnabled(final)

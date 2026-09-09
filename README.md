@@ -25,7 +25,7 @@ Desktop GUI recorder for synchronized audio/video stream recording and XDF writi
 - Python 3.10+
 - OS-specific camera dependency:
   - Linux: `v4l-utils` (`v4l2-ctl`)
-  - macOS: `ffmpeg` (AVFoundation input)
+  - macOS: `ffmpeg` (used only to enumerate available cameras via AVFoundation's device list); `pyobjc-framework-AVFoundation` (native camera capability querying)
   - Windows: `pygrabber` (DirectShow via COM; installed automatically via pip)
 
 ## Installation
@@ -80,7 +80,6 @@ To load a different config in normal GUI use:
 
 ## Camera Controls and Capability Detection
 Capability discovery is platform-specific and depending on the platform, some camera controls may not be supported.
-On MacOS and Windows, device capabilities are probed and/or tested empirically on first use, which may take up to a few minutes. These device capabilities are then cached and reused for future sessions, such that this capability probing/test step only runs once per device. This probe additionally runs again when the application version has changed from the version in the cache.
 
 ### Linux
 Uses `v4l2-ctl` to control camera settings:
@@ -90,13 +89,14 @@ Uses `v4l2-ctl` to control camera settings:
 - Toggle enable/disable of `exposure_auto` and `focus_auto`
 
 ### macOS
-Uses `ffmpeg` AVFoundation probing:
-- Supported modes parsed by forcing unsupported framerate probe
-- Pixel formats are probed against valid mode/FPS combinations
-- Brightness/saturation/hue are applied via `ffmpeg` filter chain
+Uses native AVFoundation (via `pyobjc-framework-AVFoundation`) to query each camera's `AVCaptureDevice.formats()` directly:
+- Supported pixel formats, resolutions, and FPS values are read straight from the device's declared capture formats
+- Brightness/saturation/hue are applied in software to captured frames, not via a camera-level control
 - Auto-exposure / auto-focus are treated as unsupported
 
 ### Windows
+On Windows, device capabilities are probed and/or tested empirically on first use, which may take up to a few minutes. These device capabilities are then cached and reused for future sessions, such that this capability probing/test step only runs once per device. This probe additionally runs again when the application version has changed from the version in the cache.
+
 Interfaces with `DirectShow` via `COM` (through `pygrabber`) for both capability discovery and frame capture:
 - Supported pixel formats, resolutions, and FPS are queried from the device, and the declared max FPS per mode is empirically verified (and corrected down if the declared maximum frame rate cannot be verified)
 - Brightness/hue/saturation and auto-exposure/auto-focus are applied via `COM` camera-control interfaces
