@@ -18,9 +18,9 @@ from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
                              QComboBox, QDoubleSpinBox, QFileDialog,
                              QFormLayout, QHBoxLayout, QLabel, QLineEdit,
                              QMainWindow, QMessageBox, QProgressDialog,
-                             QPushButton, QSpinBox, QSplitter, QTableWidget,
-                             QTableWidgetItem, QTabWidget, QTextEdit,
-                             QVBoxLayout, QWidget)
+                             QPushButton, QSizePolicy, QSpinBox, QSplitter,
+                             QTableWidget, QTableWidgetItem, QTabWidget,
+                             QTextEdit, QVBoxLayout, QWidget)
 
 from ..audio.devices import (default_input_device_index,
                              get_audio_device_capabilities,
@@ -79,6 +79,33 @@ def _find_duplicate_camera_labels(labels: list[str]) -> list[str]:
             duplicates.add(label)
         seen.add(label)
     return sorted(duplicates)
+
+
+def _recording_stream_rows(controller) -> list[tuple[str, str, str]]:
+    """(name, type, details) rows describing what an active recording is capturing."""
+    if controller is None:
+        return []
+    rows: list[tuple[str, str, str]] = []
+    if controller.audio_enabled and controller.audio_settings:
+        a = controller.audio_settings
+        rows.append((
+            a.stream_name, "Audio",
+            f"{a.samplerate:g} Hz, {a.channels} ch, {a.bitdepth}-bit",
+        ))
+    if controller.video_enabled:
+        for cam in controller.cams:
+            rows.append((
+                cam.Label, "Video",
+                f"{cam.Width}x{cam.Height} @ {cam.FPS}fps, {cam.PixelFormat}",
+            ))
+    for stream in controller.lsl_streams:
+        srate = stream.nominal_srate()
+        rate = f"{srate:g} Hz" if srate > 0 else "irregular rate"
+        rows.append((
+            stream.name(), stream.type() or "LSL",
+            f"{rate}, {stream.channel_count()} ch",
+        ))
+    return rows
 
 
 class _DivergenceRequest:
@@ -332,6 +359,36 @@ class MainWindow(QMainWindow):
         self.labrec_port.valueChanged.connect(lambda v: self._log_gui_change("LabRecorder.Port", v))
         self.lsl_streams_table.itemChanged.connect(self._on_lsl_stream_item_changed)
 
+        # Recording status indicator: hidden until a real recording starts,
+        # shown above the preview wall for the run's duration
+        self.recording_status_label = QLabel()
+        self.recording_status_label.setStyleSheet(
+            "QLabel { background-color: #b00020; color: white; "
+            "font-weight: bold; padding: 6px; border-radius: 4px; }"
+        )
+        self.recording_status_label.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
+        )
+        self.recording_status_label.setVisible(False)
+
+        self.recording_streams_table = QTableWidget(0, 3)
+        self.recording_streams_table.setHorizontalHeaderLabels(["Stream", "Type", "Details"])
+        self.recording_streams_table.verticalHeader().setVisible(False)
+        self.recording_streams_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.recording_streams_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.recording_streams_table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.recording_streams_table.horizontalHeader().setStretchLastSection(True)
+        self.recording_streams_table.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
+        )
+        self.recording_streams_table.setVisible(False)
+
+        self._recording_start_ts: Optional[float] = None
+        self._recording_start_clock: str = ""
+        self._recording_status_timer = QTimer(self)
+        self._recording_status_timer.setInterval(1000)
+        self._recording_status_timer.timeout.connect(self._update_recording_status_label)
+
         # Preview wall
         self.preview_panel = PreviewPanel()
         self.preview_mgr = PreviewManager(self)
@@ -373,9 +430,17 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self.logbox)
         left.setLayout(left_layout)
 
+        preview_container = QWidget()
+        preview_container_layout = QVBoxLayout()
+        preview_container_layout.setContentsMargins(0, 0, 0, 0)
+        preview_container_layout.addWidget(self.recording_status_label, 0)
+        preview_container_layout.addWidget(self.recording_streams_table, 0)
+        preview_container_layout.addWidget(self.preview_panel, 1)
+        preview_container.setLayout(preview_container_layout)
+
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(left)
-        splitter.addWidget(self.preview_panel)
+        splitter.addWidget(preview_container)
         splitter.setStretchFactor(0, 2)
         splitter.setStretchFactor(1, 3)
 
@@ -1051,6 +1116,7 @@ class MainWindow(QMainWindow):
             self.btn_stop.setEnabled(True)
             self._recording_active = True
             self._update_add_camera_button()
+            self._show_recording_status()
         except Exception as e:
             QMessageBox.critical(self, "Start failed", str(e))
             self.btn_start.setEnabled(True)
@@ -1132,6 +1198,48 @@ class MainWindow(QMainWindow):
         if self.cfg.Video.Enabled:
             self._refresh_previews_from_panels()
         self._close_run_log()
+        self._hide_recording_status()
+
+    def _update_recording_status_label(self):
+        if self._recording_start_ts is None:
+            return
+        elapsed = int(time.monotonic() - self._recording_start_ts)
+        hours, rem = divmod(elapsed, 3600)
+        minutes, seconds = divmod(rem, 60)
+        duration = f"{hours}:{minutes:02d}:{seconds:02d}" if hours else f"{minutes:02d}:{seconds:02d}"
+        self.recording_status_label.setText(
+            f"RECORDING: {duration} elapsed (started {self._recording_start_clock})"
+        )
+
+    def _populate_recording_streams_table(self):
+        rows = _recording_stream_rows(self.controller)
+        table = self.recording_streams_table
+        table.setRowCount(len(rows))
+        for i, (name, stype, details) in enumerate(rows):
+            table.setItem(i, 0, QTableWidgetItem(name))
+            table.setItem(i, 1, QTableWidgetItem(stype))
+            table.setItem(i, 2, QTableWidgetItem(details))
+        table.resizeColumnsToContents()
+        table.resizeRowsToContents()
+        content_height = table.horizontalHeader().height() + sum(
+            table.rowHeight(i) for i in range(table.rowCount())
+        )
+        table.setFixedHeight(content_height + 2 * table.frameWidth() + 2)
+
+    def _show_recording_status(self):
+        self._recording_start_ts = time.monotonic()
+        self._recording_start_clock = datetime.now().strftime("%H:%M:%S")
+        self._update_recording_status_label()
+        self._populate_recording_streams_table()
+        self.recording_status_label.setVisible(True)
+        self.recording_streams_table.setVisible(True)
+        self._recording_status_timer.start()
+
+    def _hide_recording_status(self):
+        self._recording_status_timer.stop()
+        self.recording_status_label.setVisible(False)
+        self.recording_streams_table.setVisible(False)
+        self._recording_start_ts = None
 
     def on_stop(self):
         confirm = QMessageBox.question(

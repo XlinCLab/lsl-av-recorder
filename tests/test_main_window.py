@@ -8,6 +8,7 @@ from recorder.gui import main_window
 from recorder.gui.camera_worker import CAMERA_PREVIEW_STREAM_TYPE
 from recorder.gui.main_window import (_default_camera_label,
                                       _exclude_camera_preview_streams,
+                                      _recording_stream_rows,
                                       build_config_log_payload)
 from tests.shared import MARKER_STREAM_NAME
 
@@ -98,3 +99,115 @@ def test_build_config_log_payload_serializes_full_nested_config(monkeypatch):
     parsed = json.loads(build_config_log_payload("config_loaded", cfg))
     assert parsed["config"]["Video"]["Cams"][0]["Label"] == "Face"
     assert parsed["config"]["Video"]["Cams"][0]["FPS"] == 30
+
+
+# ---------------------------------------------------------------------------
+# _recording_stream_rows
+# ---------------------------------------------------------------------------
+
+class _FakeAudioSettings:
+    def __init__(self, stream_name="Audio", samplerate=48000, channels=1, bitdepth=32):
+        self.stream_name = stream_name
+        self.samplerate = samplerate
+        self.channels = channels
+        self.bitdepth = bitdepth
+
+
+class _FakeLslStreamInfo:
+    def __init__(self, name, stype, srate, channels):
+        self._name = name
+        self._type = stype
+        self._srate = srate
+        self._channels = channels
+
+    def name(self):
+        return self._name
+
+    def type(self):
+        return self._type
+
+    def nominal_srate(self):
+        return self._srate
+
+    def channel_count(self):
+        return self._channels
+
+
+class _FakeRunController:
+    def __init__(
+        self, audio_enabled=False, audio_settings=None,
+        video_enabled=False, cams=None, lsl_streams=None,
+    ):
+        self.audio_enabled = audio_enabled
+        self.audio_settings = audio_settings
+        self.video_enabled = video_enabled
+        self.cams = cams or []
+        self.lsl_streams = lsl_streams or []
+
+
+def test_recording_stream_rows_none_controller_is_empty():
+    """Before any recording has started, there's no controller yet."""
+    assert _recording_stream_rows(None) == []
+
+
+def test_recording_stream_rows_audio_only():
+    controller = _FakeRunController(
+        audio_enabled=True,
+        audio_settings=_FakeAudioSettings(samplerate=44100, channels=2, bitdepth=16),
+    )
+    assert _recording_stream_rows(controller) == [
+        ("Audio", "Audio", "44100 Hz, 2 ch, 16-bit"),
+    ]
+
+
+def test_recording_stream_rows_video_one_row_per_cam():
+    controller = _FakeRunController(
+        video_enabled=True,
+        cams=[
+            VideoCamConfig(Label="Cam1", Width=1280, Height=720, FPS=30, PixelFormat="NV12"),
+            VideoCamConfig(Label="Cam2", Width=640, Height=480, FPS=60, PixelFormat="YUYV"),
+        ],
+    )
+    assert _recording_stream_rows(controller) == [
+        ("Cam1", "Video", "1280x720 @ 30fps, NV12"),
+        ("Cam2", "Video", "640x480 @ 60fps, YUYV"),
+    ]
+
+
+def test_recording_stream_rows_lsl_regular_and_irregular_rate():
+    """A genuine sample rate renders as 'X Hz'; nominal_srate()==0
+    (LSL's IRREGULAR_RATE, e.g. a Markers stream) renders as 'irregular rate'."""
+    controller = _FakeRunController(
+        lsl_streams=[
+            _FakeLslStreamInfo("EEG", "EEG", 250.0, 4),
+            _FakeLslStreamInfo("Markers", "Markers", 0.0, 1),
+        ],
+    )
+    assert _recording_stream_rows(controller) == [
+        ("EEG", "EEG", "250 Hz, 4 ch"),
+        ("Markers", "Markers", "irregular rate, 1 ch"),
+    ]
+
+
+def test_recording_stream_rows_combines_all_stream_types_in_order():
+    controller = _FakeRunController(
+        audio_enabled=True,
+        audio_settings=_FakeAudioSettings(),
+        video_enabled=True,
+        cams=[VideoCamConfig(Label="Cam1", Width=1280, Height=720, FPS=30, PixelFormat="NV12")],
+        lsl_streams=[_FakeLslStreamInfo("EEG", "EEG", 250.0, 4)],
+    )
+    rows = _recording_stream_rows(controller)
+    assert [r[1] for r in rows] == ["Audio", "Video", "EEG"]
+
+
+def test_recording_stream_rows_disabled_audio_and_video_are_excluded():
+    """audio_enabled/video_enabled False means those streams weren't
+    actually started, even if audio_settings/cams happen to be set."""
+    controller = _FakeRunController(
+        audio_enabled=False,
+        audio_settings=_FakeAudioSettings(),
+        video_enabled=False,
+        cams=[VideoCamConfig(Label="Cam1", Width=1280, Height=720, FPS=30, PixelFormat="NV12")],
+    )
+    assert _recording_stream_rows(controller) == []
