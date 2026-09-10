@@ -79,10 +79,10 @@ To load a different config in normal GUI use:
 - Click **Load config** in the main window.
 
 ## Camera Controls and Capability Detection
-Capability discovery is platform-specific and depending on the platform, some camera controls may not be supported.
+Camera capability discovery and configuration is platform-specific. Depending on the platform, some camera controls may not be supported. Furthermore, the same physical camera may report different capabilities (supported pixel formats, resolutions, and FPS) on different operating systems.
 
 ### Linux
-Uses `v4l2-ctl` to control camera settings:
+Uses `v4l2-ctl` to query and control camera settings:
 - Supported pixel formats
 - Supported FPS values
 - Control ranges for brightness/hue/saturation
