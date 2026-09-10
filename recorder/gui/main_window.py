@@ -67,6 +67,20 @@ def _default_camera_label(label: str, position: int) -> str:
     return label.strip() or f"Cam{position}"
 
 
+def _find_duplicate_camera_labels(labels: list[str]) -> list[str]:
+    """Return each label that appears more than once in `labels`.
+    RunController keys XDF video stream names/lookups by Label, so a
+    duplicate would silently collide (one camera's stream or verified
+    settings overwriting or misattributed to the other's)."""
+    seen: set[str] = set()
+    duplicates: set[str] = set()
+    for label in labels:
+        if label in seen:
+            duplicates.add(label)
+        seen.add(label)
+    return sorted(duplicates)
+
+
 class _DivergenceRequest:
     """A pending "measured setting diverges from configured" decision,
     raised from a VideoRecorder's own worker thread and answered by a modal
@@ -916,6 +930,7 @@ class MainWindow(QMainWindow):
             return
         items, warnings = self._collect_camera_apply_items()
         warnings.extend(self._validate_audio_settings())
+        warnings.extend(self._validate_unique_camera_labels())
         self._pending_start_warnings = warnings
         self.btn_start.setEnabled(False)
         if items:
@@ -960,6 +975,14 @@ class MainWindow(QMainWindow):
         return [
             f"Audio: samplerate={samplerate}, bitdepth={bitdepth}, channels={channels} "
             "is not supported by the selected input device."
+        ]
+
+    def _validate_unique_camera_labels(self) -> list[str]:
+        configs = [panel.to_config() for panel in self.cam_panels]
+        enabled_labels = [c.Label for c in configs if c.Enabled]
+        return [
+            f"Camera label '{label}' is used by more than one camera; labels must be unique."
+            for label in _find_duplicate_camera_labels(enabled_labels)
         ]
 
     def _on_apply_all_finished(self, failed_msgs: list[str]):
@@ -1150,6 +1173,7 @@ class MainWindow(QMainWindow):
         self.pull_gui_into_cfg()
 
         warnings = self._validate_audio_settings()
+        warnings.extend(self._validate_unique_camera_labels())
         if warnings:
             body = "Some settings may not be supported:\n\n"
             body += "\n".join(f"- {msg}" for msg in warnings)
