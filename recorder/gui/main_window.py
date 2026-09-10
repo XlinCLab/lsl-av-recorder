@@ -1134,6 +1134,16 @@ class MainWindow(QMainWindow):
         self._close_run_log()
 
     def on_stop(self):
+        confirm = QMessageBox.question(
+            self,
+            "Stop recording",
+            "Stop active recording?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+
         try:
             outdir = self._teardown_recording()
         finally:
