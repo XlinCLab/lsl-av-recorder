@@ -318,6 +318,10 @@ class VideoRecorder:
             )
             if forced:
                 self.info(f"Force-set active pixel format to {pixel_format} for {self.cam.Label}")
+                # Re-apply requested dimensions to capture object
+                # after force-setting desired pixel format
+                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.cam.Width)
+                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.cam.Height)
             if not forced:
                 self.warning(
                     f"Could not force native capture pixel format {pixel_format} for {self.cam.Label}; "
