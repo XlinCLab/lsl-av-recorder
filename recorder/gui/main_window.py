@@ -1017,6 +1017,9 @@ class MainWindow(QMainWindow):
                 preview_frame_cb=self.preview_frame_signal.emit,
                 divergence_cb=self.request_setting_divergence_decision,
             )
+            self.preview_mgr.set_recording_preview_labels(
+                {preview_key(cam): cam.Label for cam in self.controller.cams}
+            )
             self._open_run_log()
             self._copy_app_log_to(self.controller.outdir)
             self.log(build_config_log_payload("recording_started", self.cfg))

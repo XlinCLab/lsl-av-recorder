@@ -40,6 +40,10 @@ class PreviewManager(QObject):
         self.main = main_window
         self.threads: Dict[str, QThread] = {}
         self.workers: Dict[str, CameraWorker] = {}
+        # Keys (preview_key(cam)) of cameras currently supplying preview
+        # frames from an active recording's VideoRecorder.preview_cb,
+        # mapped to their configured Label
+        self._recording_preview_labels: Dict[str, str] = {}
 
     def _request_stop(self, key: str):
         # Pop immediately so a new preview can be registered for the same key.
@@ -100,6 +104,14 @@ class PreviewManager(QObject):
         for key in list(self.workers.keys()):
             self._request_stop(key)
         self.main.preview_panel.set_active_cameras([])
+        self._recording_preview_labels = {}
+
+    def set_recording_preview_labels(self, labels: Dict[str, str]) -> None:
+        """Register the cameras (preview_key -> configured Label) an active
+        recording will be feeding preview frames for via its own
+        VideoRecorder.preview_cb, so on_frame accepts them even though no
+        standalone CameraWorker exists for them during the recording."""
+        self._recording_preview_labels = dict(labels)
 
     def stop_cam_preview(self, key: str) -> bool:
         exists = key in self.workers
@@ -121,9 +133,12 @@ class PreviewManager(QObject):
         # and can be delivered here after this key has already been torn down
         # or reassigned to a different camera, so it must be dropped rather
         # than rendered. Otherwise, it resurrects a stale preview label
-        # showing a frozen last frame.
+        # showing a frozen last frame. Frames from an active recording (see
+        # set_recording_preview_labels) have no worker at all and are
+        # accepted on that separate basis instead.
         worker = self.workers.get(key)
-        if worker is None:
+        recording_label = self._recording_preview_labels.get(key)
+        if worker is None and recording_label is None:
             return
         lbl = self.main.preview_panel.ensure_label(key)
         h, w, ch = frame_bgr.shape
@@ -135,6 +150,7 @@ class PreviewManager(QObject):
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.FastTransformation,
         )
-        _draw_caption(pix, worker.label or key)
+        caption = (worker.label if worker else recording_label) or key
+        _draw_caption(pix, caption)
         lbl.setPixmap(pix)
         lbl.setText("")
