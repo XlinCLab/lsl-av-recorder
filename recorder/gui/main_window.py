@@ -1110,18 +1110,19 @@ class MainWindow(QMainWindow):
     def on_stop(self):
         try:
             outdir = self._teardown_recording()
-            msg = f"Results written to:\n{outdir}\n\nClose the app now?"
-            confirm = QMessageBox.question(
-                self,
-                "Recording stopped",
-                msg,
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if confirm == QMessageBox.StandardButton.Yes:
-                self.close()
         finally:
             self._reset_recording_ui_state()
+
+        msg = f"Results written to:\n{outdir}\n\nClose the app now?"
+        confirm = QMessageBox.question(
+            self,
+            "Recording stopped",
+            msg,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirm == QMessageBox.StandardButton.Yes:
+            self.close()
 
     def _abort_real_recording(self, reason: str):
         try:
