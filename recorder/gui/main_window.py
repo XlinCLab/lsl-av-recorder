@@ -81,28 +81,30 @@ def _find_duplicate_camera_labels(labels: list[str]) -> list[str]:
     return sorted(duplicates)
 
 
-def _recording_stream_rows(controller) -> list[tuple[str, str, str]]:
-    """(name, type, details) rows describing what an active recording is capturing."""
+def _recording_stream_rows(controller) -> list[tuple[str, str, str, str]]:
+    """(name, type, device, details) rows describing what an active
+    recording is capturing. "device" is the physical/hosting device behind
+    each stream."""
     if controller is None:
         return []
-    rows: list[tuple[str, str, str]] = []
+    rows: list[tuple[str, str, str, str]] = []
     if controller.audio_enabled and controller.audio_settings:
         a = controller.audio_settings
         rows.append((
-            a.stream_name, "Audio",
+            a.stream_name, "Audio", a.device_name or "(default)",
             f"{a.samplerate:g} Hz, {a.channels} ch, {a.bitdepth}-bit",
         ))
     if controller.video_enabled:
         for cam in controller.cams:
             rows.append((
-                cam.Label, "Video",
+                cam.Label, "Video", cam.DeviceName or "Unknown device",
                 f"{cam.Width}x{cam.Height} @ {cam.FPS}fps, {cam.PixelFormat}",
             ))
     for stream in controller.lsl_streams:
         srate = stream.nominal_srate()
         rate = f"{srate:g} Hz" if srate > 0 else "irregular rate"
         rows.append((
-            stream.name(), stream.type() or "LSL",
+            stream.name(), stream.type() or "LSL", stream.hostname() or "",
             f"{rate}, {stream.channel_count()} ch",
         ))
     return rows
@@ -371,8 +373,8 @@ class MainWindow(QMainWindow):
         )
         self.recording_status_label.setVisible(False)
 
-        self.recording_streams_table = QTableWidget(0, 3)
-        self.recording_streams_table.setHorizontalHeaderLabels(["Stream", "Type", "Details"])
+        self.recording_streams_table = QTableWidget(0, 4)
+        self.recording_streams_table.setHorizontalHeaderLabels(["Stream", "Type", "Device", "Details"])
         self.recording_streams_table.verticalHeader().setVisible(False)
         self.recording_streams_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.recording_streams_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
@@ -1215,10 +1217,11 @@ class MainWindow(QMainWindow):
         rows = _recording_stream_rows(self.controller)
         table = self.recording_streams_table
         table.setRowCount(len(rows))
-        for i, (name, stype, details) in enumerate(rows):
+        for i, (name, stype, device, details) in enumerate(rows):
             table.setItem(i, 0, QTableWidgetItem(name))
             table.setItem(i, 1, QTableWidgetItem(stype))
-            table.setItem(i, 2, QTableWidgetItem(details))
+            table.setItem(i, 2, QTableWidgetItem(device))
+            table.setItem(i, 3, QTableWidgetItem(details))
         table.resizeColumnsToContents()
         table.resizeRowsToContents()
         content_height = table.horizontalHeader().height() + sum(

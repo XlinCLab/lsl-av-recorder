@@ -13,6 +13,7 @@ from typing import Callable, Dict, List, Optional
 import numpy as np
 from pylsl import StreamInfo, StreamInlet
 
+from ..audio.devices import list_input_devices
 from ..audio.lsl_audio import (AudioLSLStreamer, AudioStreamSettings,
                                _dtype_format)
 from ..config import AppConfig, VideoCamConfig
@@ -27,6 +28,22 @@ from ..xdf.xdf_writer import (FULL_BUFFER_BLOCK_THREAD_POLICY,
                               FULL_BUFFER_DROP_NEWEST_POLICY,
                               FULL_BUFFER_POLICIES, XDFWriter)
 from .preview_manager import preview_key
+
+
+def _resolve_audio_device_name(device) -> str:
+    """Human-readable name for an audio input device
+    selector for display purposes."""
+    if device is None:
+        return "(default)"
+    if isinstance(device, int):
+        try:
+            for d in list_input_devices():
+                if d["index"] == device:
+                    return str(d["name"])
+        except Exception:
+            pass
+        return f"Device {device}"
+    return str(device)
 
 
 class RunController:
@@ -363,6 +380,7 @@ class RunController:
                 aset.device = int(self.cfg.Audio.Device)
             except ValueError:
                 aset.device = self.cfg.Audio.Device
+        aset.device_name = _resolve_audio_device_name(aset.device)
         return aset
 
     def _get_active_cams(self) -> List:

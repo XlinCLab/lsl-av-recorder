@@ -106,19 +106,28 @@ def test_build_config_log_payload_serializes_full_nested_config(monkeypatch):
 # ---------------------------------------------------------------------------
 
 class _FakeAudioSettings:
-    def __init__(self, stream_name="Audio", samplerate=48000, channels=1, bitdepth=32):
+    def __init__(
+        self,
+        stream_name="Audio",
+        device_name="Built-in Microphone",
+        samplerate=48000,
+        channels=1,
+        bitdepth=32,
+    ):
         self.stream_name = stream_name
+        self.device_name = device_name
         self.samplerate = samplerate
         self.channels = channels
         self.bitdepth = bitdepth
 
 
 class _FakeLslStreamInfo:
-    def __init__(self, name, stype, srate, channels):
+    def __init__(self, name, stype, srate, channels, hostname="lsl-host"):
         self._name = name
         self._type = stype
         self._srate = srate
         self._channels = channels
+        self._hostname = hostname
 
     def name(self):
         return self._name
@@ -131,6 +140,9 @@ class _FakeLslStreamInfo:
 
     def channel_count(self):
         return self._channels
+
+    def hostname(self):
+        return self._hostname
 
 
 class _FakeRunController:
@@ -153,39 +165,67 @@ def test_recording_stream_rows_none_controller_is_empty():
 def test_recording_stream_rows_audio_only():
     controller = _FakeRunController(
         audio_enabled=True,
-        audio_settings=_FakeAudioSettings(samplerate=44100, channels=2, bitdepth=16),
+        audio_settings=_FakeAudioSettings(
+            device_name="USB Microphone",
+            samplerate=44100,
+            channels=2,
+            bitdepth=16,
+        ),
     )
     assert _recording_stream_rows(controller) == [
-        ("Audio", "Audio", "44100 Hz, 2 ch, 16-bit"),
+        ("Audio", "Audio", "USB Microphone", "44100 Hz, 2 ch, 16-bit"),
     ]
+
+
+def test_recording_stream_rows_audio_falls_back_to_default_when_unnamed():
+    controller = _FakeRunController(
+        audio_enabled=True,
+        audio_settings=_FakeAudioSettings(device_name=None),
+    )
+    name, stype, device, details = _recording_stream_rows(controller)[0]
+    assert device == "(default)"
 
 
 def test_recording_stream_rows_video_one_row_per_cam():
     controller = _FakeRunController(
         video_enabled=True,
         cams=[
-            VideoCamConfig(Label="Cam1", Width=1280, Height=720, FPS=30, PixelFormat="NV12"),
-            VideoCamConfig(Label="Cam2", Width=640, Height=480, FPS=60, PixelFormat="YUYV"),
+            VideoCamConfig(
+                Label="Cam1",
+                DeviceName="Logitech BRIO",
+                Width=1280,
+                Height=720,
+                FPS=30,
+                PixelFormat="NV12",
+            ),
+            VideoCamConfig(
+                Label="Cam2",
+                Width=640,
+                Height=480,
+                FPS=60,
+                PixelFormat="YUYV",
+            ),
         ],
     )
     assert _recording_stream_rows(controller) == [
-        ("Cam1", "Video", "1280x720 @ 30fps, NV12"),
-        ("Cam2", "Video", "640x480 @ 60fps, YUYV"),
+        ("Cam1", "Video", "Logitech BRIO", "1280x720 @ 30fps, NV12"),
+        ("Cam2", "Video", "Unknown device", "640x480 @ 60fps, YUYV"),
     ]
 
 
 def test_recording_stream_rows_lsl_regular_and_irregular_rate():
     """A genuine sample rate renders as 'X Hz'; nominal_srate()==0
-    (LSL's IRREGULAR_RATE, e.g. a Markers stream) renders as 'irregular rate'."""
+    (LSL's IRREGULAR_RATE, e.g. a Markers stream) renders as 'irregular rate'.
+    The device column is the outlet's hostname."""
     controller = _FakeRunController(
         lsl_streams=[
-            _FakeLslStreamInfo("EEG", "EEG", 250.0, 4),
-            _FakeLslStreamInfo("Markers", "Markers", 0.0, 1),
+            _FakeLslStreamInfo("EEG", "EEG", 250.0, 4, hostname="eeg-host"),
+            _FakeLslStreamInfo("Markers", "Markers", 0.0, 1, hostname="stim-pc"),
         ],
     )
     assert _recording_stream_rows(controller) == [
-        ("EEG", "EEG", "250 Hz, 4 ch"),
-        ("Markers", "Markers", "irregular rate, 1 ch"),
+        ("EEG", "EEG", "eeg-host", "250 Hz, 4 ch"),
+        ("Markers", "Markers", "stim-pc", "irregular rate, 1 ch"),
     ]
 
 
