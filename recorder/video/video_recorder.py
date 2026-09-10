@@ -284,6 +284,17 @@ class VideoRecorder:
             self.cap = None
             return False
 
+        pixel_format = getattr(self.cam, "PixelFormat", None)
+
+        # Workaround for setting pixel format on Linux:
+        if sys.platform.startswith("linux") and pixel_format and len(str(pixel_format)) == 4:
+            # cv2's V4L2 backend resets the device to its own default pixel format
+            # when it opens (VIDIOC_S_FMT), discarding whatever a prior `v4l2-ctl
+            # --set-fmt-video` Apply Settings call had already configured on /dev/videoN.
+            # Must run before width/height/fps below, since a pixel format change can
+            # affect which resolutions/rates are valid.
+            self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*str(pixel_format).upper()))
+
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.cam.Width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.cam.Height)
         self.cap.set(cv2.CAP_PROP_FPS, self.cam.FPS)
@@ -297,7 +308,6 @@ class VideoRecorder:
             # CAP_PROP_FPS handling pins BOTH min and max duration to the
             # range's fastest rate rather than the one actually requested.
             # This MUST run after cv2's CAP_PROP_FPS call above.
-            pixel_format = getattr(self.cam, "PixelFormat", None)
             forced = force_active_format(
                 device_index=self.cam.DeviceIndex,
                 width=int(self.cam.Width),
