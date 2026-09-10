@@ -11,6 +11,7 @@ from recorder.video.constants import DEFAULT_BRIGHTNESS
 from recorder.video.dshow_capture import (_build_capabilities_from_formats,
                                           _build_device_list,
                                           _find_format_index,
+                                          _media_type_for_format_index,
                                           _normalize_formats, _sane_default,
                                           _snap_to_common_fps,
                                           summarize_formats)
@@ -333,3 +334,51 @@ def test_find_format_index_returns_none_when_unmatched():
         pixel_format="YUY2",
     )
     assert result is None
+
+
+# ---------------------------------------------------------------------------
+# _media_type_for_format_index
+# ---------------------------------------------------------------------------
+
+def test_media_type_for_format_index_looks_up_by_native_index_not_list_position():
+    """Regression test for real bug whereby pygrabber's own DirectShow
+    stream index (fmt["index"], what GetStreamCaps/_set_format_with_fps
+    actually use) does not necessarily match the format's position in the
+    `formats` list. Indexing into the list directly by that value can
+    silently return a different format's entry."""
+    formats = _normalize_formats(
+        formats=[
+            # List position 0 holds native index 5 (MJPG) -- deliberately
+            # not the same as its list position.
+            _format(
+                width=1920, height=1080, media_type_str="MJPG",
+                min_framerate=30.0, max_framerate=30.0, index=5,
+            ),
+            # List position 1 holds native index 2 (YUY2) -- the one that
+            # actually gets matched/applied below.
+            _format(
+                width=1920, height=1080, media_type_str="YUY2",
+                min_framerate=30.0, max_framerate=30.0, index=2,
+            ),
+        ]
+    )
+    match_index = _find_format_index(
+        formats=formats, width=1920, height=1080, pixel_format="YUY2",
+    )
+    assert match_index == 2
+
+    # Naively indexing formats[match_index] (list position 2) would be out
+    # of range or grab the wrong entry; the correct lookup is by fmt["index"].
+    assert _media_type_for_format_index(formats, match_index) == "YUY2"
+
+
+def test_media_type_for_format_index_none_when_index_not_found():
+    formats = _normalize_formats(
+        formats=[
+            _format(
+                width=1920, height=1080, media_type_str="YUY2",
+                min_framerate=30.0, max_framerate=30.0, index=0,
+            ),
+        ]
+    )
+    assert _media_type_for_format_index(formats, 99) is None

@@ -596,6 +596,16 @@ def _find_format_index(
     return int(candidates[0]["index"])
 
 
+def _media_type_for_format_index(formats: List[Dict[str, Any]], format_index: int) -> Optional[str]:
+    """Look up a format's media_type_str by its native DirectShow stream
+    index (fmt["index"], the same value _find_format_index returns and
+    _set_format_with_fps/GetStreamCaps expect)."""
+    for fmt in formats:
+        if int(fmt["index"]) == format_index:
+            return str(fmt["media_type_str"]).upper()
+    return None
+
+
 def _set_format_with_fps(video_input, format_index: int, fps: Optional[float]) -> None:
     """Select a DirectShow stream-caps entry by index, overwriting the media
     type's embedded frame interval with the exact requested fps first.
@@ -719,7 +729,7 @@ class WindowsDShowVideoCapture:
                 match_index = _find_format_index(formats, width, height, pixel_format, fps)
                 if match_index is not None:
                     _set_format_with_fps(video_input, match_index, fps)
-                    self.actual_pixel_format = str(formats[match_index]["media_type_str"]).upper()
+                    self.actual_pixel_format = _media_type_for_format_index(formats, match_index)
                 else:
                     self._log(
                         "WARNING",
