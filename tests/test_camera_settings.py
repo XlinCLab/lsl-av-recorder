@@ -190,7 +190,7 @@ def test_summarize_control_application_groups_outcomes():
         failed={"fps": 120},
         unverified={"width": 640},
     )
-    assert "devnode: 2" in summary
+    summary = "\n".join(" ".join(line) for line in summary)
     assert "Successfully set brightness=150" in summary
     assert re.search(r"Queued.+width=640", summary) is not None
     assert "Failed to set fps=120" in summary

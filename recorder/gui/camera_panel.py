@@ -242,8 +242,9 @@ class CameraPanel(QWidget):
     def _log(self, msg: str, loglevel: str = "INFO"):
         """Log to this panel's own local text box and emit it up
         to MainWindow so it also reaches the persistent app/run logs."""
-        self.text.append(f"{loglevel}: {msg}")
-        self.log.emit(f"{self._tag()}: {msg}", loglevel)
+        tagged = f"{self._tag()}: {msg}"
+        self.text.append(f"{loglevel}: {tagged}")
+        self.log.emit(tagged, loglevel)
 
     def _on_enabled_toggled(self, checked: bool):
         self._log(f"Enabled = {checked}")
@@ -932,7 +933,8 @@ class CameraPanel(QWidget):
             rep.get("failed", {}),
             rep.get("unverified", {}),
         )
-        self._log(summary)
+        for loglevel, msg in summary:
+            self._log(msg, loglevel=loglevel)
         failed = rep.get("failed", {})
         if failed:
             failed_items = "\n".join(f"• {k} = {v}" for k, v in failed.items())

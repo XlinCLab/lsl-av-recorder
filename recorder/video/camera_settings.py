@@ -643,16 +643,17 @@ def summarize_control_application(devnode: str,
                                   applied: dict,
                                   failed: dict,
                                   unverified: dict | None = None,
-                                  ) -> str:
-    """Generate a summary string of camera setting application results."""
-    summary = [f"devnode: {devnode}"]
+                                  ) -> list[tuple[str, str]]:
+    """Generate a summary list (loglevel, msg) of camera setting application results."""
+    summary = []
     for k, v in applied.items():
-        summary.append(f"INFO: Successfully set {k}={format_control_value(k, v)}")
+        summary.append(("INFO", f"Successfully set {k}={format_control_value(k, v)}"))
     for k, v in (unverified or {}).items():
-        summary.append(
-            f"INFO: Queued (not yet verified against known camera capabilities; "
+        summary.append((
+            "INFO",
+            f"Queued (not yet verified against known camera capabilities; "
             f"will be applied when capture starts) {k}={format_control_value(k, v)}"
-        )
+        ))
     for k, v in failed.items():
-        summary.append(f"ERROR: Failed to set {k}={format_control_value(k, v)}")
-    return '\n'.join(summary)
+        summary.append(("ERROR", f"Failed to set {k}={format_control_value(k, v)}"))
+    return summary
