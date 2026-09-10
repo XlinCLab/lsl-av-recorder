@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import time
 
+import cv2
 import numpy as np
 
 from recorder.config import VideoCamConfig
-from recorder.video.video_recorder import VideoRecorder
+from recorder.video.video_recorder import VideoRecorder, _decode_v4l2_fourcc
 
 
 def _recorder(*,
@@ -324,6 +325,109 @@ def test_prompt_size_divergence_accept_does_not_set_abort_flag():
     )
     rec._prompt_size_divergence(actual_w=640, actual_h=480)
     assert rec._abort_requested is False
+
+
+# ---------------------------------------------------------------------------
+# _check_pixel_format / _prompt_pixel_format_divergence
+# ---------------------------------------------------------------------------
+
+def test_check_pixel_format_silent_when_matching():
+    logs = []
+    rec = _recorder(fps=30, status_cb=lambda msg, level: logs.append((level, msg)))
+    rec.cam.PixelFormat = "NV12"
+    rec.actual_pixel_format = "NV12"
+    rec._check_pixel_format()
+    warnings = _collect_warnings(logs)
+    assert warnings == []
+
+
+def test_check_pixel_format_case_insensitive():
+    logs = []
+    rec = _recorder(fps=30, status_cb=lambda msg, level: logs.append((level, msg)))
+    rec.cam.PixelFormat = "nv12"
+    rec.actual_pixel_format = "NV12"
+    rec._check_pixel_format()
+    warnings = _collect_warnings(logs)
+    assert warnings == []
+
+
+def test_check_pixel_format_warns_and_prompts_on_mismatch():
+    calls = []
+    logs = []
+    rec = _recorder(
+        fps=30,
+        status_cb=lambda msg, level: logs.append((level, msg)),
+        divergence_cb=lambda title, msg: calls.append((title, msg)) or True,
+    )
+    rec.cam.PixelFormat = "YUYV"
+    rec.actual_pixel_format = "NV12"
+    rec._check_pixel_format()
+
+    warnings = _collect_warnings(logs)
+    assert len(warnings) == 1
+    assert "YUYV" in warnings[0] and "NV12" in warnings[0]
+    assert len(calls) == 1
+    title, message = calls[0]
+    assert "Cam" in title
+    assert "YUYV" in message and "NV12" in message
+
+
+def test_check_pixel_format_noop_when_actual_unknown():
+    """When the platform couldn't determine the actual pixel format (e.g.
+    readback unsupported/failed), there is no basis to judge a mismatch."""
+    logs = []
+    rec = _recorder(fps=30, status_cb=lambda msg, level: logs.append((level, msg)))
+    rec.cam.PixelFormat = "YUYV"
+    rec.actual_pixel_format = None
+    rec._check_pixel_format()
+    assert logs == []
+
+
+def test_prompt_pixel_format_divergence_only_fires_once():
+    calls = []
+    rec = _recorder(
+        fps=30,
+        status_cb=lambda msg, level: None,
+        divergence_cb=lambda title, msg: calls.append(1) or True,
+    )
+    rec._prompt_pixel_format_divergence("NV12")
+    rec._prompt_pixel_format_divergence("NV12")
+    assert len(calls) == 1
+
+
+def test_prompt_pixel_format_divergence_reject_sets_abort_flag():
+    rec = _recorder(
+        fps=30,
+        status_cb=lambda msg, level: None,
+        divergence_cb=lambda title, msg: False,
+    )
+    rec._prompt_pixel_format_divergence("NV12")
+    assert rec._abort_requested is True
+
+
+def test_prompt_pixel_format_divergence_suppressed_after_abort_requested():
+    calls = []
+    rec = _recorder(
+        fps=30,
+        status_cb=lambda msg, level: None,
+        divergence_cb=lambda title, msg: calls.append(1) or True,
+    )
+    rec._abort_requested = True
+    rec._prompt_pixel_format_divergence("NV12")
+    assert calls == []
+
+
+# ---------------------------------------------------------------------------
+# _decode_v4l2_fourcc (Linux CAP_PROP_FOURCC readback)
+# ---------------------------------------------------------------------------
+
+def test_decode_v4l2_fourcc_roundtrips_via_cv2_encoding():
+    fourcc_int = cv2.VideoWriter_fourcc(*"YUYV")
+    assert _decode_v4l2_fourcc(fourcc_int) == "YUYV"
+
+
+def test_decode_v4l2_fourcc_none_for_zero():
+    assert _decode_v4l2_fourcc(0) is None
 
 
 # ---------------------------------------------------------------------------

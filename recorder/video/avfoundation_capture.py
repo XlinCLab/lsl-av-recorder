@@ -326,3 +326,23 @@ def force_active_format(
     finally:
         device.unlockForConfiguration()
     return True
+
+
+def get_active_pixel_format(
+    device_index: Optional[int], device_name: Optional[str] = None
+) -> Optional[str]:
+    """Read back the pixel format of whatever AVCaptureDeviceFormat is
+    currently active on the device. Used to verify the pixel format 
+    that was actually set/negotiated."""
+    import AVFoundation
+
+    devices = _discovered_devices()
+    names = [str(d.localizedName()) for d in devices]
+    position = _resolve_device_position(names, device_name, device_index)
+    if position is None:
+        return None
+    device = devices[position]
+    fourcc_int = AVFoundation.CMFormatDescriptionGetMediaSubType(
+        device.activeFormat().formatDescription()
+    )
+    return pixel_format_label(fourcc_int)

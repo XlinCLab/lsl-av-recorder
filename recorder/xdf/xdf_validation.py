@@ -138,6 +138,26 @@ def _validate_video(cfg: AppConfig, by_name: dict, expected_duration_s: float) -
             checks.append(_check(
                 f"Video <{name}> file written", size > 0, f"{video_path} ({size} bytes)",
             ))
+
+        # Pixel format cannot be independently re-derived from the recorded
+        # video/XDF data the way fps/frame count can, since every capture backend
+        # converts delivered frames to a uniform format regardless of native
+        # capture format, so the original pixel format leaves no trace in
+        # the output file. This checks only whether the live-verified
+        # value VideoRecorder recorded at capture time (written into this
+        # stream's description) matches what was configured
+        # (skipped if missing or unknown).
+        actual_pixel_format = (desc[0].get("pixel_format") or [None])[0]
+        configured_pixel_format = cam.PixelFormat
+        if (
+            actual_pixel_format and actual_pixel_format != "unknown"
+            and configured_pixel_format
+        ):
+            checks.append(_check(
+                f"Video <{name}> pixel format",
+                str(actual_pixel_format).upper() == str(configured_pixel_format).upper(),
+                f"expected={configured_pixel_format}, actual={actual_pixel_format}",
+            ))
     return checks
 
 

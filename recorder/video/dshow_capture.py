@@ -700,6 +700,7 @@ class WindowsDShowVideoCapture:
         self._frame_available = threading.Event()
         self.actual_width = int(width)
         self.actual_height = int(height)
+        self.actual_pixel_format: Optional[str] = None
         self._log_cb = log_cb
 
         import comtypes
@@ -718,6 +719,7 @@ class WindowsDShowVideoCapture:
                 match_index = _find_format_index(formats, width, height, pixel_format, fps)
                 if match_index is not None:
                     _set_format_with_fps(video_input, match_index, fps)
+                    self.actual_pixel_format = str(formats[match_index]["media_type_str"]).upper()
                 else:
                     self._log(
                         "WARNING",

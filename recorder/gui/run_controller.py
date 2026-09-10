@@ -254,8 +254,10 @@ class RunController:
 
     def _add_streams_to_xdf_writer(self, xdf_writer: XDFWriter):
         if self.video_enabled:
+            videos_by_label = {vr.cam.Label: vr for vr in self.videos}
             for cam in self.cams:
                 video_path = self._get_video_output_path(cam)
+                vr = videos_by_label.get(cam.Label)
                 sid = xdf_writer.add_video_stream(
                     name=f"Camera-{cam.Label}",
                     camera_id=str(cam.DeviceIndex),
@@ -263,6 +265,7 @@ class RunController:
                     width=cam.Width,
                     height=cam.Height,
                     fps=cam.FPS,
+                    pixel_format=vr.actual_pixel_format if vr else None,
                 )
                 self.video_sids[cam.Label] = sid
                 self.info(f"Initialized video stream from camera <{cam.Label}> in XDF")

@@ -8,10 +8,23 @@ import cv2
 from pylsl import local_clock
 
 from ..video.constants import IS_MAC
-from .avfoundation_capture import force_active_format
+from .avfoundation_capture import force_active_format, get_active_pixel_format
 from .color_adjust import apply_color_adjustments
 from .constants import DEFAULT_BRIGHTNESS, DEFAULT_HUE, DEFAULT_SATURATION
 from .devices import resolve_cv2_device_index
+
+
+def _decode_v4l2_fourcc(fourcc_int: int) -> Optional[str]:
+    """Decode an OpenCV/V4L2 FourCC int (little-endian byte order, as used
+    by cv2.VideoWriter_fourcc and cv2.VideoCapture's CAP_PROP_FOURCC on the
+    V4L2 backend) back into its 4-character code, e.g. to verify the pixel
+    format cv2.VideoCapture(..., cv2.CAP_V4L2) actually negotiated. Returns
+    None if nothing meaningful was reported."""
+    if not fourcc_int:
+        return None
+    chars = [chr((fourcc_int >> (8 * i)) & 0xFF) for i in range(4)]
+    decoded = "".join(c for c in chars if c.isprintable())
+    return decoded.upper() or None
 
 
 class VideoRecorder:
@@ -37,6 +50,8 @@ class VideoRecorder:
         # so _expected_fps() stops comparing against the original configured value
         self._accepted_fps_override: Optional[float] = None
         self._size_divergence_prompted = False
+        self._pixel_format_divergence_prompted = False
+        self.actual_pixel_format: Optional[str] = None
         # Set once the operator has chosen to abort via a divergence prompt
         # (fps or size); once true, no further prompt is shown for this
         # recorder since the run is already shutting down, and any further
@@ -191,6 +206,37 @@ class VideoRecorder:
         if not accepted:
             self._abort_requested = True
 
+    def _check_pixel_format(self):
+        """Compare self.actual_pixel_format (set in start(), from whatever
+        the platform capture backend reports it actually negotiated) against
+        what was configured, warning and prompting on a mismatch."""
+        configured = getattr(self.cam, "PixelFormat", None)
+        if not configured or not self.actual_pixel_format:
+            return
+        if str(self.actual_pixel_format).upper() == str(configured).upper():
+            self.info(f"Camera pixel format ({self.cam.Label}): {self.actual_pixel_format}")
+            return
+        self.warning(
+            f"Camera pixel format mismatch ({self.cam.Label}): "
+            f"requested={configured} actual={self.actual_pixel_format}"
+        )
+        self._prompt_pixel_format_divergence(self.actual_pixel_format)
+
+    def _prompt_pixel_format_divergence(self, actual_pixel_format: str):
+        if not self.divergence_cb or self._pixel_format_divergence_prompted or self._abort_requested:
+            return
+        self._pixel_format_divergence_prompted = True
+        accepted = self.divergence_cb(
+            f"Camera pixel format mismatch: {self.cam.Label}",
+            f"Camera {self.cam.Label} is configured for pixel format "
+            f"{self.cam.PixelFormat}, but {actual_pixel_format} is actually "
+            "being captured.\n\n"
+            "Accept the actual pixel format and continue recording, or "
+            "abort the recording and adjust settings?",
+        )
+        if not accepted:
+            self._abort_requested = True
+
     def _maybe_emit_preview(self, frame):
         if not self.preview_cb or self._preview_interval is None:
             return
@@ -268,6 +314,25 @@ class VideoRecorder:
                     "the achieved frame rate may fall back to whatever "
                     "AVFoundation's default active format allows."
                 )
+
+        # Verify the pixel format actually negotiated by the platform
+        # capture backend matches what was configured
+        # NB: cannot be checked from frame data itself as every backend
+        # converts delivered frames to a uniform format regardless of
+        # native capture format, so instead query each platform directly
+        # to check what it actually selected
+        if IS_MAC:
+            self.actual_pixel_format = get_active_pixel_format(
+                device_index=self.cam.DeviceIndex,
+                device_name=getattr(self.cam, "DeviceName", None),
+            )
+        elif sys.platform.startswith("linux"):
+            self.actual_pixel_format = _decode_v4l2_fourcc(
+                int(self.cap.get(cv2.CAP_PROP_FOURCC) or 0)
+            )
+        elif sys.platform.startswith("win"):
+            self.actual_pixel_format = getattr(self.cap, "actual_pixel_format", None)
+        self._check_pixel_format()
 
         reported_fps = float(self.cap.get(cv2.CAP_PROP_FPS) or 0.0)
         if reported_fps > 0 and abs(reported_fps - float(self.cam.FPS)) > 0.1:

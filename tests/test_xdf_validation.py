@@ -46,6 +46,7 @@ def write_video_stream(
         fps: float,
         n_frames: int,
         video_path: str,
+        pixel_format: str | None = None,
     ) -> int:
     sid = writer.add_video_stream(
         name=name,
@@ -54,6 +55,7 @@ def write_video_stream(
         width=640,
         height=480,
         fps=fps,
+        pixel_format=pixel_format,
     )
     ts = 100.0 + np.arange(n_frames) / fps
     idx = np.arange(n_frames)
@@ -279,6 +281,138 @@ def test_video_pass(xdf_path, tmp_path):
         expected_duration_s=duration,
     )
     assert report.passed, report.detailed_text()
+    assert not any("pixel format" in c.name for c in report.checks)
+
+
+def test_video_pixel_format_pass(xdf_path, tmp_path):
+    """The live-verified pixel format (recorded into the stream's desc)
+    matching what was configured is a PASS, and produces its own check."""
+    duration = 10.0
+    fps = 30.0
+    video_path = str(tmp_path / "cam.mp4")
+    with open(video_path, "wb") as f:
+        f.write(b"\x00" * 1024)
+
+    cfg = base_cfg()
+    cfg.Video.Enabled = True
+    pixel_format = "NV12"
+    cfg.Video.Cams = [
+        VideoCamConfig(
+            Enabled=True,
+            Label="Face",
+            FPS=int(fps),
+            PixelFormat=pixel_format,
+        )
+    ]
+
+    w = XDFWriter(xdf_path)
+    w.start()
+    write_video_stream(
+        writer=w,
+        name="Camera-Face",
+        fps=fps,
+        n_frames=int(duration * fps),
+        video_path=video_path,
+        pixel_format=pixel_format,
+    )
+    w.stop()
+
+    report = validate_test_recording(
+        xdf_path=xdf_path,
+        cfg=cfg,
+        lsl_streams=[],
+        expected_duration_s=duration,
+    )
+    assert report.passed, report.detailed_text()
+    pf_check = next(c for c in report.checks if "pixel format" in c.name)
+    assert pf_check.passed
+
+
+def test_video_pixel_format_mismatch_fails(xdf_path, tmp_path):
+    """Check that validation fails when the platform capture backend
+    actually negotiated a different pixel format than what was configured."""
+    duration = 10.0
+    fps = 30.0
+    video_path = str(tmp_path / "cam.mp4")
+    with open(video_path, "wb") as f:
+        f.write(b"\x00" * 1024)
+
+    cfg = base_cfg()
+    cfg.Video.Enabled = True
+    cfg.Video.Cams = [
+        VideoCamConfig(
+            Enabled=True,
+            Label="Face",
+            FPS=int(fps),
+            PixelFormat="NV12",
+        )
+    ]
+
+    w = XDFWriter(xdf_path)
+    w.start()
+    write_video_stream(
+        writer=w,
+        name="Camera-Face",
+        fps=fps,
+        n_frames=int(duration * fps),
+        video_path=video_path,
+        pixel_format="YUYV",  # a different pixel format was actually negotiated
+    )
+    w.stop()
+
+    report = validate_test_recording(
+        xdf_path=xdf_path,
+        cfg=cfg,
+        lsl_streams=[],
+        expected_duration_s=duration,
+    )
+    assert not report.passed
+    pf_check = next(c for c in report.checks if "pixel format" in c.name)
+    assert not pf_check.passed
+    assert "NV12" in pf_check.detail and "YUYV" in pf_check.detail
+
+
+def test_video_pixel_format_skipped_when_unknown(xdf_path, tmp_path):
+    """When the platform couldn't determine the actual pixel format
+    (e.g. readback unsupported), there is no basis to judge a mismatch,
+    so the check is skipped entirely rather than failed."""
+    duration = 10.0
+    fps = 30.0
+    video_path = str(tmp_path / "cam.mp4")
+    with open(video_path, "wb") as f:
+        f.write(b"\x00" * 1024)
+
+    cfg = base_cfg()
+    cfg.Video.Enabled = True
+    cfg.Video.Cams = [
+        VideoCamConfig(
+            Enabled=True,
+            Label="Face",
+            FPS=int(fps),
+            PixelFormat="NV12",
+        )
+    ]
+
+    w = XDFWriter(xdf_path)
+    w.start()
+    write_video_stream(
+        writer=w,
+        name="Camera-Face",
+        fps=fps,
+        n_frames=int(duration * fps),
+        video_path=video_path,
+        pixel_format=None,
+    )
+    w.stop()
+
+    report = validate_test_recording(
+        xdf_path=xdf_path,
+        cfg=cfg,
+        lsl_streams=[],
+        expected_duration_s=duration,
+    )
+    assert report.passed, report.detailed_text()
+    assert not any("pixel format" in c.name for c in report.checks)
 
 
 def test_video_missing_file_fails(xdf_path, tmp_path):
