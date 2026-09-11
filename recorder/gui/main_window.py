@@ -527,6 +527,10 @@ class MainWindow(QMainWindow):
 
     def _on_debug_logs_changed(self, _state: int):
         self._show_debug = self.debug_logs.isChecked()
+        if self._show_debug:
+            self.log("DEBUG logging enabled")
+        else:
+            self.log("DEBUG logging disabled")
 
     def _log_gui_change(self, field: str, value):
         """Log a GUI setting change."""
