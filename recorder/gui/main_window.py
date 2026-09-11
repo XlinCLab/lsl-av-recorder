@@ -18,9 +18,9 @@ from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
                              QComboBox, QDoubleSpinBox, QFileDialog,
                              QFormLayout, QHBoxLayout, QLabel, QLineEdit,
                              QMainWindow, QMessageBox, QProgressDialog,
-                             QPushButton, QSizePolicy, QSpinBox, QSplitter,
-                             QTableWidget, QTableWidgetItem, QTabWidget,
-                             QTextEdit, QVBoxLayout, QWidget)
+                             QPushButton, QScrollArea, QSizePolicy, QSpinBox,
+                             QSplitter, QTableWidget, QTableWidgetItem,
+                             QTabWidget, QTextEdit, QVBoxLayout, QWidget)
 
 from ..audio.devices import (default_input_device_index,
                              get_audio_device_capabilities,
@@ -422,11 +422,17 @@ class MainWindow(QMainWindow):
         self.max_cams = 4
         self._init_camera_tabs()
 
+        # Enable scrolling within tabs in order for window to be resizable
+        # below sum of minimum sizes of components
+        tabs_scroll = QScrollArea()
+        tabs_scroll.setWidget(self.tabs)
+        tabs_scroll.setWidgetResizable(True)
+
         left = QWidget()
         left_layout = QVBoxLayout()
         left_layout.addLayout(form)
         left_layout.addLayout(btn_row)
-        left_layout.addWidget(self.tabs)
+        left_layout.addWidget(tabs_scroll)
         left_layout.addWidget(QLabel("Log"))
         left_layout.addWidget(self.debug_logs)
         left_layout.addWidget(self.logbox)
