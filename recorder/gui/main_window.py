@@ -166,7 +166,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self, cfg_path: Optional[str] = None):
         super().__init__()
-        self.setWindowTitle("LSL AV Recorder (Audio via LSL, LabRecorder XDF)")
+        self.setWindowTitle("LSL AV Recorder")
         self._recording_active = False
         self.logbox = QTextEdit()
         self.logbox.setReadOnly(True)
