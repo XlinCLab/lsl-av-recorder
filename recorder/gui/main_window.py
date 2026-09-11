@@ -1419,7 +1419,6 @@ class MainWindow(QMainWindow):
 
         box = QMessageBox(self)
         box.setWindowTitle("Test recording results")
-        delete_btn = None
         if report.passed:
             box.setIcon(QMessageBox.Icon.Information)
             box.setText(f"All checks passed ({report.summary()}).")
@@ -1428,23 +1427,25 @@ class MainWindow(QMainWindow):
             ok_btn = box.addButton(QMessageBox.StandardButton.Ok)
             box.setDefaultButton(ok_btn)
         else:
-            box.setIcon(QMessageBox.Icon.Warning)
-            box.setText(
-                f"{report.summary()}.\n\nThe recording is kept for inspection at:\n{temp_dir}"
-            )
             self.log(
-                f"[Test] Validation failed; keeping temp directory for inspection: {temp_dir}",
+                f"[Test] Validation failed; test recording artifacts: {temp_dir}",
                 loglevel="WARNING",
             )
-            ok_btn = box.addButton(QMessageBox.StandardButton.Ok)
-            delete_btn = box.addButton("Delete test files", QMessageBox.ButtonRole.DestructiveRole)
-            box.setDefaultButton(ok_btn)
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setText(f"{report.summary()}.\n\nTest recording directory:\n{temp_dir}")
+            delete_btn = box.addButton("Delete test files", QMessageBox.ButtonRole.AcceptRole)
+            keep_btn = box.addButton("Keep for inspection", QMessageBox.ButtonRole.ActionRole)
+            box.setDefaultButton(delete_btn)
         box.setDetailedText(report.detailed_text())
         box.exec()
 
-        if delete_btn is not None and box.clickedButton() == delete_btn:
-            shutil.rmtree(temp_dir, ignore_errors=True)
-            self.log(f"[Test] Deleted test recording directory: {temp_dir}")
+        if not report.passed:
+            # Clean up temp test files automatically unless the user explicitly indicated that the files should be kept
+            if box.clickedButton() is keep_btn:
+                self.log(f"[Test] Keeping temp directory for inspection: {temp_dir}", loglevel="WARNING")
+            else:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                self.log(f"[Test] Deleted test recording directory: {temp_dir}")
 
     def on_connect_labrecorder(self):
         host = self.labrec_host.text().strip() or self.cfg.LabRecorder.Host
