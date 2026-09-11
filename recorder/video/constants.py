@@ -36,14 +36,6 @@ COMMON_FPS_VALUES = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20, 24, 25, 30, 50, 60, 
 
 # Pixel format
 DEFAULT_PIXEL_FORMAT = "YUYV"
-# UI -> AVFoundation pixel format mapping for macOS ffmpeg
-PIXEL_FORMAT_MAP = {
-    "YUYV": "yuyv422",
-    "UYVY": "uyvy422",
-    "NV12": "nv12",
-    "BGRA": "bgra",
-    "MJPG": "mjpeg",
-}
 
 # UI -> v4l2 control label mapping
 V4L2_CONTROL_MAP = {
@@ -79,14 +71,8 @@ VIDEO_PROC_AMP_FLAGS_MANUAL = 0x0002
 CAMERA_CONTROL_FLAGS_AUTO = 0x0001
 CAMERA_CONTROL_FLAGS_MANUAL = 0x0002
 
-# Other ffmpeg parameters
-# Camera controls not supported via ffmpeg
-FFMPEG_UNSUPPORTED_CONTROLS = (
+# Camera controls AVFoundation doesn't expose a standard toggle for on macOS
+MAC_UNSUPPORTED_CONTROLS = (
     "auto_exposure",
     "auto_focus",
 )
-FFMPEG_PROBE_DURATION_SEC = 0.1
-# Hard cap on how long a single ffmpeg probe subprocess may run before being killed:
-# AVFoundation can hang on some device/mode/pixel-format combinations
-# instead of erroring out quickly, so probing needs a timeout to avoid stalling indefinitely.
-FFMPEG_PROBE_TIMEOUT_SEC = 5

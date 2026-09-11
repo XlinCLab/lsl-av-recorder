@@ -7,8 +7,25 @@ from typing import Callable, Optional
 import cv2
 from pylsl import local_clock
 
+from ..video.constants import IS_MAC
+from .avfoundation_capture import (force_active_format, get_active_format_dims,
+                                   get_active_pixel_format)
 from .color_adjust import apply_color_adjustments
 from .constants import DEFAULT_BRIGHTNESS, DEFAULT_HUE, DEFAULT_SATURATION
+from .devices import resolve_cv2_device_index
+
+
+def _decode_v4l2_fourcc(fourcc_int: int) -> Optional[str]:
+    """Decode an OpenCV/V4L2 FourCC int (little-endian byte order, as used
+    by cv2.VideoWriter_fourcc and cv2.VideoCapture's CAP_PROP_FOURCC on the
+    V4L2 backend) back into its 4-character code, e.g. to verify the pixel
+    format cv2.VideoCapture(..., cv2.CAP_V4L2) actually negotiated. Returns
+    None if nothing meaningful was reported."""
+    if not fourcc_int:
+        return None
+    chars = [chr((fourcc_int >> (8 * i)) & 0xFF) for i in range(4)]
+    decoded = "".join(c for c in chars if c.isprintable())
+    return decoded.upper() or None
 
 
 class VideoRecorder:
@@ -20,12 +37,29 @@ class VideoRecorder:
         frame_cb: Callable = None,
         preview_cb: Optional[Callable] = None,
         preview_fps: Optional[float] = None,
+        divergence_cb: Optional[Callable[[str, str], bool]] = None,
     ):
         self.cam = cam_cfg
         self.output_path = output_path
         self.status_cb = status_cb
         self.frame_cb = frame_cb
         self.preview_cb = preview_cb
+        # Called (title, message) -> bool when a measured setting diverges
+        # from what was configured; True = accept and keep recording, False = abort
+        self.divergence_cb = divergence_cb
+        # Set once the operator accepts an observed fps as the new baseline,
+        # so _expected_fps() stops comparing against the original configured value
+        self._accepted_fps_override: Optional[float] = None
+        self._size_divergence_prompted = False
+        self._pixel_format_divergence_prompted = False
+        self.actual_pixel_format: Optional[str] = None
+        # Set once the operator has chosen to abort via a divergence prompt
+        # (fps or size); once true, no further prompt is shown for this
+        # recorder since the run is already shutting down, and any further
+        # deviation readings during teardown (capture rate dropping toward
+        # zero as the camera is released) are an artifact of that, not a
+        # new decision point.
+        self._abort_requested = False
         self._preview_interval = None
         self._next_preview_ts = None
         if self.preview_cb and preview_fps:
@@ -53,7 +87,11 @@ class VideoRecorder:
         self._fps_probe_frames = []
         self._fps_probe_min_frames = 10
         self._fps_probe_min_duration = 0.5
-        self._fps_probe_max_wait = 2.0
+        # Frames captured in this initial window are still buffered/written
+        # normally (nothing is lost), but excluded from the FPS measurement
+        # to avoid biasing based on the first few samples, which may have lower FPS
+        self._fps_probe_warmup = 1.0
+        self._fps_probe_max_wait = 3.5
         self._probe_logged = False
         self._read_fail_count = 0
         self._last_read_fail_log = None
@@ -61,6 +99,13 @@ class VideoRecorder:
         self._fps_warn_rel = 0.10
         self._fps_warn_abs = 0.5
         self._last_fps_warn_ts = None
+        # How long to wait after the VideoWriter opens before the deviation
+        # check is allowed to warn at all: right after startup (especially
+        # with multiple cameras capturing simultaneously), capture rate can
+        # genuinely dip for a few seconds while things settle. A false
+        # warning here is worse than a real one arriving a few seconds late.
+        self._fps_warn_grace_period = 10.0
+        self._writer_opened_at: Optional[float] = None
         self._brightness = self.cam.Brightness
         self._hue = self.cam.Hue
         self._saturation = self.cam.Saturation
@@ -92,13 +137,22 @@ class VideoRecorder:
         self.log(msg, loglevel="DEBUG")
 
     def _expected_fps(self) -> float:
-        if self.writer_fps is not None:
-            return float(self.writer_fps)
+        if self._accepted_fps_override is not None:
+            return float(self._accepted_fps_override)
+        if self.cam.FPS:
+            return float(self.cam.FPS)
         if self._reported_fps is not None:
             return float(self._reported_fps)
-        return float(self.cam.FPS or 0.0)
+        if self.writer_fps is not None:
+            return float(self.writer_fps)
+        return 0.0
 
     def _maybe_warn_fps(self, inst_fps: float, now: float):
+        if (
+            self._writer_opened_at is not None
+            and (now - self._writer_opened_at) < self._fps_warn_grace_period
+        ):
+            return
         expected = self._expected_fps()
         if expected <= 0:
             return
@@ -111,10 +165,78 @@ class VideoRecorder:
             or (now - self._last_fps_warn_ts) >= self._fps_warn_interval
         ):
             self.warning(
-                "Capture FPS deviation: "
+                f"Capture FPS deviation ({self.cam.Label}): "
                 f"expected≈{expected:.2f}, observed={inst_fps:.2f}"
             )
             self._last_fps_warn_ts = now
+            self._prompt_fps_divergence(expected, inst_fps)
+
+    def _prompt_fps_divergence(self, expected: float, observed: float):
+        if not self.divergence_cb or self._abort_requested:
+            return
+        accepted = self.divergence_cb(
+            f"Camera FPS deviation: {self.cam.Label}",
+            f"Camera {self.cam.Label} is configured to record at {expected:.2f} fps, "
+            f"but {observed:.2f} fps is actually being captured.\n\n"
+            "Accept the observed frame rate as the new expected frame rate "
+            "and continue recording, or abort the recording and adjust settings?",
+        )
+        if accepted:
+            # Set current observed rate as the new accepted baseline;
+            # further deviation from THIS value will still warn again
+            self._accepted_fps_override = observed
+        else:
+            # divergence_cb has already triggered the abort itself; suppress
+            # any further divergence prompt for the rest of this recorder's
+            # teardown, since e.g. the capture rate dropping toward zero as
+            # the camera is released is expected, not a new decision to make
+            self._abort_requested = True
+
+    def _prompt_size_divergence(self, actual_w: int, actual_h: int):
+        if not self.divergence_cb or self._size_divergence_prompted or self._abort_requested:
+            return
+        self._size_divergence_prompted = True
+        accepted = self.divergence_cb(
+            f"Camera frame size mismatch: {self.cam.Label}",
+            f"Camera {self.cam.Label} is configured for "
+            f"{self.cam.Width}x{self.cam.Height}, but is actually delivering "
+            f"{actual_w}x{actual_h}.\n\n"
+            "Accept the actual size and continue recording, or abort the "
+            "recording and adjust settings?",
+        )
+        if not accepted:
+            self._abort_requested = True
+
+    def _check_pixel_format(self):
+        """Compare self.actual_pixel_format (set in start(), from whatever
+        the platform capture backend reports it actually negotiated) against
+        what was configured, warning and prompting on a mismatch."""
+        configured = getattr(self.cam, "PixelFormat", None)
+        if not configured or not self.actual_pixel_format:
+            return
+        if str(self.actual_pixel_format).upper() == str(configured).upper():
+            self.info(f"Camera pixel format ({self.cam.Label}): {self.actual_pixel_format}")
+            return
+        self.warning(
+            f"Camera pixel format mismatch ({self.cam.Label}): "
+            f"requested={configured} actual={self.actual_pixel_format}"
+        )
+        self._prompt_pixel_format_divergence(self.actual_pixel_format)
+
+    def _prompt_pixel_format_divergence(self, actual_pixel_format: str):
+        if not self.divergence_cb or self._pixel_format_divergence_prompted or self._abort_requested:
+            return
+        self._pixel_format_divergence_prompted = True
+        accepted = self.divergence_cb(
+            f"Camera pixel format mismatch: {self.cam.Label}",
+            f"Camera {self.cam.Label} is configured for pixel format "
+            f"{self.cam.PixelFormat}, but {actual_pixel_format} is actually "
+            "being captured.\n\n"
+            "Accept the actual pixel format and continue recording, or "
+            "abort the recording and adjust settings?",
+        )
+        if not accepted:
+            self._abort_requested = True
 
     def _maybe_emit_preview(self, frame):
         if not self.preview_cb or self._preview_interval is None:
@@ -129,7 +251,10 @@ class VideoRecorder:
 
     def start(self):
         if sys.platform == "darwin":
-            self.cap = cv2.VideoCapture(self.cam.DeviceIndex, cv2.CAP_AVFOUNDATION)
+            cv2_index = resolve_cv2_device_index(
+                getattr(self.cam, "DeviceName", None), self.cam.DeviceIndex
+            )
+            self.cap = cv2.VideoCapture(cv2_index, cv2.CAP_AVFOUNDATION)
         elif sys.platform.startswith("linux"):
             source = self.cam.DevNode if getattr(self.cam, "DevNode", "") else self.cam.DeviceIndex
             self.cap = cv2.VideoCapture(source, cv2.CAP_V4L2)
@@ -160,19 +285,113 @@ class VideoRecorder:
             self.cap = None
             return False
 
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.cam.Width)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.cam.Height)
-        self.cap.set(cv2.CAP_PROP_FPS, self.cam.FPS)
+        pixel_format = getattr(self.cam, "PixelFormat", None)
+
+        # Workaround for setting pixel format on Linux:
+        if sys.platform.startswith("linux") and pixel_format and len(str(pixel_format)) == 4:
+            # cv2's V4L2 backend resets the device to its own default pixel format
+            # when it opens (VIDIOC_S_FMT), discarding whatever a prior `v4l2-ctl
+            # --set-fmt-video` Apply Settings call had already configured on /dev/videoN.
+            # Must run before width/height/fps below, since a pixel format change can
+            # affect which resolutions/rates are valid.
+            self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*str(pixel_format).upper()))
+
+        # Workaround for setting pixel format on MacOS
+        forced = False
+        if IS_MAC and self.cam.FPS:
+            # Try to select the exact native AVCaptureDeviceFormat BEFORE cv2's
+            # own width/height/fps setters ever run. Per OpenCV's actual
+            # AVFoundation backend implementation, cv2's own CAP_PROP_FRAME_WIDTH/
+            # HEIGHT setter does not perform generic output scaling: it assigns
+            # the requested size to AVCaptureVideoDataOutput.videoSettings, reads
+            # AVCaptureDevice.activeFormat back, and -- if it doesn't match --
+            # silently replaces its own request with whatever the device's
+            # CURRENT format already is and stops. Two failure modes follow from
+            # that, both observed empirically:
+            #   1. Calling cv2's setter BEFORE force_active_format, while the
+            #      device is still sitting at a stale format left over from a
+            #      previous session, permanently pins videoSettings to that
+            #      stale size -- force_active_format() later fixes the physical
+            #      device format but never touches videoSettings, so cv2 keeps
+            #      scaling/cropping frames against the stale (wrong) size.
+            #   2. Re-issuing cv2's setter AFTER force_active_format, to correct
+            #      that staleness, was observed to itself provoke AVFoundation
+            #      into reverting the newly forced activeFormat to a different
+            #      device format.
+            # Avoid cv2's own width/height/fps setters entirely: 
+            # call force_active_format() first and skip cv2's setters if successful
+            forced = force_active_format(
+                device_index=self.cam.DeviceIndex,
+                width=int(self.cam.Width),
+                height=int(self.cam.Height),
+                fps=float(self.cam.FPS),
+                pixel_format=pixel_format,
+                device_name=getattr(self.cam, "DeviceName", None),
+            )
+            if forced:
+                self.info(f"Force-set active pixel format to {pixel_format} for {self.cam.Label}")
+                # Warn if active dimensions for device do not match configured settings
+                # Sanity check only, NOT corrected here (see above)
+                active_dims = get_active_format_dims(
+                    device_index=self.cam.DeviceIndex,
+                    device_name=getattr(self.cam, "DeviceName", None),
+                )
+                if active_dims != (int(self.cam.Width), int(self.cam.Height)):
+                    self.warning(
+                        f"Camera ({self.cam.Label}) active format dimensions "
+                        f"({active_dims}) do NOT match configured dimensions "
+                        f"{self.cam.Width}x{self.cam.Height}"
+                    )
+            else:
+                self.warning(
+                    f"Could not force native capture pixel format {pixel_format} for {self.cam.Label}; "
+                    "falling back to cv2's own (less precise) width/height/fps negotiation."
+                )
+
+        if not forced:
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.cam.Width)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.cam.Height)
+            self.cap.set(cv2.CAP_PROP_FPS, self.cam.FPS)
+
+        # Verify the pixel format actually negotiated by the platform
+        # capture backend matches what was configured
+        # NB: cannot be checked from frame data itself as every backend
+        # converts delivered frames to a uniform format regardless of
+        # native capture format, so instead query each platform directly
+        # to check what it actually selected
+        if IS_MAC:
+            self.actual_pixel_format = get_active_pixel_format(
+                device_index=self.cam.DeviceIndex,
+                device_name=getattr(self.cam, "DeviceName", None),
+            )
+            # Diagnostic: the physical device's own activeFormat dims at this point
+            active_dims = get_active_format_dims(
+                device_index=self.cam.DeviceIndex,
+                device_name=getattr(self.cam, "DeviceName", None),
+            )
+            if active_dims:
+                self.info(
+                    f"Camera ({self.cam.Label}) active format dims before first frame: "
+                    f"{active_dims[0]}x{active_dims[1]}"
+                )
+        elif sys.platform.startswith("linux"):
+            self.actual_pixel_format = _decode_v4l2_fourcc(
+                int(self.cap.get(cv2.CAP_PROP_FOURCC) or 0)
+            )
+        elif sys.platform.startswith("win"):
+            self.actual_pixel_format = getattr(self.cap, "actual_pixel_format", None)
+        self._check_pixel_format()
 
         reported_fps = float(self.cap.get(cv2.CAP_PROP_FPS) or 0.0)
         if reported_fps > 0 and abs(reported_fps - float(self.cam.FPS)) > 0.1:
             self.warning(
-                f"Camera FPS mismatch: requested={self.cam.FPS} reported={reported_fps:.3f}"
+                f"Camera FPS mismatch ({self.cam.Label}): "
+                f"requested={self.cam.FPS} reported={reported_fps:.3f}"
             )
         self.writer_fps = None
         self._reported_fps = reported_fps if reported_fps > 0 else None
         if self._reported_fps is not None:
-            self.info(f"Camera reported FPS: {reported_fps:.3f}")
+            self.info(f"Camera reported FPS ({self.cam.Label}): {reported_fps:.3f}")
 
         requested_fps = float(self.cam.FPS or 0.0)
         if requested_fps > 0:
@@ -197,8 +416,8 @@ class VideoRecorder:
                         or (now - self._last_read_fail_log) >= 2.0
                     ):
                         self.warning(
-                            "Camera read failed "
-                            f"({self._read_fail_count} consecutive failures)"
+                            f"Camera read failed ({self.cam.Label}): "
+                            f"{self._read_fail_count} consecutive failures"
                         )
                         self._last_read_fail_log = now
                     time.sleep(0.001)
@@ -224,7 +443,8 @@ class VideoRecorder:
                     if self._fps_probe_start is None:
                         self._fps_probe_start = now
                     self._fps_probe_frames.append(frame)
-                    self._fps_probe_times.append(now)
+                    if (now - self._fps_probe_start) >= self._fps_probe_warmup:
+                        self._fps_probe_times.append(now)
 
                     if self.writer_fps is None:
                         if len(self._fps_probe_times) >= self._fps_probe_min_frames:
@@ -238,7 +458,7 @@ class VideoRecorder:
                                 if fps > 0:
                                     self.writer_fps = fps
                                     self.info(
-                                        f"Measured capture FPS: {self.writer_fps:.2f}"
+                                        f"Measured capture FPS ({self.cam.Label}): {self.writer_fps:.2f}"
                                     )
                         if (
                             self.writer_fps is None
@@ -248,7 +468,7 @@ class VideoRecorder:
                             if self._reported_fps is not None:
                                 self.writer_fps = self._reported_fps
                                 self.warning(
-                                    "Falling back to reported FPS: "
+                                    f"Falling back to reported FPS ({self.cam.Label}): "
                                     f"{self.writer_fps:.2f}"
                                 )
                             else:
@@ -257,7 +477,7 @@ class VideoRecorder:
                                     fallback = 30.0
                                 self.writer_fps = fallback
                                 self.warning(
-                                    "Falling back to requested FPS: "
+                                    f"Falling back to requested FPS ({self.cam.Label}): "
                                     f"{self.writer_fps:.2f}"
                                 )
 
@@ -280,7 +500,7 @@ class VideoRecorder:
                             if dt > 0:
                                 inst_fps = frames / dt
                                 self.debug(
-                                    f"Capture FPS (last {dt:.1f}s): {inst_fps:.2f}"
+                                    f"Capture FPS ({self.cam.Label}, last {dt:.1f}s): {inst_fps:.2f}"
                                 )
                                 self._maybe_warn_fps(inst_fps, now)
                             self._last_log_ts = now
@@ -291,9 +511,11 @@ class VideoRecorder:
                     self.writer_size = (actual_w, actual_h)
                     if (actual_w, actual_h) != (self.cam.Width, self.cam.Height):
                         self.warning(
-                            f"Camera frame size mismatch: requested={self.cam.Width}x{self.cam.Height} "
+                            f"Camera frame size mismatch ({self.cam.Label}): "
+                            f"requested={self.cam.Width}x{self.cam.Height} "
                             f"actual={actual_w}x{actual_h}"
                         )
+                        self._prompt_size_divergence(actual_w, actual_h)
 
                     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
                     self.writer = cv2.VideoWriter(
@@ -309,13 +531,24 @@ class VideoRecorder:
                         break
 
                     self.info(
-                        f"VideoWriter opened: fps={self.writer_fps:.3f} size={actual_w}x{actual_h}"
+                        f"VideoWriter opened ({self.cam.Label}): "
+                        f"fps={self.writer_fps:.3f} size={actual_w}x{actual_h}"
                     )
 
                     for buffered_frame in self._fps_probe_frames:
                         self.writer.write(buffered_frame)
                     self._fps_probe_frames = []
                     self._fps_probe_times = []
+
+                    # Restart the deviation-check window here rather than
+                    # leaving it dating back to _start_ts (set at the very
+                    # first captured frame): otherwise the first post-open
+                    # 2s window spans the probing/startup ramp-up period,
+                    # when frames arrive slower than steady-state, and
+                    # falsely reports a deviation right as the writer opens.
+                    self._last_log_ts = now
+                    self._last_log_frame_idx = self.frame_idx
+                    self._writer_opened_at = now
                 else:
                     self.writer.write(frame)
 
@@ -333,7 +566,7 @@ class VideoRecorder:
                     frames = self.frame_idx - self._last_log_frame_idx
                     if dt > 0:
                         inst_fps = frames / dt
-                        self.debug(f"Capture FPS (last {dt:.1f}s): {inst_fps:.2f}")
+                        self.debug(f"Capture FPS ({self.cam.Label}, last {dt:.1f}s): {inst_fps:.2f}")
                         self._maybe_warn_fps(inst_fps, now)
                     self._last_log_ts = now
                     self._last_log_frame_idx = self.frame_idx
@@ -346,7 +579,21 @@ class VideoRecorder:
         self.running = False
         if self.thread:
             self.debug(f"VideoRecorder stopping (join): {self.cam.Label}")
-            self.thread.join()
+            # Bounded: if this camera's own worker thread is meanwhile
+            # blocked inside divergence_cb waiting on a DIFFERENT camera's
+            # still-open dialog, an unbounded join here (called from the
+            # GUI thread while handling that other camera's abort) would
+            # freeze the app forever -- the GUI thread would never get back
+            # to its event loop to show this camera's own dialog. A normal
+            # stop always finishes far under this, so it changes nothing in
+            # the common case.
+            self.thread.join(timeout=10.0)
+            if self.thread.is_alive():
+                self.warning(
+                    f"VideoRecorder thread for {self.cam.Label} did not stop "
+                    "within 10s (likely waiting on a settings-divergence "
+                    "prompt for another camera); continuing teardown anyway."
+                )
             self.debug(f"VideoRecorder joined: {self.cam.Label}")
 
         if self.writer:
@@ -370,6 +617,6 @@ class VideoRecorder:
             total_dt = time.perf_counter() - self._start_ts
             if total_dt > 0:
                 avg_fps = self.frame_idx / total_dt
-                self.info(f"Capture FPS (avg): {avg_fps:.2f}")
+                self.info(f"Capture FPS (avg, {self.cam.Label}): {avg_fps:.2f}")
 
         self.info(f"VideoRecorder stopped: {self.cam.Label}")

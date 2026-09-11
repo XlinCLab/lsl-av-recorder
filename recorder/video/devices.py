@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
+
+import cv2
+from cv2_enumerate_cameras import enumerate_cameras
 
 from ..utils.utils import run_capture_cmd
 from ..video.constants import IS_LINUX, IS_MAC, IS_WINDOWS
@@ -78,3 +81,26 @@ def list_video_devices() -> List[Dict[str, Any]]:
         return list_windows_video_devices()
 
     return []
+
+
+def resolve_cv2_device_index(name: Optional[str], fallback_index: int) -> int:
+    """Resolve the index cv2.VideoCapture(index, cv2.CAP_AVFOUNDATION) needs
+    to actually open the device named `name` (on macOS only).
+
+    OpenCV's own device enumeration is not guaranteed to match
+    list_video_devices(): on hardware with more than one camera, the same
+    integer index can point at a different physical device in each.
+
+    Falls back to `fallback_index` (the ffmpeg/list_video_devices() index)
+    if the name can't be found, the lookup fails for any reason, or off Mac.
+    """
+    if not IS_MAC or not name:
+        return fallback_index
+    try:
+
+        for cam in enumerate_cameras(cv2.CAP_AVFOUNDATION):
+            if cam.name == name:
+                return int(cam.index)
+    except Exception:
+        pass
+    return fallback_index

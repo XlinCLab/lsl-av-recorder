@@ -96,6 +96,9 @@ def _get_bool(cp: configparser.ConfigParser, section: str, key: str, default: bo
     except Exception:
         return default
 
+def _bool_str(value: bool) -> str:
+    return "true" if value else "false"
+
 def load_cfg(path: str) -> AppConfig:
     cp = configparser.ConfigParser(interpolation=None)
     cp.read(path, encoding="utf-8")
@@ -187,3 +190,81 @@ def load_cfg(path: str) -> AppConfig:
         cams.append(vc)
     cfg.Video.Cams = cams
     return cfg
+
+def save_cfg(cfg: AppConfig, path: str) -> None:
+    """Write `cfg` to `path` in the same format `load_cfg` reads, so a
+    saved file round-trips back through `load_cfg` unchanged.
+    Fields that load_cfg only ever assigns a fallback for when their key is absent
+    (DeviceName, Brightness, Hue, Saturation) are omitted here rather than
+    written as the literal string "None"."""
+    cp = configparser.ConfigParser(interpolation=None)
+
+    cp["Session"] = {
+        "ExperimentName": cfg.Prompts.ExperimentName,
+        "Subject": cfg.Prompts.Subject,
+        "Session": cfg.Prompts.Session,
+        "Block": cfg.Prompts.Block,
+        "Acquisition": cfg.Prompts.Acquisition,
+        "Run": cfg.Prompts.Run,
+    }
+
+    cp["Output"] = {
+        "StudyRoot": cfg.Output.StudyRoot,
+        "PathTemplate": cfg.Output.PathTemplate,
+    }
+
+    cp["Audio"] = {
+        "Enabled": _bool_str(cfg.Audio.Enabled),
+        "Device": cfg.Audio.Device or "",
+        "SampleRate": str(cfg.Audio.SampleRate),
+        "BitDepth": str(cfg.Audio.BitDepth),
+        "Channels": str(cfg.Audio.Channels),
+        "StreamName": cfg.Audio.StreamName,
+    }
+
+    cp["Video"] = {
+        "Enabled": _bool_str(cfg.Video.Enabled),
+        "MaxCams": str(max(cfg.Video.MaxCams, len(cfg.Video.Cams))),
+        "Codec": cfg.Video.Codec,
+        "Container": cfg.Video.Container,
+        "PreviewFPS": str(cfg.Video.PreviewFPS),
+    }
+
+    for i, vc in enumerate(cfg.Video.Cams, start=1):
+        sec = f"VideoCam{i}"
+        cp[sec] = {
+            "Enabled": _bool_str(vc.Enabled),
+            "DeviceIndex": str(vc.DeviceIndex),
+            "DevNode": vc.DevNode,
+            "Label": vc.Label,
+            "FPS": str(vc.FPS),
+            "Width": str(vc.Width),
+            "Height": str(vc.Height),
+            "AutoExposure": _bool_str(bool(vc.AutoExposure)),
+            "AutoFocus": _bool_str(bool(vc.AutoFocus)),
+            "PixelFormat": vc.PixelFormat,
+        }
+        if vc.DeviceName is not None:
+            cp[sec]["DeviceName"] = vc.DeviceName
+        if vc.Brightness is not None:
+            cp[sec]["Brightness"] = str(vc.Brightness)
+        if vc.Hue is not None:
+            cp[sec]["Hue"] = str(vc.Hue)
+        if vc.Saturation is not None:
+            cp[sec]["Saturation"] = str(vc.Saturation)
+
+    cp["LabRecorder"] = {
+        "Enabled": _bool_str(cfg.LabRecorder.Enabled),
+        "Host": cfg.LabRecorder.Host,
+        "Port": str(cfg.LabRecorder.Port),
+    }
+
+    cp["Buffering"] = {
+        "AudioBufferSeconds": str(cfg.Buffering.AudioBufferSeconds),
+        "VideoBufferFrames": str(cfg.Buffering.VideoBufferFrames),
+        "WriterQueueSize": str(cfg.Buffering.WriterQueueSize),
+        "WriterDropPolicy": cfg.Buffering.WriterDropPolicy,
+    }
+
+    with open(path, "w", encoding="utf-8") as f:
+        cp.write(f)

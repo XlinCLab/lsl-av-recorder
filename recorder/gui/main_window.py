@@ -18,14 +18,14 @@ from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
                              QComboBox, QDoubleSpinBox, QFileDialog,
                              QFormLayout, QHBoxLayout, QLabel, QLineEdit,
                              QMainWindow, QMessageBox, QProgressDialog,
-                             QPushButton, QSpinBox, QSplitter, QTableWidget,
-                             QTableWidgetItem, QTabWidget, QTextEdit,
-                             QVBoxLayout, QWidget)
+                             QPushButton, QScrollArea, QSizePolicy, QSpinBox,
+                             QSplitter, QTableWidget, QTableWidgetItem,
+                             QTabWidget, QTextEdit, QVBoxLayout, QWidget)
 
 from ..audio.devices import (default_input_device_index,
                              get_audio_device_capabilities,
                              is_input_config_supported, list_input_devices)
-from ..config import AppConfig, VideoCamConfig, load_cfg
+from ..config import AppConfig, VideoCamConfig, load_cfg, save_cfg
 from ..lsl.labrecorder_rcs import LabRecorderRCS
 from ..utils.constants import _logs_path, _project_root
 from ..utils.utils import get_environment_info
@@ -38,7 +38,7 @@ from ..xdf.xdf_writer import (FULL_BUFFER_BLOCK_THREAD_POLICY,
                               FULL_BUFFER_DROP_OLDEST_POLICY)
 from .camera_panel import CameraPanel
 from .camera_worker import CAMERA_PREVIEW_STREAM_TYPE
-from .preview_manager import PreviewManager
+from .preview_manager import PreviewManager, preview_key
 from .preview_panel import PreviewPanel
 from .run_controller import RunController
 
@@ -60,6 +60,70 @@ def _exclude_camera_preview_streams(streams: List[StreamInfo]) -> List[StreamInf
     an empty stream: it only exists for the lifetime of the live preview and
     goes silent when Start is pressed."""
     return [s for s in streams if s.type() != CAMERA_PREVIEW_STREAM_TYPE]
+
+
+def _default_camera_label(label: str, position: int) -> str:
+    """Fall back to "Cam{position}" (1-based tab position) when `label` is blank."""
+    return label.strip() or f"Cam{position}"
+
+
+def _find_duplicate_camera_labels(labels: list[str]) -> list[str]:
+    """Return each label that appears more than once in `labels`.
+    RunController keys XDF video stream names/lookups by Label, so a
+    duplicate would silently collide (one camera's stream or verified
+    settings overwriting or misattributed to the other's)."""
+    seen: set[str] = set()
+    duplicates: set[str] = set()
+    for label in labels:
+        if label in seen:
+            duplicates.add(label)
+        seen.add(label)
+    return sorted(duplicates)
+
+
+def _recording_stream_rows(controller) -> list[tuple[str, str, str, str]]:
+    """(name, type, device, details) rows describing what an active
+    recording is capturing. "device" is the physical/hosting device behind
+    each stream."""
+    if controller is None:
+        return []
+    rows: list[tuple[str, str, str, str]] = []
+    if controller.audio_enabled and controller.audio_settings:
+        a = controller.audio_settings
+        rows.append((
+            a.stream_name, "Audio", a.device_name or "(default)",
+            f"{a.samplerate:g} Hz, {a.channels} ch, {a.bitdepth}-bit",
+        ))
+    if controller.video_enabled:
+        for cam in controller.cams:
+            rows.append((
+                cam.Label, "Video", cam.DeviceName or "Unknown device",
+                f"{cam.Width}x{cam.Height} @ {cam.FPS}fps, {cam.PixelFormat}",
+            ))
+    for stream in controller.lsl_streams:
+        srate = stream.nominal_srate()
+        rate = f"{srate:g} Hz" if srate > 0 else "irregular rate"
+        rows.append((
+            stream.name(), stream.type() or "LSL", stream.hostname() or "",
+            f"{rate}, {stream.channel_count()} ch",
+        ))
+    return rows
+
+
+class _DivergenceRequest:
+    """A pending "measured setting diverges from configured" decision,
+    raised from a VideoRecorder's own worker thread and answered by a modal
+    dialog shown on the GUI thread. `event` is set once the dialog has been
+    answered (or the app decides not to show one), unblocking the worker
+    thread waiting in MainWindow.request_setting_divergence_decision."""
+
+    __slots__ = ("title", "message", "event", "accepted")
+
+    def __init__(self, title: str, message: str):
+        self.title = title
+        self.message = message
+        self.event = threading.Event()
+        self.accepted = False
 
 
 class _ApplyAllThread(QThread):
@@ -96,11 +160,13 @@ class _ApplyAllThread(QThread):
 
 class MainWindow(QMainWindow):
     log_signal = pyqtSignal(str)
-    preview_frame_signal = pyqtSignal(int, object)
+    preview_frame_signal = pyqtSignal(object, object)
+    divergence_signal = pyqtSignal(object)
+    abort_active_run_signal = pyqtSignal(str)
 
     def __init__(self, cfg_path: Optional[str] = None):
         super().__init__()
-        self.setWindowTitle("LSL AV Recorder (Audio via LSL, LabRecorder XDF)")
+        self.setWindowTitle("LSL AV Recorder")
         self._recording_active = False
         self.logbox = QTextEdit()
         self.logbox.setReadOnly(True)
@@ -112,6 +178,8 @@ class MainWindow(QMainWindow):
         self.debug_logs.setChecked(self._show_debug)
         self.debug_logs.stateChanged.connect(self._on_debug_logs_changed)
         self.log_signal.connect(self._append_log)
+        self.divergence_signal.connect(self._on_divergence_request)
+        self.abort_active_run_signal.connect(self._abort_active_run)
         self._run_log_file = None
         self._log_lock = threading.Lock()
         self._log_path = None
@@ -151,6 +219,7 @@ class MainWindow(QMainWindow):
 
         btn_row = QHBoxLayout()
         self.btn_load = QPushButton("Load config")
+        self.btn_save = QPushButton("Save config")
         self.btn_add_camera = QPushButton("Add camera")
         self.test_duration_spin = QSpinBox()
         self.test_duration_spin.setRange(5, 60)
@@ -162,6 +231,7 @@ class MainWindow(QMainWindow):
         self.btn_stop.setEnabled(False)
         self.btn_close_app = QPushButton("Close app")
         btn_row.addWidget(self.btn_load)
+        btn_row.addWidget(self.btn_save)
         btn_row.addWidget(self.btn_add_camera)
         btn_row.addStretch(1)
         btn_row.addWidget(QLabel("Test duration:"))
@@ -291,6 +361,36 @@ class MainWindow(QMainWindow):
         self.labrec_port.valueChanged.connect(lambda v: self._log_gui_change("LabRecorder.Port", v))
         self.lsl_streams_table.itemChanged.connect(self._on_lsl_stream_item_changed)
 
+        # Recording status indicator: hidden until a real recording starts,
+        # shown above the preview wall for the run's duration
+        self.recording_status_label = QLabel()
+        self.recording_status_label.setStyleSheet(
+            "QLabel { background-color: #b00020; color: white; "
+            "font-weight: bold; padding: 6px; border-radius: 4px; }"
+        )
+        self.recording_status_label.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
+        )
+        self.recording_status_label.setVisible(False)
+
+        self.recording_streams_table = QTableWidget(0, 4)
+        self.recording_streams_table.setHorizontalHeaderLabels(["Stream", "Type", "Device", "Details"])
+        self.recording_streams_table.verticalHeader().setVisible(False)
+        self.recording_streams_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.recording_streams_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.recording_streams_table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.recording_streams_table.horizontalHeader().setStretchLastSection(True)
+        self.recording_streams_table.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
+        )
+        self.recording_streams_table.setVisible(False)
+
+        self._recording_start_ts: Optional[float] = None
+        self._recording_start_clock: str = ""
+        self._recording_status_timer = QTimer(self)
+        self._recording_status_timer.setInterval(1000)
+        self._recording_status_timer.timeout.connect(self._update_recording_status_label)
+
         # Preview wall
         self.preview_panel = PreviewPanel()
         self.preview_mgr = PreviewManager(self)
@@ -322,19 +422,33 @@ class MainWindow(QMainWindow):
         self.max_cams = 4
         self._init_camera_tabs()
 
+        # Enable scrolling within tabs in order for window to be resizable
+        # below sum of minimum sizes of components
+        tabs_scroll = QScrollArea()
+        tabs_scroll.setWidget(self.tabs)
+        tabs_scroll.setWidgetResizable(True)
+
         left = QWidget()
         left_layout = QVBoxLayout()
         left_layout.addLayout(form)
         left_layout.addLayout(btn_row)
-        left_layout.addWidget(self.tabs)
+        left_layout.addWidget(tabs_scroll)
         left_layout.addWidget(QLabel("Log"))
         left_layout.addWidget(self.debug_logs)
         left_layout.addWidget(self.logbox)
         left.setLayout(left_layout)
 
+        preview_container = QWidget()
+        preview_container_layout = QVBoxLayout()
+        preview_container_layout.setContentsMargins(0, 0, 0, 0)
+        preview_container_layout.addWidget(self.recording_status_label, 0)
+        preview_container_layout.addWidget(self.recording_streams_table, 0)
+        preview_container_layout.addWidget(self.preview_panel, 1)
+        preview_container.setLayout(preview_container_layout)
+
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(left)
-        splitter.addWidget(self.preview_panel)
+        splitter.addWidget(preview_container)
         splitter.setStretchFactor(0, 2)
         splitter.setStretchFactor(1, 3)
 
@@ -345,6 +459,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(root)
 
         self.btn_load.clicked.connect(self.on_load)
+        self.btn_save.clicked.connect(self.on_save)
         self.btn_add_camera.clicked.connect(self._on_add_camera)
         self.btn_start.clicked.connect(self.on_start)
         self.btn_stop.clicked.connect(self.on_stop)
@@ -412,6 +527,10 @@ class MainWindow(QMainWindow):
 
     def _on_debug_logs_changed(self, _state: int):
         self._show_debug = self.debug_logs.isChecked()
+        if self._show_debug:
+            self.log("DEBUG logging enabled")
+        else:
+            self.log("DEBUG logging disabled")
 
     def _log_gui_change(self, field: str, value):
         """Log a GUI setting change."""
@@ -468,6 +587,8 @@ class MainWindow(QMainWindow):
         # if the log simply stops with no matching line here, that means
         # the app went down some other way (native crash, force-kill).
         self.log("Closing app.")
+        # Stop any active camera preview workers before the window/app actually closes
+        self.preview_mgr.stop_all_previews()
         if self._recording_active and self.controller:
             self.log(
                 "App closing while a recording was still active; stopping it first.",
@@ -692,8 +813,13 @@ class MainWindow(QMainWindow):
     def _init_camera_tabs(self):
         initial_count = self._determine_initial_camera_count()
         for i in range(initial_count):
-            cam_cfg = self.cfg.Video.Cams[i] if i < len(self.cfg.Video.Cams) else VideoCamConfig()
-            self._add_camera_panel(cam_cfg)
+            if i < len(self.cfg.Video.Cams):
+                self._add_camera_panel(self.cfg.Video.Cams[i])
+            else:
+                # No config entry for this tab:
+                # (e.g. auto-detected extra camera with nothing saved for it yet)
+                # treat exactly like "Add camera": no pre-selected device
+                self._add_camera_panel()
 
     def _determine_initial_camera_count(self) -> int:
         cfg_count = len(self.cfg.Video.Cams)
@@ -715,41 +841,64 @@ class MainWindow(QMainWindow):
             (len(self.cam_panels) < self.max_cams) and not self._recording_active
         )
         self._update_remove_buttons()
+        self._update_camera_settings_controls()
 
     def _update_remove_buttons(self):
         enabled = (len(self.cam_panels) > 1) and not self._recording_active
         for panel in self.cam_panels:
             panel.set_remove_enabled(enabled)
 
-    def _add_camera_panel(self, cam_cfg: VideoCamConfig | None = None):
+    def _update_camera_settings_controls(self):
+        # Apply settings / Refresh device capabilities both probe or
+        # reconfigure a camera's device, which must not run while a
+        # recording is active.
+        for panel in self.cam_panels:
+            panel.set_settings_controls_enabled(not self._recording_active)
+
+    def _add_camera_panel(self, cam_cfg: VideoCamConfig | None = None) -> Optional[CameraPanel]:
         if len(self.cam_panels) >= self.max_cams:
-            return
-        is_default = cam_cfg is None
-        cam_cfg = cam_cfg or VideoCamConfig()
-        panel = CameraPanel(cam_cfg)
-        if is_default:
-            panel.enabled.setChecked(True)
-        panel.applyStarted.connect(self.preview_mgr.stop_all_previews)
+            return None
+        # cam_cfg is None exactly when there's no real config entry for this tab;
+        # such a panel gets no pre-selected device:
+        # the combo starts on "Select a camera...", and device-dependent controls stay
+        # grayed out until the user actually picks one
+        is_new = cam_cfg is None
+        if is_new:
+            cam_cfg = VideoCamConfig()
+            # Pre-enable so preview starts as soon as a device is chosen,
+            # without an extra click; to_config() reports Enabled=False
+            # anyway until a real device is actually selected
+            cam_cfg.Enabled = True
+        # For a brand-new panel, VideoCamConfig()'s own dataclass default
+        # ("Cam", not blank) must not be mistaken for a real label
+        existing_label = "" if is_new else cam_cfg.Label
+        cam_cfg.Label = _default_camera_label(existing_label, len(self.cam_panels) + 1)
+        panel = CameraPanel(cam_cfg, preselect_device=not is_new)
+        panel.applyStarted.connect(lambda p=panel: self._stop_preview_for_cam(p.to_config()))
         panel.applyStarted.connect(self._on_apply_started)
         panel.applyFinished.connect(self._on_apply_finished)
-        panel.applyFinished.connect(self._refresh_previews_from_panels)
+        panel.applyFinished.connect(lambda p=panel: self._start_preview_for_cam(p.to_config()))
         panel.previewConfigChanged.connect(self._refresh_previews_from_panels)
-        panel.capabilitiesLoadStarted.connect(self.preview_mgr.stop_all_previews)
+        panel.capabilitiesLoadStarted.connect(lambda p=panel: self._stop_preview_for_cam(p.to_config()))
         panel.capabilitiesLoadStarted.connect(self._on_caps_load_started)
         panel.capabilitiesLoadFinished.connect(self._on_caps_load_finished)
-        panel.capabilitiesLoadFinished.connect(self._refresh_previews_from_panels)
+        panel.capabilitiesLoadFinished.connect(lambda p=panel: self._start_preview_for_cam(p.to_config()))
         panel.capabilitiesLoadProgress.connect(self._on_caps_load_progress)
         panel.removeRequested.connect(self._on_remove_camera)
         panel.log.connect(self.log)
         self.cam_panels.append(panel)
         self.tabs.addTab(panel, f"Camera {len(self.cam_panels)}")
         self._update_add_camera_button()
-        should_probe = (not is_default) or (len(self.cam_panels) == 1)
-        if should_probe:
+        # Nothing to probe for a panel with no device selected yet
+        if not is_new:
             panel.refresh_capabilities()
+        return panel
 
     def _on_add_camera(self):
-        self._add_camera_panel()
+        panel = self._add_camera_panel()
+        if panel is not None:
+            self.tabs.setCurrentWidget(panel)
+            self.log(f"Added camera tab: {panel.label.text().strip() or panel._default_label}")
         self._refresh_previews_from_panels()
 
     def _on_remove_camera(self, panel: CameraPanel):
@@ -758,6 +907,13 @@ class MainWindow(QMainWindow):
         if panel not in self.cam_panels:
             return
 
+        # Logged before the panel is actually torn down, so the log still
+        # shows which camera/device was removed even if something in the
+        # teardown itself goes wrong.
+        self.log(
+            f"Removing camera tab: {panel.label.text().strip() or panel._default_label} "
+            f"(device={panel._device_name or '?'}, index={panel.device_index.value()})"
+        )
         cam_index = self.cam_panels.index(panel)
         self.cam_panels.pop(cam_index)
         tab_index = self.tabs.indexOf(panel)
@@ -770,6 +926,15 @@ class MainWindow(QMainWindow):
             idx = self.tabs.indexOf(cam_panel)
             if idx >= 0:
                 self.tabs.setTabText(idx, f"Camera {i + 1}")
+
+        # A removed camera's device slot can free up (or otherwise shift)
+        # device numbering (seen on MacOS), which each panel's device list
+        # is only a snapshot of from whenever it was last populated/refreshed:
+        # Refresh video devices on camera removal to avoid this issue
+        if self.cam_panels:
+            self.log(f"Refreshing video devices for {len(self.cam_panels)} remaining camera(s) after removal")
+            for cam_panel in self.cam_panels:
+                cam_panel.refresh_video_devices(quiet=True)
 
         self._update_add_camera_button()
         self._refresh_previews_from_panels()
@@ -814,6 +979,20 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Load failed", str(e))
 
+    def on_save(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Save config", ".", "CFG files (*.cfg);;All files (*)")
+        if not path:
+            return
+        if not path.lower().endswith(".cfg"):
+            path += ".cfg"
+        try:
+            self.pull_gui_into_cfg()
+            save_cfg(self.cfg, path)
+            self.log(f"Saved config: {path}")
+            self.log(build_config_log_payload("config_saved", self.cfg))
+        except Exception as e:
+            QMessageBox.critical(self, "Save failed", str(e))
+
     def on_start(self):
         if self._testing_active:
             return
@@ -830,6 +1009,7 @@ class MainWindow(QMainWindow):
             return
         items, warnings = self._collect_camera_apply_items()
         warnings.extend(self._validate_audio_settings())
+        warnings.extend(self._validate_unique_camera_labels())
         self._pending_start_warnings = warnings
         self.btn_start.setEnabled(False)
         if items:
@@ -874,6 +1054,14 @@ class MainWindow(QMainWindow):
         return [
             f"Audio: samplerate={samplerate}, bitdepth={bitdepth}, channels={channels} "
             "is not supported by the selected input device."
+        ]
+
+    def _validate_unique_camera_labels(self) -> list[str]:
+        configs = [panel.to_config() for panel in self.cam_panels]
+        enabled_labels = [c.Label for c in configs if c.Enabled]
+        return [
+            f"Camera label '{label}' is used by more than one camera; labels must be unique."
+            for label in _find_duplicate_camera_labels(enabled_labels)
         ]
 
     def _on_apply_all_finished(self, failed_msgs: list[str]):
@@ -929,6 +1117,10 @@ class MainWindow(QMainWindow):
                 lsl_streams=lsl_streams,
                 preview_release_cb=self._stop_preview_for_cam,
                 preview_frame_cb=self.preview_frame_signal.emit,
+                divergence_cb=self.request_setting_divergence_decision,
+            )
+            self.preview_mgr.set_recording_preview_labels(
+                {preview_key(cam): cam.Label for cam in self.controller.cams}
             )
             self._open_run_log()
             self._copy_app_log_to(self.controller.outdir)
@@ -938,6 +1130,7 @@ class MainWindow(QMainWindow):
             self.btn_stop.setEnabled(True)
             self._recording_active = True
             self._update_add_camera_button()
+            self._show_recording_status()
         except Exception as e:
             QMessageBox.critical(self, "Start failed", str(e))
             self.btn_start.setEnabled(True)
@@ -947,37 +1140,160 @@ class MainWindow(QMainWindow):
             self._hide_start_progress()
 
     def _stop_preview_for_cam(self, cam_cfg: VideoCamConfig) -> bool:
-        cam_index = int(cam_cfg.DeviceIndex)
-        if cam_index not in self.preview_mgr.workers:
+        key = preview_key(cam_cfg)
+        if key not in self.preview_mgr.workers:
             return False
-        self.log(f"Stopping preview for camera {cam_cfg.Label} (index {cam_index})")
-        return self.preview_mgr.stop_cam_preview(cam_index)
+        self.log(f"Stopping preview for camera {cam_cfg.Label} ({key})")
+        return self.preview_mgr.stop_cam_preview(key)
+
+    def _start_preview_for_cam(self, cam_cfg: VideoCamConfig):
+        if not self.btn_start.isEnabled():
+            return
+        if getattr(cam_cfg, "Enabled", False):
+            self.preview_mgr.start_cam_preview(cam_cfg)
+
+    def request_setting_divergence_decision(self, title: str, message: str) -> bool:
+        """Blocks the calling thread until the user answers a modal dialog
+        shown on the GUI thread.
+        Returns True (accept: keep recording) or False (abort run).
+
+        Thread-safe: may be called from any thread, in particular a
+        VideoRecorder's own worker thread when a measured setting (fps,
+        frame size) diverges from what was configured.
+        """
+        req = _DivergenceRequest(title, message)
+        self.divergence_signal.emit(req)
+        req.event.wait()
+        if not req.accepted:
+            self.abort_active_run_signal.emit(f"{title}\n\n{message}")
+        return req.accepted
+
+    def _on_divergence_request(self, req: _DivergenceRequest):
+        try:
+            box = QMessageBox(self)
+            box.setWindowTitle(req.title)
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setText(req.message)
+            accept_btn = box.addButton("Accept and continue", QMessageBox.ButtonRole.AcceptRole)
+            abort_btn = box.addButton("Abort recording", QMessageBox.ButtonRole.RejectRole)
+            box.setDefaultButton(abort_btn)
+            box.exec()
+            # Closing the dialog any other way (e.g. the window's own close button)
+            # leaves clickedButton() as None; treat as an implicit abort
+            # rather than silently continuing on an unacknowledged mismatch
+            req.accepted = box.clickedButton() is accept_btn
+        finally:
+            req.event.set()
+
+    def _abort_active_run(self, reason: str):
+        # Only real recordings are wired to request_setting_divergence_decision
+        # (see on_test_recording: test recordings deliberately don't get a
+        # divergence_cb, since a test already validates these settings at
+        # the end with a detailed report).
+        if self._recording_active:
+            self._abort_real_recording(reason)
+
+    def _teardown_recording(self) -> str:
+        """Stop the active controller/previews and copy the run log to the
+        output directory. Returns that directory. Shared by the
+        user-initiated Stop button and an automatic abort triggered by a
+        rejected settings-divergence prompt."""
+        self.preview_mgr.stop_all_previews()
+        self.controller.stop()
+        outdir = os.path.abspath(self.controller.outdir)
+        self._copy_app_log_to(outdir)
+        return outdir
+
+    def _reset_recording_ui_state(self):
+        self.btn_start.setEnabled(True)
+        self.btn_stop.setEnabled(False)
+        self._recording_active = False
+        self._update_add_camera_button()
+        if self.cfg.Video.Enabled:
+            self._refresh_previews_from_panels()
+        self._close_run_log()
+        self._hide_recording_status()
+
+    def _update_recording_status_label(self):
+        if self._recording_start_ts is None:
+            return
+        elapsed = int(time.monotonic() - self._recording_start_ts)
+        hours, rem = divmod(elapsed, 3600)
+        minutes, seconds = divmod(rem, 60)
+        duration = f"{hours}:{minutes:02d}:{seconds:02d}" if hours else f"{minutes:02d}:{seconds:02d}"
+        self.recording_status_label.setText(
+            f"RECORDING: {duration} elapsed (started {self._recording_start_clock})"
+        )
+
+    def _populate_recording_streams_table(self):
+        rows = _recording_stream_rows(self.controller)
+        table = self.recording_streams_table
+        table.setRowCount(len(rows))
+        for i, (name, stype, device, details) in enumerate(rows):
+            table.setItem(i, 0, QTableWidgetItem(name))
+            table.setItem(i, 1, QTableWidgetItem(stype))
+            table.setItem(i, 2, QTableWidgetItem(device))
+            table.setItem(i, 3, QTableWidgetItem(details))
+        table.resizeColumnsToContents()
+        table.resizeRowsToContents()
+        content_height = table.horizontalHeader().height() + sum(
+            table.rowHeight(i) for i in range(table.rowCount())
+        )
+        table.setFixedHeight(content_height + 2 * table.frameWidth() + 2)
+
+    def _show_recording_status(self):
+        self._recording_start_ts = time.monotonic()
+        self._recording_start_clock = datetime.now().strftime("%H:%M:%S")
+        self._update_recording_status_label()
+        self._populate_recording_streams_table()
+        self.recording_status_label.setVisible(True)
+        self.recording_streams_table.setVisible(True)
+        self._recording_status_timer.start()
+
+    def _hide_recording_status(self):
+        self._recording_status_timer.stop()
+        self.recording_status_label.setVisible(False)
+        self.recording_streams_table.setVisible(False)
+        self._recording_start_ts = None
 
     def on_stop(self):
-        try:
-            self.preview_mgr.stop_all_previews()
-            self.controller.stop()
-            outdir = os.path.abspath(self.controller.outdir)
-            self._copy_app_log_to(outdir)
-            msg = f"Results written to:\n{outdir}\n\nClose the app now?"
-            confirm = QMessageBox.question(
-                self,
-                "Recording stopped",
-                msg,
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if confirm == QMessageBox.StandardButton.Yes:
-                self.close()
-        finally:
-            self.btn_start.setEnabled(True)
-            self.btn_stop.setEnabled(False)
-            self._recording_active = False
-            self._update_add_camera_button()
-            if self.cfg.Video.Enabled:
-                self._refresh_previews_from_panels()
-            self._close_run_log()
+        confirm = QMessageBox.question(
+            self,
+            "Stop recording",
+            "Stop active recording?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
 
+        try:
+            outdir = self._teardown_recording()
+        finally:
+            self._reset_recording_ui_state()
+
+        msg = f"Results written to:\n{outdir}\n\nClose the app now?"
+        confirm = QMessageBox.question(
+            self,
+            "Recording stopped",
+            msg,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirm == QMessageBox.StandardButton.Yes:
+            self.close()
+
+    def _abort_real_recording(self, reason: str):
+        try:
+            outdir = self._teardown_recording()
+            QMessageBox.warning(
+                self,
+                "Recording aborted",
+                f"{reason}\n\nRecording stopped automatically. Partial results "
+                f"written to:\n{outdir}",
+            )
+        finally:
+            self._reset_recording_ui_state()
 
     def on_test_recording(self):
         """Runs a short, real recording with the currently configured streams
@@ -990,6 +1306,7 @@ class MainWindow(QMainWindow):
         self.pull_gui_into_cfg()
 
         warnings = self._validate_audio_settings()
+        warnings.extend(self._validate_unique_camera_labels())
         if warnings:
             body = "Some settings may not be supported:\n\n"
             body += "\n".join(f"- {msg}" for msg in warnings)
@@ -1021,6 +1338,7 @@ class MainWindow(QMainWindow):
                 test_cfg,
                 status_cb=lambda msg, loglevel: self.log(f"[Test] {msg}", loglevel),
                 lsl_streams=lsl_streams,
+                # NB: no divergence_cb needed for test recordings
             )
             controller.start()
         except Exception as exc:
@@ -1113,7 +1431,6 @@ class MainWindow(QMainWindow):
 
         box = QMessageBox(self)
         box.setWindowTitle("Test recording results")
-        delete_btn = None
         if report.passed:
             box.setIcon(QMessageBox.Icon.Information)
             box.setText(f"All checks passed ({report.summary()}).")
@@ -1122,23 +1439,25 @@ class MainWindow(QMainWindow):
             ok_btn = box.addButton(QMessageBox.StandardButton.Ok)
             box.setDefaultButton(ok_btn)
         else:
-            box.setIcon(QMessageBox.Icon.Warning)
-            box.setText(
-                f"{report.summary()}.\n\nThe recording is kept for inspection at:\n{temp_dir}"
-            )
             self.log(
-                f"[Test] Validation failed; keeping temp directory for inspection: {temp_dir}",
+                f"[Test] Validation failed; test recording artifacts: {temp_dir}",
                 loglevel="WARNING",
             )
-            ok_btn = box.addButton(QMessageBox.StandardButton.Ok)
-            delete_btn = box.addButton("Delete test files", QMessageBox.ButtonRole.DestructiveRole)
-            box.setDefaultButton(ok_btn)
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setText(f"{report.summary()}.\n\nTest recording directory:\n{temp_dir}")
+            delete_btn = box.addButton("Delete test files", QMessageBox.ButtonRole.AcceptRole)
+            keep_btn = box.addButton("Keep for inspection", QMessageBox.ButtonRole.ActionRole)
+            box.setDefaultButton(delete_btn)
         box.setDetailedText(report.detailed_text())
         box.exec()
 
-        if delete_btn is not None and box.clickedButton() == delete_btn:
-            shutil.rmtree(temp_dir, ignore_errors=True)
-            self.log(f"[Test] Deleted test recording directory: {temp_dir}")
+        if not report.passed:
+            # Clean up temp test files automatically unless the user explicitly indicated that the files should be kept
+            if box.clickedButton() is keep_btn:
+                self.log(f"[Test] Keeping temp directory for inspection: {temp_dir}", loglevel="WARNING")
+            else:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                self.log(f"[Test] Deleted test recording directory: {temp_dir}")
 
     def on_connect_labrecorder(self):
         host = self.labrec_host.text().strip() or self.cfg.LabRecorder.Host
@@ -1296,5 +1615,7 @@ class MainWindow(QMainWindow):
 
         initial_count = self._determine_initial_camera_count()
         for i in range(initial_count):
-            cam_cfg = self.cfg.Video.Cams[i] if i < len(self.cfg.Video.Cams) else VideoCamConfig()
-            self._add_camera_panel(cam_cfg)
+            if i < len(self.cfg.Video.Cams):
+                self._add_camera_panel(self.cfg.Video.Cams[i])
+            else:
+                self._add_camera_panel()

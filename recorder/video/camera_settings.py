@@ -7,19 +7,16 @@ from typing import Any, Dict
 from ..utils.constants import _project_root
 from ..utils.utils import (_extract_default, _extract_range, get_commit_hash,
                            run_capture_cmd)
+from ..video.avfoundation_capture import (mode_supported,
+                                          probe_avfoundation_capabilities)
 from ..video.constants import (AUTO_VALUE_BY_CONTROL, BRIGHTNESS_RANGE,
                                CAMERA_CAPS_CACHE, DEFAULT_CAMERA_FPS,
-                               DEVNODE_PATTERN, FFMPEG_UNSUPPORTED_CONTROLS,
                                HUE_RANGE, IS_LINUX, IS_MAC, IS_WINDOWS,
-                               PIXEL_FORMAT_MAP, SATURATION_RANGE,
+                               MAC_UNSUPPORTED_CONTROLS, SATURATION_RANGE,
                                V4L2_AUTO_EXPOSURE_MODE, V4L2_AUTO_FOCUS_MODE,
                                V4L2_CONTROL_MAP, V4L2_MANUAL_EXPOSURE_MODE)
 from ..video.dshow_capture import (get_windows_camera_capabilities,
                                    set_windows_camera_controls)
-from ..video.ffmpeg_utils import (_get_supported_modes,
-                                  _probe_mac_supported_fps,
-                                  _probe_mac_supported_ui_formats,
-                                  probe_avfoundation_mode)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
@@ -215,40 +212,35 @@ def _pick_v4l2_menu_value(menu: dict[str, int], prefer_auto: bool) -> int | None
 
 
 def _mac_camera_capabilities(
-    devnode: str,
     device_index: int | None,
+    device_name: str | None = None,
     progress_cb=None,
 ) -> Dict[str, Any]:
+    """Query capabilities natively via AVFoundation (PyObjC)."""
     caps = _empty_capabilities()
-    device = str(device_index) if device_index is not None else reformat_devnode_for_ffmpeg(devnode)
     if progress_cb:
         try:
-            progress_cb(5, "Probing supported modes...")
+            progress_cb(20, "Querying native camera capabilities...")
         except Exception:
             pass
-    modes = _get_supported_modes(device)
-    if progress_cb:
-        try:
-            progress_cb(20, "Probing pixel formats...")
-        except Exception:
-            pass
-    caps["modes"] = [
-        {"width": w, "height": h, "fps": fps_values}
-        for w, h, fps_values in modes
-    ]
-    def _format_progress(done: int, total: int, fmt: str) -> None:
-        if not total:
-            return
-        pct = 20 + int(80 * (done / total))
-        msg = f"Probing pixel formats ({done}/{total}): {fmt}"
-        progress_cb(pct, msg)
 
-    caps["pixel_formats"] = _probe_mac_supported_ui_formats(
-        device,
-        modes,
-        progress_cb=_format_progress if progress_cb else None,
-    )
-    caps["fps"] = _probe_mac_supported_fps(modes)
+    modes_by_format = probe_avfoundation_capabilities(device_index, device_name)
+    caps["modes_by_format"] = modes_by_format
+    caps["pixel_formats"] = sorted(modes_by_format.keys())
+
+    merged: dict[tuple[int, int], set[int]] = {}
+    order: list[tuple[int, int]] = []
+    for modes in modes_by_format.values():
+        for mode in modes:
+            key = (mode["width"], mode["height"])
+            if key not in merged:
+                merged[key] = set()
+                order.append(key)
+            merged[key].update(mode["fps"])
+    caps["modes"] = [
+        {"width": w, "height": h, "fps": sorted(merged[(w, h)])} for w, h in order
+    ]
+    caps["fps"] = sorted({fps for fps_values in merged.values() for fps in fps_values})
     caps["brightness_range"] = BRIGHTNESS_RANGE
     caps["hue_range"] = HUE_RANGE
     caps["saturation_range"] = SATURATION_RANGE
@@ -354,7 +346,11 @@ def get_camera_capabilities(
     if IS_LINUX:
         caps = _linux_camera_capabilities(devnode)
     elif IS_MAC:
-        caps = _mac_camera_capabilities(devnode, device_index, progress_cb=progress_cb)
+        caps = _mac_camera_capabilities(
+            device_index=device_index,
+            device_name=device_name,
+            progress_cb=progress_cb,
+        )
     elif IS_WINDOWS:
         caps = _windows_camera_capabilities(devnode, device_index, progress_cb=progress_cb)
     else:
@@ -366,36 +362,6 @@ def get_camera_capabilities(
             pass
     _store_cached_capabilities(cache_key, caps, os_name, name_key)
     return caps
-
-
-def reformat_devnode_for_ffmpeg(devnode: str) -> str:
-    """Convert devnode to string format (raw digit index of node) expected by ffmpeg."""
-    # If already all digits, return this
-    if re.match(r"\d+$", devnode):
-        return devnode
-    
-    # Ensure the input string matches the expected pattern before modifying
-    if not DEVNODE_PATTERN.match(devnode):
-        raise ValueError(f"Unrecognized devnode: {devnode}")
-
-    return DEVNODE_PATTERN.sub(r"\1", devnode)
-
-
-def probe_mac_mode_support(
-    devnode: str,
-    device_index: int | None,
-    width: int | None,
-    height: int | None,
-    fps: int,
-    pixel_format: str | None = None,
-) -> bool:
-    if not IS_MAC:
-        return True
-    device = str(device_index) if device_index is not None else reformat_devnode_for_ffmpeg(devnode)
-    ff_pf = None
-    if pixel_format:
-        ff_pf = PIXEL_FORMAT_MAP.get(str(pixel_format).upper(), str(pixel_format).lower())
-    return probe_avfoundation_mode(device, width, height, fps, ff_pf)
 
 
 def get_control_settings_string(controls: dict) -> str:
@@ -415,25 +381,18 @@ def set_frame_rate(
     `verified` is False only for the Windows case where no capability probe 
     has been cached yet for this device, so there is no basis to confirm or reject the requested fps.
     Rather, it is simply queued to be applied when the DirectShow graph opens."""
-    if IS_LINUX:
+    if IS_MAC:
+        # Not used on macOS: AVFoundation opens a device with one atomic mode
+        # (size + pixel format + frame rate together), so apply_camera_controls
+        # tests fps there as part of a single combined mode probe instead of
+        # calling this function
+        raise OSError("`set_frame_rate` function is not intended for use with MacOS; use `apply_camera_controls` instead")
+
+    elif IS_LINUX:
         # Linux V4L2 method
         cmd = ["v4l2-ctl", "-d", devnode, f"--set-parm={fps}"]
-
-    elif IS_MAC:
-        # On macOS, FPS is chosen when opening device via AVFoundation.
-        # We test whether the requested FPS is supported.
-        # ffmpeg expects devnode as raw digit index of node
-        devnode = reformat_devnode_for_ffmpeg(devnode)
-        cmd = [
-            "ffmpeg",
-            "-f", "avfoundation",
-            "-framerate", str(fps),
-            "-video_device_index", str(devnode),
-            "-i", f"{devnode}:none",
-            "-t", "0.1",
-            "-f", "null",
-            "-"
-        ]
+        _, error = run_capture_cmd(cmd)
+        return error is None, True
 
     elif IS_WINDOWS:
         # No DirectShow pre-flight application is implemented. 
@@ -453,9 +412,8 @@ def set_frame_rate(
         )
         return "fps" not in invalid, True
 
-    # Linux / MacOS
-    _, error = run_capture_cmd(cmd)
-    return error is None, True
+    else:
+        raise OSError(f"Unsupported OS: `{sys.platform}`")
 
 
 def set_camera_controls(devnode: str,
@@ -470,14 +428,10 @@ def set_camera_controls(devnode: str,
     successful_settings = {}
     unverified_keys: set = set()
 
-    # Build video size argument
     width = settings_to_apply.get("width")
     height = settings_to_apply.get("height")
     pixel_format = settings_to_apply.get("pixel_format")
-    video_size = None
-    if width and height:
-        video_size = f"{width}x{height}"
-    elif (width and not height) or (height and not width):
+    if (width and not height) or (height and not width):
         raise ValueError("Both height and width dimensions are required")
 
     if IS_LINUX: # Linux V4L2 method
@@ -516,62 +470,18 @@ def set_camera_controls(devnode: str,
             if error is None:
                 successful_settings.update(settings_to_apply)
 
-    elif IS_MAC:  # FFMPEG for MaCOS
-        devnode = reformat_devnode_for_ffmpeg(devnode)
-
-        # Reject unsupported controls explicitly
+    elif IS_MAC:
+        # Width/height/pixel_format/fps are tested together as a single
+        # atomic AVFoundation mode probe by apply_camera_controls, not here. 
+        # control_settings should never contain these parameters on macOS.
+        # What remains (brightness/hue/saturation) is applied
+        # in software during capture and can't be verified via a probe, so
+        # it's reported as applied directly.
         for parameter in control_settings:
-            if parameter in FFMPEG_UNSUPPORTED_CONTROLS:
-                logger.warning(f"{parameter} not supported on macOS via ffmpeg; skipping.")
+            if parameter in MAC_UNSUPPORTED_CONTROLS:
+                logger.warning(f"{parameter} not supported on macOS; skipping.")
                 settings_to_apply.pop(parameter)
-
-        # Color controls are handled in software for macOS capture
-        color_controls = {}
-        for key in ("brightness", "hue", "saturation"):
-            if key in settings_to_apply:
-                color_controls[key] = settings_to_apply.pop(key)
-        if not settings_to_apply and color_controls:
-            successful_settings.update(color_controls)
-            return successful_settings, unverified_keys
-
-        mac_pixel_format = None
-        if "pixel_format" in settings_to_apply:
-            mac_pixel_format = PIXEL_FORMAT_MAP.get(
-                str(settings_to_apply["pixel_format"]).upper(),
-                str(settings_to_apply["pixel_format"]).lower(),
-            )
-
-        # Build ffmpeg filter chain for remaining non-color controls.
-        vf_filters = []
-
-        cmd = [
-            "ffmpeg",
-            "-f", "avfoundation",
-        ]
-
-        if video_size:
-            cmd += ["-video_size", video_size]
-        if mac_pixel_format:
-            cmd += ["-pixel_format", mac_pixel_format]
-
-        cmd += [
-            "-framerate", str(DEFAULT_CAMERA_FPS),
-            "-i", f"{devnode}:none",
-        ]
-
-        if vf_filters:
-            cmd += ["-vf", ",".join(vf_filters)]
-
-        cmd += [
-            "-t", "0.1",  # tiny test duration
-            "-f", "null",
-            "-"
-        ]
-        _, error = run_capture_cmd(cmd)
-        if error is None:
-            successful_settings.update(settings_to_apply)
-        if color_controls:
-            successful_settings.update(color_controls)
+        successful_settings.update(settings_to_apply)
 
     elif IS_WINDOWS:
         # Width/height/pixel_format are applied by WindowsDShowVideoCapture itself
@@ -637,10 +547,57 @@ def apply_camera_controls(devnode: str,
     width = controls.get('width')
     height = controls.get('height')
     pixel_format = controls.get('pixel_format')
+
+    if IS_MAC:
+        # AVFoundation opens a device with one atomic mode (size + pixel format + frame rate combined)
+        # since there is no way to set these independently the way V4L2/DirectShow allow,
+        # so they are tested as a single unit with exactly one probe
+        mode_settings = {
+            k: v for k, v in
+            {
+                "width": width,
+                "height": height,
+                "pixel_format": pixel_format,
+                "fps": fps
+            }.items()
+            if v is not None
+        }
+        non_mode_controls = {k: v for k, v in controls.items() if k not in ("width", "height", "pixel_format")}
+
+        if non_mode_controls:
+            settings_results, unverified_keys = set_camera_controls(
+                devnode=devnode,
+                control_settings=non_mode_controls,
+                device_name=device_name,
+            )
+            for k, v in non_mode_controls.items():
+                if k not in settings_results:
+                    failed[k] = v
+                elif k in unverified_keys:
+                    unverified[k] = v
+                else:
+                    applied[k] = v
+
+        if mode_settings:
+            ok = mode_supported(
+                device_index=None,
+                width=width,
+                height=height,
+                fps=int(fps) if fps else DEFAULT_CAMERA_FPS,
+                pixel_format=pixel_format,
+                device_name=device_name,
+            )
+            (applied if ok else failed).update(mode_settings)
+
+        return {"devnode": devnode, "applied": applied, "unverified": unverified, "failed": failed}
+
+    # Linux / Windows: width/height/pixel_format/fps are genuinely
+    # independent settings, applied via separate calls.
     if controls:
         settings_results, unverified_keys = set_camera_controls(
-            devnode=devnode, control_settings=controls,
-            device_name=device_name
+            devnode=devnode,
+            control_settings=controls,
+            device_name=device_name,
         )
         for k, v in controls.items():
             if k not in settings_results:
@@ -686,16 +643,17 @@ def summarize_control_application(devnode: str,
                                   applied: dict,
                                   failed: dict,
                                   unverified: dict | None = None,
-                                  ) -> str:
-    """Generate a summary string of camera setting application results."""
-    summary = [f"devnode: {devnode}"]
+                                  ) -> list[tuple[str, str]]:
+    """Generate a summary list (loglevel, msg) of camera setting application results."""
+    summary = []
     for k, v in applied.items():
-        summary.append(f"INFO: Successfully set {k}={format_control_value(k, v)}")
+        summary.append(("INFO", f"Successfully set {k}={format_control_value(k, v)}"))
     for k, v in (unverified or {}).items():
-        summary.append(
-            f"INFO: Queued (not yet verified against known camera capabilities; "
+        summary.append((
+            "INFO",
+            f"Queued (not yet verified against known camera capabilities; "
             f"will be applied when capture starts) {k}={format_control_value(k, v)}"
-        )
+        ))
     for k, v in failed.items():
-        summary.append(f"ERROR: Failed to set {k}={format_control_value(k, v)}")
-    return '\n'.join(summary)
+        summary.append(("ERROR", f"Failed to set {k}={format_control_value(k, v)}"))
+    return summary

@@ -16,30 +16,11 @@ import pytest
 from recorder.video import camera_settings as cs
 from recorder.video.camera_settings import (
     _capabilities_cache_key, _empty_capabilities, _linux_camera_capabilities,
-    _load_cached_capabilities, _parse_v4l2_menu, _pick_v4l2_menu_value,
-    _store_cached_capabilities, _validate_against_windows_capabilities,
-    format_control_value, get_control_settings_string,
-    reformat_devnode_for_ffmpeg, set_frame_rate, summarize_control_application)
-
-# ---------------------------------------------------------------------------
-# reformat_devnode_for_ffmpeg
-# ---------------------------------------------------------------------------
-
-def test_reformat_devnode_digit_passthrough():
-    """An already-numeric devnode (ffmpeg's expected form) is returned as-is."""
-    assert reformat_devnode_for_ffmpeg(devnode="5") == "5"
-
-
-def test_reformat_devnode_extracts_index_from_path():
-    """A /dev/videoN path is reduced to just its numeric index for ffmpeg."""
-    assert reformat_devnode_for_ffmpeg(devnode="/dev/video2") == "2"
-
-
-def test_reformat_devnode_rejects_unrecognized():
-    """A string that is neither a bare index nor a /dev/video* node raises an error."""
-    with pytest.raises(ValueError):
-        reformat_devnode_for_ffmpeg(devnode="not-a-devnode")
-
+    _load_cached_capabilities, _mac_camera_capabilities, _parse_v4l2_menu,
+    _pick_v4l2_menu_value, _store_cached_capabilities,
+    _validate_against_windows_capabilities, format_control_value,
+    get_control_settings_string, set_camera_controls, set_frame_rate,
+    summarize_control_application)
 
 # ---------------------------------------------------------------------------
 # _capabilities_cache_key / _empty_capabilities
@@ -209,7 +190,7 @@ def test_summarize_control_application_groups_outcomes():
         failed={"fps": 120},
         unverified={"width": 640},
     )
-    assert "devnode: 2" in summary
+    summary = "\n".join(" ".join(line) for line in summary)
     assert "Successfully set brightness=150" in summary
     assert re.search(r"Queued.+width=640", summary) is not None
     assert "Failed to set fps=120" in summary
@@ -400,3 +381,105 @@ def test_set_frame_rate_windows_cached_invalid(monkeypatch, as_platform):
         lambda devnode, device_name: {"fps": [30, 60], "modes": []},
     )
     assert set_frame_rate(devnode="0", fps=25, device_name="Cam") == (False, True)
+
+
+# ---------------------------------------------------------------------------
+# set_camera_controls (macOS): width/height/pixel_format are never tested
+# here -- apply_camera_controls strips them out and tests them, together
+# with fps, as a single atomic mode probe instead (see below). Only
+# brightness/hue/saturation (software-applied, unverifiable) and rejecting
+# ffmpeg-unsupported controls remain in scope here.
+# ---------------------------------------------------------------------------
+
+def test_set_camera_controls_mac_reports_color_controls_as_applied(as_platform):
+    """Brightness/hue/saturation can't be verified via any probe (they're
+    applied in software during capture), so they're always reported as
+    applied outright."""
+    as_platform(cs, "mac")
+    successful, unverified = set_camera_controls(
+        devnode="1",
+        control_settings={"brightness": 128, "hue": 0, "saturation": 100},
+    )
+    assert successful == {"brightness": 128, "hue": 0, "saturation": 100}
+    assert unverified == set()
+
+
+def test_set_camera_controls_mac_rejects_unsupported_controls(as_platform):
+    """auto_exposure/auto_focus aren't supported via ffmpeg on macOS and are
+    silently dropped (with a warning) rather than reported as applied."""
+    as_platform(cs, "mac")
+    successful, unverified = set_camera_controls(
+        devnode="1",
+        control_settings={
+            "brightness": 128,
+            "auto_exposure": 0,
+            "auto_focus": 0,
+        },
+    )
+    assert successful == {"brightness": 128}
+    assert "auto_exposure" not in successful
+    assert "auto_focus" not in successful
+
+
+# ---------------------------------------------------------------------------
+# _mac_camera_capabilities: built from whatever probe_avfoundation_capabilities
+# (native AVFoundation querying) reports, per pixel format.
+# ---------------------------------------------------------------------------
+
+def test_mac_camera_capabilities_reflects_native_modes_by_format(monkeypatch):
+    """caps['modes_by_format'], caps['pixel_formats'], caps['modes'] and
+    caps['fps'] are all derived directly from what
+    probe_avfoundation_capabilities reports natively for the device."""
+    monkeypatch.setattr(
+        cs, "probe_avfoundation_capabilities",
+        lambda device_index, device_name=None: {
+            "YUYV": [{"width": 1280, "height": 720, "fps": [30]}],
+            "NV12": [{"width": 1280, "height": 720, "fps": [30]}],
+        },
+    )
+
+    caps = _mac_camera_capabilities(device_index=0)
+
+    assert caps["modes_by_format"] == {
+        "YUYV": [{"width": 1280, "height": 720, "fps": [30]}],
+        "NV12": [{"width": 1280, "height": 720, "fps": [30]}],
+    }
+    assert caps["pixel_formats"] == ["NV12", "YUYV"]
+    assert caps["modes"] == [{"width": 1280, "height": 720, "fps": [30]}]
+    assert caps["fps"] == [30]
+
+
+def test_mac_camera_capabilities_merges_fps_across_formats_per_resolution(monkeypatch):
+    """caps['modes'] (the format-agnostic view) merges the fps values
+    reported for a resolution across every format that supports it, since
+    different pixel formats can genuinely unlock different fps at the same
+    resolution (e.g. a compressed format allowing a higher rate)."""
+    monkeypatch.setattr(
+        cs, "probe_avfoundation_capabilities",
+        lambda device_index, device_name=None: {
+            "YUYV": [{"width": 640, "height": 480, "fps": [30, 60]}],
+            "MJPG": [{"width": 640, "height": 480, "fps": [15, 30]}],
+        },
+    )
+
+    caps = _mac_camera_capabilities(device_index=0)
+
+    assert caps["modes"] == [{"width": 640, "height": 480, "fps": [15, 30, 60]}]
+    assert caps["fps"] == [15, 30, 60]
+
+
+def test_mac_camera_capabilities_passes_device_name_through(monkeypatch):
+    """device_name is threaded through to the native probe so it can resolve
+    the device by name, robust to enumeration order rather than relying on
+    a raw index that may not match AVFoundation's own device ordering."""
+    seen = {}
+
+    def fake_probe(device_index, device_name=None):
+        seen["device_index"] = device_index
+        seen["device_name"] = device_name
+        return {}
+
+    monkeypatch.setattr(cs, "probe_avfoundation_capabilities", fake_probe)
+    _mac_camera_capabilities(device_index=2, device_name="BRIO")
+
+    assert seen == {"device_index": 2, "device_name": "BRIO"}
