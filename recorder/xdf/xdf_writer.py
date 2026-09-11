@@ -449,6 +449,8 @@ class XDFWriter:
             source_id=f"camera:{camera_id}",
             extra={
                 "video_path": video_path,
+                # NB: width and height are the measured, actually delivered dimensions,
+                # not necessarily the configured/declared dimensions
                 "width": width,
                 "height": height,
                 "fps": fps or "irregular",

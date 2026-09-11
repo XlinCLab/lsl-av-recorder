@@ -275,12 +275,16 @@ class RunController:
             for cam in self.cams:
                 video_path = self._get_video_output_path(cam)
                 vr = videos_by_label.get(cam.Label)
+                # width/height reflect what the capture backend actually delivered
+                # (VideoRecorder.writer_size, what the video file was written at),
+                # not necessarily the configured cam.Width/Height
+                actual_width, actual_height = vr.writer_size if vr and vr.writer_size else (cam.Width, cam.Height)
                 sid = xdf_writer.add_video_stream(
                     name=f"Camera-{cam.Label}",
                     camera_id=str(cam.DeviceIndex),
                     video_path=video_path,
-                    width=cam.Width,
-                    height=cam.Height,
+                    width=actual_width,
+                    height=actual_height,
                     fps=cam.FPS,
                     pixel_format=vr.actual_pixel_format if vr else None,
                 )

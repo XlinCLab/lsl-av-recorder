@@ -139,6 +139,19 @@ def _validate_video(cfg: AppConfig, by_name: dict, expected_duration_s: float) -
                 f"Video <{name}> file written", size > 0, f"{video_path} ({size} bytes)",
             ))
 
+        # `width`/`height` in the XDF desc are the frame size the capture backend actually delivered;
+        # comparing against the GUI/config settings here catches a resolution mismatch
+        actual_width = (desc[0].get("width") or [None])[0]
+        actual_height = (desc[0].get("height") or [None])[0]
+        if actual_width is not None and actual_height is not None:
+            expected_dims = f"{cam.Width}x{cam.Height}"
+            actual_dims = f"{actual_width}x{actual_height}"
+            checks.append(_check(
+                f"Video <{name}> frame size",
+                actual_dims == expected_dims,
+                f"expected={expected_dims}, actual={actual_dims}",
+            ))
+
         # Pixel format cannot be independently re-derived from the recorded
         # video/XDF data the way fps/frame count can, since every capture backend
         # converts delivered frames to a uniform format regardless of native

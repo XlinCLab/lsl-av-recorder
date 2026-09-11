@@ -13,6 +13,7 @@ import numpy as np
 from pylsl import StreamInfo
 
 from recorder.config import AppConfig, VideoCamConfig
+from recorder.video.constants import DEFAULT_HEIGHT, DEFAULT_WIDTH
 from recorder.xdf.xdf_validation import validate_test_recording
 from recorder.xdf.xdf_writer import XDFWriter
 from tests.shared import MARKER_STREAM_NAME
@@ -47,13 +48,15 @@ def write_video_stream(
         n_frames: int,
         video_path: str,
         pixel_format: str | None = None,
+        width: int = DEFAULT_WIDTH,
+        height: int = DEFAULT_HEIGHT,
     ) -> int:
     sid = writer.add_video_stream(
         name=name,
         camera_id="0",
         video_path=video_path,
-        width=640,
-        height=480,
+        width=width,
+        height=height,
         fps=fps,
         pixel_format=pixel_format,
     )
@@ -413,6 +416,98 @@ def test_video_pixel_format_skipped_when_unknown(xdf_path, tmp_path):
     )
     assert report.passed, report.detailed_text()
     assert not any("pixel format" in c.name for c in report.checks)
+
+
+def test_video_frame_size_pass(xdf_path, tmp_path):
+    """The frame size actually written into the XDF (RunController records
+    VideoRecorder.writer_size here, not the configured Width/Height) matching
+    what was configured is a PASS, and produces its own check."""
+    duration = 10.0
+    fps = 30.0
+    video_path = str(tmp_path / "cam.mp4")
+    with open(video_path, "wb") as f:
+        f.write(b"\x00" * 1024)
+
+    cfg = base_cfg()
+    cfg.Video.Enabled = True
+    cfg.Video.Cams = [
+        VideoCamConfig(
+            Enabled=True,
+            Label="Face",
+            FPS=int(fps),
+            Width=1280,
+            Height=720,
+        )
+    ]
+
+    w = XDFWriter(xdf_path)
+    w.start()
+    write_video_stream(
+        writer=w,
+        name="Camera-Face",
+        fps=fps,
+        n_frames=int(duration * fps),
+        video_path=video_path,
+        width=1280,
+        height=720,
+    )
+    w.stop()
+
+    report = validate_test_recording(
+        xdf_path=xdf_path,
+        cfg=cfg,
+        lsl_streams=[],
+        expected_duration_s=duration,
+    )
+    assert report.passed, report.detailed_text()
+    size_check = next(c for c in report.checks if "frame size" in c.name)
+    assert size_check.passed
+
+
+def test_video_frame_size_mismatch_fails(xdf_path, tmp_path):
+    """Check that validation fails when the frame size actually written into
+    the XDF differs from what was configured."""
+    duration = 10.0
+    fps = 30.0
+    video_path = str(tmp_path / "cam.mp4")
+    with open(video_path, "wb") as f:
+        f.write(b"\x00" * 1024)
+
+    cfg = base_cfg()
+    cfg.Video.Enabled = True
+    cfg.Video.Cams = [
+        VideoCamConfig(
+            Enabled=True,
+            Label="Face",
+            FPS=int(fps),
+            Width=1080,
+            Height=1920,
+        )
+    ]
+
+    w = XDFWriter(xdf_path)
+    w.start()
+    write_video_stream(
+        writer=w,
+        name="Camera-Face",
+        fps=fps,
+        n_frames=int(duration * fps),
+        video_path=video_path,
+        width=1552,  # a different size was actually delivered/written
+        height=1552,
+    )
+    w.stop()
+
+    report = validate_test_recording(
+        xdf_path=xdf_path,
+        cfg=cfg,
+        lsl_streams=[],
+        expected_duration_s=duration,
+    )
+    assert not report.passed
+    size_check = next(c for c in report.checks if "frame size" in c.name)
+    assert not size_check.passed
+    assert "1080x1920" in size_check.detail and "1552x1552" in size_check.detail
 
 
 def test_video_missing_file_fails(xdf_path, tmp_path):
