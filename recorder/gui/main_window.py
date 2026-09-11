@@ -577,6 +577,8 @@ class MainWindow(QMainWindow):
         # if the log simply stops with no matching line here, that means
         # the app went down some other way (native crash, force-kill).
         self.log("Closing app.")
+        # Stop any active camera preview workers before the window/app actually closes
+        self.preview_mgr.stop_all_previews()
         if self._recording_active and self.controller:
             self.log(
                 "App closing while a recording was still active; stopping it first.",
