@@ -81,6 +81,8 @@ To load a different config in normal GUI use:
 ## Camera Controls and Capability Detection
 Camera capability discovery and configuration is platform-specific. Depending on the platform, some camera controls may not be supported. Furthermore, the same physical camera may report different capabilities (supported pixel formats, resolutions, and FPS) on different operating systems.
 
+**Note:** resolution/FPS/pixel format combinations that a camera declares as supported are not always actually achievable in practice; a camera may accept a setting but fail to sustain it once capture starts. Always use the **Test recording settings** button before a real recording to confirm your configured settings actually work as expected with the hardware.
+
 ### Linux
 Uses `v4l2-ctl` to query and control camera settings:
 - Supported pixel formats

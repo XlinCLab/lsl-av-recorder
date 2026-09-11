@@ -8,7 +8,8 @@ import cv2
 from pylsl import local_clock
 
 from ..video.constants import IS_MAC
-from .avfoundation_capture import force_active_format, get_active_pixel_format
+from .avfoundation_capture import (force_active_format, get_active_format_dims,
+                                   get_active_pixel_format)
 from .color_adjust import apply_color_adjustments
 from .constants import DEFAULT_BRIGHTNESS, DEFAULT_HUE, DEFAULT_SATURATION
 from .devices import resolve_cv2_device_index
@@ -295,19 +296,30 @@ class VideoRecorder:
             # affect which resolutions/rates are valid.
             self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*str(pixel_format).upper()))
 
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.cam.Width)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.cam.Height)
-        self.cap.set(cv2.CAP_PROP_FPS, self.cam.FPS)
-
         # Workaround for setting pixel format on MacOS
+        forced = False
         if IS_MAC and self.cam.FPS:
-            # cv2's AVFoundation backend never selects among a device's native
-            # AVCaptureDeviceFormats itself, rather only adjusts frame duration
-            # within whatever format the OS already happens to have active.
-            # For a continuous frame-rate range (e.g. 15-30fps), cv2's
-            # CAP_PROP_FPS handling pins BOTH min and max duration to the
-            # range's fastest rate rather than the one actually requested.
-            # This MUST run after cv2's CAP_PROP_FPS call above.
+            # Try to select the exact native AVCaptureDeviceFormat BEFORE cv2's
+            # own width/height/fps setters ever run. Per OpenCV's actual
+            # AVFoundation backend implementation, cv2's own CAP_PROP_FRAME_WIDTH/
+            # HEIGHT setter does not perform generic output scaling: it assigns
+            # the requested size to AVCaptureVideoDataOutput.videoSettings, reads
+            # AVCaptureDevice.activeFormat back, and -- if it doesn't match --
+            # silently replaces its own request with whatever the device's
+            # CURRENT format already is and stops. Two failure modes follow from
+            # that, both observed empirically:
+            #   1. Calling cv2's setter BEFORE force_active_format, while the
+            #      device is still sitting at a stale format left over from a
+            #      previous session, permanently pins videoSettings to that
+            #      stale size -- force_active_format() later fixes the physical
+            #      device format but never touches videoSettings, so cv2 keeps
+            #      scaling/cropping frames against the stale (wrong) size.
+            #   2. Re-issuing cv2's setter AFTER force_active_format, to correct
+            #      that staleness, was observed to itself provoke AVFoundation
+            #      into reverting the newly forced activeFormat to a different
+            #      device format.
+            # Avoid cv2's own width/height/fps setters entirely: 
+            # call force_active_format() first and skip cv2's setters if successful
             forced = force_active_format(
                 device_index=self.cam.DeviceIndex,
                 width=int(self.cam.Width),
@@ -318,16 +330,28 @@ class VideoRecorder:
             )
             if forced:
                 self.info(f"Force-set active pixel format to {pixel_format} for {self.cam.Label}")
-                # Re-apply requested dimensions to capture object
-                # after force-setting desired pixel format
-                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.cam.Width)
-                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.cam.Height)
-            if not forced:
+                # Warn if active dimensions for device do not match configured settings
+                # Sanity check only, NOT corrected here (see above)
+                active_dims = get_active_format_dims(
+                    device_index=self.cam.DeviceIndex,
+                    device_name=getattr(self.cam, "DeviceName", None),
+                )
+                if active_dims != (int(self.cam.Width), int(self.cam.Height)):
+                    self.warning(
+                        f"Camera ({self.cam.Label}) active format dimensions "
+                        f"({active_dims}) do NOT match configured dimensions "
+                        f"{self.cam.Width}x{self.cam.Height}"
+                    )
+            else:
                 self.warning(
                     f"Could not force native capture pixel format {pixel_format} for {self.cam.Label}; "
-                    "the achieved frame rate may fall back to whatever "
-                    "AVFoundation's default active format allows."
+                    "falling back to cv2's own (less precise) width/height/fps negotiation."
                 )
+
+        if not forced:
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.cam.Width)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.cam.Height)
+            self.cap.set(cv2.CAP_PROP_FPS, self.cam.FPS)
 
         # Verify the pixel format actually negotiated by the platform
         # capture backend matches what was configured
@@ -340,6 +364,16 @@ class VideoRecorder:
                 device_index=self.cam.DeviceIndex,
                 device_name=getattr(self.cam, "DeviceName", None),
             )
+            # Diagnostic: the physical device's own activeFormat dims at this point
+            active_dims = get_active_format_dims(
+                device_index=self.cam.DeviceIndex,
+                device_name=getattr(self.cam, "DeviceName", None),
+            )
+            if active_dims:
+                self.info(
+                    f"Camera ({self.cam.Label}) active format dims before first frame: "
+                    f"{active_dims[0]}x{active_dims[1]}"
+                )
         elif sys.platform.startswith("linux"):
             self.actual_pixel_format = _decode_v4l2_fourcc(
                 int(self.cap.get(cv2.CAP_PROP_FOURCC) or 0)

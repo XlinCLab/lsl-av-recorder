@@ -346,3 +346,22 @@ def get_active_pixel_format(
         device.activeFormat().formatDescription()
     )
     return pixel_format_label(fourcc_int)
+
+
+def get_active_format_dims(
+    device_index: Optional[int], device_name: Optional[str] = None
+) -> Optional[Tuple[int, int]]:
+    """Read back the (width, height) of whatever AVCaptureDeviceFormat is
+    currently active on the physical device."""
+    import AVFoundation
+
+    devices = _discovered_devices()
+    names = [str(d.localizedName()) for d in devices]
+    position = _resolve_device_position(names, device_name, device_index)
+    if position is None:
+        return None
+    device = devices[position]
+    dims = AVFoundation.CMVideoFormatDescriptionGetDimensions(
+        device.activeFormat().formatDescription()
+    )
+    return int(dims.width), int(dims.height)
