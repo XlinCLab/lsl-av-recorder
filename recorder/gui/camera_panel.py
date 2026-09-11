@@ -3,9 +3,9 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from PyQt6.QtCore import QThread, pyqtSignal
-from PyQt6.QtWidgets import (QCheckBox, QComboBox, QFormLayout, QLineEdit,
-                             QMessageBox, QPushButton, QSpinBox, QTextEdit,
-                             QVBoxLayout, QWidget)
+from PyQt6.QtWidgets import (QCheckBox, QComboBox, QFormLayout, QHBoxLayout,
+                             QLineEdit, QMessageBox, QPushButton, QSpinBox,
+                             QTextEdit, QVBoxLayout, QWidget)
 
 from ..config import VideoCamConfig
 from ..video.camera_settings import (apply_camera_controls,
@@ -154,26 +154,34 @@ class CameraPanel(QWidget):
             "manual": V4L2_MANUAL_EXPOSURE_MODE,
         }
 
-        form = QFormLayout()
-        form.addRow(self.enabled)
-        form.addRow("Device", self.device_name)
-        form.addRow("Label", self.label)
-        form.addRow("FPS", self.fps)
-        form.addRow("Resolution", self.resolution)
-        form.addRow("Brightness", self.brightness)
-        form.addRow("Hue", self.hue)
-        form.addRow("Saturation", self.saturation)
-        form.addRow("Pixel format", self.pixel_format)
+        form_left = QFormLayout()
+        form_left.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
+        form_left.addRow(self.enabled)
+        form_left.addRow("Device", self.device_name)
+        form_left.addRow("Label", self.label)
+        form_left.addRow("FPS", self.fps)
+        form_left.addRow("Resolution", self.resolution)
+        form_left.addRow("Pixel format", self.pixel_format)
 
         self.btn_mode_help = QPushButton("? Supported combinations")
         self.btn_mode_help.setToolTip(
             "Show every FPS/resolution/pixel-format combination confirmed to "
             "work on this camera."
         )
-        form.addRow("", self.btn_mode_help)
+        form_left.addRow("", self.btn_mode_help)
 
-        form.addRow("Auto-exposure", self.auto_exposure)
-        form.addRow("Auto-focus", self.auto_focus)
+        form_right = QFormLayout()
+        form_right.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
+        form_right.addRow("Brightness", self.brightness)
+        form_right.addRow("Hue", self.hue)
+        form_right.addRow("Saturation", self.saturation)
+        form_right.addRow("Auto-exposure", self.auto_exposure)
+        form_right.addRow("Auto-focus", self.auto_focus)
+
+        columns = QHBoxLayout()
+        columns.addLayout(form_left, 0)
+        columns.addLayout(form_right, 0)
+        columns.addStretch(1)
 
         self.btn_refresh_devices = QPushButton("Refresh video devices")
         self.btn_refresh_caps = QPushButton("Refresh device capabilities")
@@ -182,13 +190,16 @@ class CameraPanel(QWidget):
         self.text = QTextEdit()
         self.text.setReadOnly(True)
 
+        action_row = QHBoxLayout()
+        action_row.addWidget(self.btn_refresh_devices)
+        action_row.addWidget(self.btn_refresh_caps)
+        action_row.addWidget(self.btn_apply)
+        action_row.addWidget(self.btn_remove)
+
         layout = QVBoxLayout()
-        layout.addLayout(form)
-        layout.addWidget(self.btn_refresh_devices)
-        layout.addWidget(self.btn_refresh_caps)
-        layout.addWidget(self.btn_apply)
+        layout.addLayout(columns)
+        layout.addLayout(action_row)
         layout.addWidget(self.text)
-        layout.addWidget(self.btn_remove)
         self.setLayout(layout)
 
         # Controls that are meaningless without a selected device; grayed out until one is chosen
