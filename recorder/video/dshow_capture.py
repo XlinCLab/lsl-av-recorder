@@ -166,10 +166,8 @@ def _windows_measure_achievable_fps(
                 fps=target_fps,
             )
         except Exception as exc:
-            logger.info(
-                f"FPS verify: {pixel_format} {width}x{height} attempt {attempt + 1}/{retries} "
-                f"could not open capture: {exc}"
-            )
+            if attempt + 1 == retries:
+                logger.debug(f"Could not open capture: {pixel_format} {width}x{height} | {exc}")
             continue
         could_open = True
         try:
