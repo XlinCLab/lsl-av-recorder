@@ -394,6 +394,60 @@ def test_validated_combinations_scoped_per_device(cache_file):
 
 
 # ---------------------------------------------------------------------------
+# validate_combination
+# ---------------------------------------------------------------------------
+
+def test_validate_combination_passes_when_fps_and_resolution_match(as_platform, monkeypatch):
+    as_platform(cs, "linux")
+    monkeypatch.setattr(cs, "_linux_measure_achievable_fps", lambda **kwargs: (49.8, True, 1920, 1080))
+    result = validate_combination(
+        devnode="/dev/video0",
+        device_index=0,
+        pixel_format="MJPG",
+        width=1920,
+        height=1080,
+        fps=50,
+    )
+    assert result["passed"] is True
+
+
+def test_validate_combination_fails_when_resolution_mismatched_despite_fps_ok(as_platform, monkeypatch):
+    as_platform(cs, "linux")
+    monkeypatch.setattr(cs, "_linux_measure_achievable_fps", lambda **kwargs: (50.2, True, 1280, 720))
+    result = validate_combination(
+        devnode="/dev/video0",
+        device_index=0,
+        pixel_format="MJPG",
+        width=1920,
+        height=1080,
+        fps=50,
+    )
+    assert result["passed"] is False
+    assert result["measured_width"] == 1280
+    assert result["measured_height"] == 720
+
+
+def test_validate_combination_could_not_open_is_never_passed(as_platform, monkeypatch):
+    as_platform(cs, "linux")
+    monkeypatch.setattr(cs, "_linux_measure_achievable_fps", lambda **kwargs: (None, False, None, None))
+    result = validate_combination(
+        devnode="/dev/video0",
+        device_index=0,
+        pixel_format="MJPG",
+        width=1920,
+        height=1080,
+        fps=50,
+    )
+    assert result == {
+        "passed": False,
+        "measured_fps": None,
+        "could_open": False,
+        "measured_width": None,
+        "measured_height": None,
+    }
+
+
+# ---------------------------------------------------------------------------
 # _linux_camera_capabilities (parses v4l2-ctl output via faked run_capture_cmd)
 # ---------------------------------------------------------------------------
 
