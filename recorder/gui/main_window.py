@@ -271,10 +271,10 @@ class MainWindow(QMainWindow):
 
         af.addRow(self.audio_enabled)
         af.addRow("Input device", self.audio_device)
+        af.addRow("Stream name", self.audio_stream_name)
         af.addRow("Sample rate", self.audio_sr)
         af.addRow("Bit depth", self.audio_bit)
         af.addRow("Channels", self.audio_ch)
-        af.addRow("Stream name", self.audio_stream_name)
         audio_widget.setLayout(af)
         self.tabs.addTab(audio_widget, "Audio")
 
