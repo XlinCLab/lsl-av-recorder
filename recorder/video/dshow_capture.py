@@ -137,14 +137,17 @@ def _windows_measure_achievable_fps(
     duration: float = DEFAULT_VALIDATION_DURATION,
     retries: int = 2,
     retry_delay: float = 1.0,
-) -> tuple[Optional[float], bool]:
+) -> tuple[Optional[float], bool, Optional[int], Optional[int]]:
     """Briefly open a real capture at the given format/resolution/fps and
-    measure the actual delivered frame rate.
+    measure the actual delivered frame rate and resolution.
 
-    Returns (measured_fps, could_open). `could_open` is False only if every
-    attempt failed to even construct/open the capture, e.g. DirectShow
-    raising VFW_E_CANNOT_CONNECT because no compatible filter chain exists to
-    convert this pixel format to what the sample grabber requests.
+    Returns (measured_fps, could_open, actual_width, actual_height).
+    `could_open` is False only if every attempt failed to even
+    construct/open the capture, e.g. DirectShow raising VFW_E_CANNOT_CONNECT
+    because no compatible filter chain exists to convert this pixel format to
+    what the sample grabber requests. `actual_width`/`actual_height` are the
+    resolution DirectShow actually negotiated (`WindowsDShowVideoCapture.
+    actual_width/height`, read right after opening).
 
     `warmup` is discarded (not counted) before measuring: auto-exposure/
     bandwidth throttling can take a moment to kick in, and an initial burst of
@@ -172,6 +175,7 @@ def _windows_measure_achievable_fps(
         try:
             if not cap.isOpened():
                 continue
+            actual_width, actual_height = cap.actual_width, cap.actual_height
             warmup_end = time.monotonic() + warmup
             while time.monotonic() < warmup_end:
                 cap.read(timeout=0.5)
@@ -184,10 +188,10 @@ def _windows_measure_achievable_fps(
             elapsed = time.monotonic() - start
             if elapsed <= 0 or count == 0:
                 continue
-            return count / elapsed, True
+            return count / elapsed, True, actual_width, actual_height
         finally:
             cap.release()
-    return None, could_open
+    return None, could_open, None, None
 
 
 def get_windows_camera_capabilities(

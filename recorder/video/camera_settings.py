@@ -442,29 +442,43 @@ def get_camera_capabilities(
     return caps
 
 
-def _measure_open_capture_fps(
+def _measure_open_capture(
         cap,
         warmup: float = DEFAULT_VALIDATION_WARMUP,
         duration: float = DEFAULT_VALIDATION_DURATION,
-    ) -> float | None:
+    ) -> tuple[float | None, int | None, int | None]:
     """Shared measurement loop for any already-open capture object exposing
     `read() -> (bool, frame)` (cv2.VideoCapture, used identically by the macOS
     and Linux validators below). Discards a `warmup` window (auto-exposure/
     bandwidth throttling settling, an initial burst of buffered frames) before
-    counting real delivered frames over `duration` seconds."""
+    counting real delivered frames over `duration` seconds.
+
+    Returns (measured_fps, actual_width, actual_height). Resolution is read
+    from the shape of an actually delivered frame."""
+    actual_width: int | None = None
+    actual_height: int | None = None
+
+    def _note_resolution(frame) -> None:
+        nonlocal actual_width, actual_height
+        if actual_width is None and frame is not None:
+            actual_height, actual_width = frame.shape[:2]
+
     warmup_end = time.monotonic() + warmup
     while time.monotonic() < warmup_end:
-        cap.read()
+        ok, frame = cap.read()
+        if ok:
+            _note_resolution(frame)
     count = 0
     start = time.monotonic()
     while time.monotonic() - start < duration:
-        ok, _ = cap.read()
+        ok, frame = cap.read()
         if ok:
             count += 1
+            _note_resolution(frame)
     elapsed = time.monotonic() - start
     if elapsed <= 0 or count == 0:
-        return None
-    return count / elapsed
+        return None, actual_width, actual_height
+    return count / elapsed, actual_width, actual_height
 
 
 def _mac_measure_achievable_fps(
@@ -478,9 +492,11 @@ def _mac_measure_achievable_fps(
     duration: float = DEFAULT_VALIDATION_DURATION,
     retries: int = 2,
     retry_delay: float = 1.0,
-) -> tuple[float | None, bool]:
+) -> tuple[float | None, bool, int | None, int | None]:
     """[macOS] Open a real capture at this exact combination the same way VideoRecorder
-    does for an actual recording , then measure real delivered fps."""
+    does for an actual recording, then measure real delivered fps and resolution.
+
+    Returns (measured_fps, could_open, actual_width, actual_height)."""
     could_open = False
     for attempt in range(retries):
         if attempt > 0:
@@ -501,12 +517,16 @@ def _mac_measure_achievable_fps(
             )
             if not forced:
                 continue
-            measured = _measure_open_capture_fps(cap, warmup=warmup, duration=duration)
+            measured, actual_width, actual_height = _measure_open_capture(
+                cap,
+                warmup=warmup,
+                duration=duration,
+            )
             if measured is not None:
-                return measured, True
+                return measured, True, actual_width, actual_height
         finally:
             cap.release()
-    return None, could_open
+    return None, could_open, None, None
 
 
 def _linux_measure_achievable_fps(
@@ -519,9 +539,12 @@ def _linux_measure_achievable_fps(
     duration: float = DEFAULT_VALIDATION_DURATION,
     retries: int = 2,
     retry_delay: float = 1.0,
-) -> tuple[float | None, bool]:
+) -> tuple[float | None, bool, int | None, int | None]:
     """[Linux] Open a real capture at this exact combination the same way
-    VideoRecorder does for an actual recording , then measure real delivered fps."""
+    VideoRecorder does for an actual recording, then measure real delivered
+    fps and resolution.
+
+    Returns (measured_fps, could_open, actual_width, actual_height)."""
     could_open = False
     for attempt in range(retries):
         if attempt > 0:
@@ -536,12 +559,16 @@ def _linux_measure_achievable_fps(
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
             cap.set(cv2.CAP_PROP_FPS, fps)
-            measured = _measure_open_capture_fps(cap, warmup=warmup, duration=duration)
+            measured, actual_width, actual_height = _measure_open_capture(
+                cap,
+                warmup=warmup,
+                duration=duration,
+            )
             if measured is not None:
-                return measured, True
+                return measured, True, actual_width, actual_height
         finally:
             cap.release()
-    return None, could_open
+    return None, could_open, None, None
 
 
 def validate_combination(
@@ -557,7 +584,7 @@ def validate_combination(
     duration: float = DEFAULT_VALIDATION_DURATION,
 ) -> Dict[str, Any]:
     """Open the device at this exact (pixel format, resolution, fps)
-    combination and measure real delivered throughput.
+    combination and measure real delivered throughput and resolution.
 
     `fps_tolerance` is a fraction (0.15 = 15%): how far the measured rate may
     diverge from the requested one, in either direction, before the
@@ -565,13 +592,15 @@ def validate_combination(
     `warmup`/`duration` (seconds) control how long to wait before measuring
     and how long to measure for.
 
-    Returns {"passed": bool, "measured_fps": float | None, "could_open": bool}.
-    `passed` requires the device to open AND the measured rate to land within
-    +/-fps_tolerance of the requested fps.
+    Returns {"passed": bool, "measured_fps": float | None, "could_open": bool,
+    "measured_width": int | None, "measured_height": int | None}.
+    `passed` requires the device to open, the measured rate to land within
+    +/-fps_tolerance of the requested fps, AND the actually delivered frame
+    resolution to match the requested one exactly.
     """
     if IS_WINDOWS:
         from .dshow_capture import _windows_measure_achievable_fps
-        measured, could_open = _windows_measure_achievable_fps(
+        measured, could_open, measured_width, measured_height = _windows_measure_achievable_fps(
             device_index=device_index,
             width=width,
             height=height,
@@ -581,7 +610,7 @@ def validate_combination(
             duration=duration,
         )
     elif IS_MAC:
-        measured, could_open = _mac_measure_achievable_fps(
+        measured, could_open, measured_width, measured_height = _mac_measure_achievable_fps(
             device_index=device_index,
             device_name=device_name,
             width=width,
@@ -592,7 +621,7 @@ def validate_combination(
             duration=duration,
         )
     elif IS_LINUX:
-        measured, could_open = _linux_measure_achievable_fps(
+        measured, could_open, measured_width, measured_height = _linux_measure_achievable_fps(
             devnode=devnode,
             width=width,
             height=height,
@@ -603,11 +632,19 @@ def validate_combination(
         )
     else:
         raise OSError(f"Unsupported OS: {sys.platform}")
-    passed = bool(
-        could_open and measured is not None
+    fps_ok = (
+        measured is not None
         and (1 - fps_tolerance) * fps <= measured <= (1 + fps_tolerance) * fps
     )
-    return {"passed": passed, "measured_fps": measured, "could_open": could_open}
+    resolution_ok = measured_width == width and measured_height == height
+    passed = bool(could_open and fps_ok and resolution_ok)
+    return {
+        "passed": passed,
+        "measured_fps": measured,
+        "could_open": could_open,
+        "measured_width": measured_width,
+        "measured_height": measured_height,
+    }
 
 
 def get_control_settings_string(controls: dict) -> str:

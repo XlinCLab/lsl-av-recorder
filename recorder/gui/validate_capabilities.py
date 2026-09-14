@@ -45,22 +45,26 @@ def _combinations_for_selection(
 
 def _effective_result(
     result: Optional[Dict[str, Any]],
+    width: int,
+    height: int,
     fps: float,
     tolerance: float,
 ) -> Optional[Dict[str, Any]]:
     """Re-evaluate a stored result's `passed` flag against `tolerance`
     (a fraction, e.g. 0.15 = 15%) rather than trusting whichever tolerance
-    happened to be in effect when it was originally measured.
+    happened to be in effect when it was originally measured. Also re-checks
+    the recorded resolution match, since `measured_width`/`measured_height`
+    (unlike `measured_fps`) don't depend on `tolerance` but still factor into
+    `passed`.
     Returns `result` unchanged if there is nothing to re-evaluate
     (either no result, or no measured_fps recorded) or if
     re-evaluating does not actually change the passed flag."""
     if result is None or result.get("measured_fps") is None:
         return result
     measured = result["measured_fps"]
-    passed = bool(
-        result.get("could_open", True)
-        and (1 - tolerance) * fps <= measured <= (1 + tolerance) * fps
-    )
+    fps_ok = (1 - tolerance) * fps <= measured <= (1 + tolerance) * fps
+    resolution_ok = result.get("measured_width") == width and result.get("measured_height") == height
+    passed = bool(result.get("could_open", True) and fps_ok and resolution_ok)
     if passed == result.get("passed"):
         return result
     return {**result, "passed": passed}
@@ -77,7 +81,7 @@ def _combos_needing_validation(
     to_test: List[Tuple[str, int, int, int]] = []
     skipped_passed = 0
     for pf, w, h, fps in combos:
-        result = _effective_result(cached.get(combination_key(pf, w, h, fps)), fps, tolerance)
+        result = _effective_result(cached.get(combination_key(pf, w, h, fps)), w, h, fps, tolerance)
         if result and result.get("passed"):
             skipped_passed += 1
             continue
@@ -282,9 +286,9 @@ class ValidateCapabilitiesDialog(QDialog):
         self.progress_label = QLabel("")
         self.progress_label.setVisible(False)
 
-        self.results_table = QTableWidget(0, 5)
+        self.results_table = QTableWidget(0, 6)
         self.results_table.setHorizontalHeaderLabels(
-            ["Pixel format", "Resolution", "FPS", "Result", "Measured FPS"]
+            ["Pixel format", "Resolution", "FPS", "Result", "Measured FPS", "Measured resolution"]
         )
         self.results_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
 
@@ -314,7 +318,7 @@ class ValidateCapabilitiesDialog(QDialog):
         validate_row.addWidget(self.btn_cancel)
         layout.addLayout(validate_row)
         layout.addLayout(progress_row)
-        layout.addWidget(QLabel("Results for the checked selection above (this device, all sessions):"))
+        layout.addWidget(QLabel("Results for the checked selection above:"))
         layout.addWidget(self.results_table)
         layout.addWidget(self.btn_close)
         self.setLayout(layout)
@@ -354,7 +358,7 @@ class ValidateCapabilitiesDialog(QDialog):
         for row, (pf, w, h, fps) in enumerate(self._displayed_combos):
             key = combination_key(pf, w, h, fps)
             result = self._pending_results.get(key) or cached.get(key)
-            self._set_result_row(row, pf, w, h, fps, _effective_result(result, fps, tolerance))
+            self._set_result_row(row, pf, w, h, fps, _effective_result(result, w, h, fps, tolerance))
 
     def _set_result_row(
         self, row: int, pixel_format: str, width: int, height: int, fps: float,
@@ -364,16 +368,21 @@ class ValidateCapabilitiesDialog(QDialog):
         self.results_table.setItem(row, 1, QTableWidgetItem(f"{width}x{height}"))
         self.results_table.setItem(row, 2, QTableWidgetItem(f"{fps:g}"))
         if result is None:
-            status, measured = "", ""
+            status, measured_fps, measured_res = "", "", ""
         elif result.get("passed"):
-            status, measured = "✅ PASS", f"{result.get('measured_fps'):.2f}" if result.get("measured_fps") is not None else ""
+            status = "✅ PASS"
+            measured_fps = f"{result.get('measured_fps'):.2f}" if result.get("measured_fps") is not None else ""
+            measured_res = f"{result.get('measured_width')}x{result.get('measured_height')}"
         elif not result.get("could_open", True):
-            status, measured = "❌ NOT SUPPORTED", ""
+            status, measured_fps, measured_res = "❌ NOT SUPPORTED", "", ""
         else:
             status = "⚠️ FAIL"
-            measured = f"{result.get('measured_fps'):.2f}" if result.get("measured_fps") is not None else "n/a"
+            measured_fps = f"{result.get('measured_fps'):.2f}" if result.get("measured_fps") is not None else "n/a"
+            mw, mh = result.get("measured_width"), result.get("measured_height")
+            measured_res = f"{mw}x{mh}" if mw is not None and mh is not None else "n/a"
         self.results_table.setItem(row, 3, QTableWidgetItem(status))
-        self.results_table.setItem(row, 4, QTableWidgetItem(measured))
+        self.results_table.setItem(row, 4, QTableWidgetItem(measured_fps))
+        self.results_table.setItem(row, 5, QTableWidgetItem(measured_res))
 
     def _row_for_combo(self, pixel_format: str, width: int, height: int, fps: float) -> Optional[int]:
         for row, (pf, w, h, f) in enumerate(self._displayed_combos):
@@ -453,6 +462,8 @@ class ValidateCapabilitiesDialog(QDialog):
             "passed": result["passed"],
             "measured_fps": result["measured_fps"],
             "could_open": result["could_open"],
+            "measured_width": result["measured_width"],
+            "measured_height": result["measured_height"],
         }
         row = self._row_for_combo(pixel_format, width, height, fps)
         if row is not None:

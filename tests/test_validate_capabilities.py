@@ -70,19 +70,31 @@ def test_combinations_for_selection_spans_multiple_formats():
 # ---------------------------------------------------------------------------
 
 def test_effective_result_none_when_nothing_recorded():
-    assert _effective_result(None, fps=50, tolerance=0.15) is None
+    assert _effective_result(None, width=1920, height=1080, fps=50, tolerance=0.15) is None
 
 
 def test_effective_result_unchanged_when_no_measurement_recorded():
     """A result with no measured_fps (e.g. the device couldn't be opened at
     all) has nothing to re-evaluate against a tolerance; returned as-is."""
     result = {"passed": False, "measured_fps": None, "could_open": False}
-    assert _effective_result(result, fps=50, tolerance=0.15) == result
+    assert _effective_result(result, width=1920, height=1080, fps=50, tolerance=0.15) == result
 
 
 def test_effective_result_keeps_pass_within_tolerance():
-    result = {"passed": True, "measured_fps": 47.0, "could_open": True}
-    effective = _effective_result(result, fps=50, tolerance=0.15)
+    result = {
+        "passed": True,
+        "measured_fps": 47.0,
+        "could_open": True,
+        "measured_width": 1920,
+        "measured_height": 1080,
+    }
+    effective = _effective_result(
+        result=result,
+        width=1920,
+        height=1080,
+        fps=50,
+        tolerance=0.15,
+    )
     assert effective["passed"] is True
     # Unchanged object returned when the flag doesn't actually change.
     assert effective is result
@@ -92,44 +104,125 @@ def test_effective_result_flips_pass_to_fail_under_stricter_tolerance():
     """e.g. a combination measured at 43fps against a requested
     50fps passed under 15% tolerance but should read as FAIL once the
     tolerance is tightened to 5%, without needing to re-run validation."""
-    original_result = {"passed": True, "measured_fps": 43.0, "could_open": True}
-    new_result = _effective_result(original_result, fps=50, tolerance=0.05)
+    original_result = {
+        "passed": True,
+        "measured_fps": 43.0,
+        "could_open": True,
+        "measured_width": 1920,
+        "measured_height": 1080,
+    }
+    new_result = _effective_result(
+        result=original_result,
+        width=1920,
+        height=1080,
+        fps=50,
+        tolerance=0.05,
+    )
     assert new_result["passed"] is False
     assert new_result != original_result
     assert original_result["passed"] is True
 
 
 def test_effective_result_flips_fail_to_pass_under_looser_tolerance():
-    result = {"passed": False, "measured_fps": 46.0, "could_open": True}
-    effective = _effective_result(result, fps=50, tolerance=0.15)
+    result = {
+        "passed": False,
+        "measured_fps": 46.0,
+        "could_open": True,
+        "measured_width": 1920,
+        "measured_height": 1080,
+    }
+    effective = _effective_result(
+        result=result,
+        width=1920,
+        height=1080,
+        fps=50,
+        tolerance=0.15,
+    )
     assert effective["passed"] is True
 
 
 def test_effective_result_never_passes_when_device_could_not_open():
     """A measured_fps landing within tolerance is irrelevant if the device
     itself couldn't be opened for this combination."""
-    result = {"passed": False, "measured_fps": 50.0, "could_open": False}
-    effective = _effective_result(result, fps=50, tolerance=0.15)
+    result = {
+        "passed": False,
+        "measured_fps": 50.0,
+        "could_open": False,
+        "measured_width": 1920,
+        "measured_height": 1080,
+    }
+    effective = _effective_result(
+        result=result,
+        width=1920,
+        height=1080,
+        fps=50,
+        tolerance=0.15,
+    )
     assert effective["passed"] is False
 
 
 def test_effective_result_boundary_is_inclusive():
     """Exactly at the tolerance boundary still counts as passed."""
-    result = {"passed": True, "measured_fps": 42.5, "could_open": True}
-    effective = _effective_result(result, fps=50, tolerance=0.15)
+    result = {
+        "passed": True,
+        "measured_fps": 42.5,
+        "could_open": True,
+        "measured_width": 1920,
+        "measured_height": 1080,
+    }
+    effective = _effective_result(
+        result=result,
+        width=1920,
+        height=1080,
+        fps=50,
+        tolerance=0.15,
+    )
     assert effective["passed"] is True
+
+
+def test_effective_result_never_passes_when_resolution_mismatched():
+    """A device can silently negotiate a different resolution than requested
+    the same way it can silently drop fps; a measured_fps within tolerance
+    is irrelevant if the delivered resolution doesn't match."""
+    result = {
+        "passed": True,
+        "measured_fps": 50.0,
+        "could_open": True,
+        "measured_width": 1280,
+        "measured_height": 720,
+    }
+    effective = _effective_result(
+        result=result,
+        width=1920,
+        height=1080,
+        fps=50,
+        tolerance=0.15,
+    )
+    assert effective["passed"] is False
 
 
 # ---------------------------------------------------------------------------
 # _combos_needing_validation
 # ---------------------------------------------------------------------------
 
-def _cached(pf, w, h, fps, passed, measured_fps, could_open=True):
+def _cached(
+        pf,
+        w,
+        h,
+        fps,
+        passed,
+        measured_fps,
+        could_open=True,
+        measured_width=None,
+        measured_height=None,
+    ):
     from recorder.video.camera_settings import combination_key
     return combination_key(pf, w, h, fps), {
         "passed": passed,
         "measured_fps": measured_fps,
         "could_open": could_open,
+        "measured_width": w if measured_width is None else measured_width,
+        "measured_height": h if measured_height is None else measured_height,
     }
 
 
@@ -176,3 +269,23 @@ def test_combos_needing_validation_retests_when_tolerance_tightened():
 
 def test_combos_needing_validation_empty_input():
     assert _combos_needing_validation([], {}, tolerance=0.15) == ([], 0)
+
+
+def test_combos_needing_validation_retests_when_resolution_mismatched():
+    """A previously 'passed' result whose measured resolution doesn't match
+    the requested one must be retested, not skipped; a passing frame rate
+    alone does not suffice."""
+    key, result = _cached(
+        "MJPG", 1920, 1080, 30,
+        passed=True,
+        measured_fps=29.9,
+        measured_width=1280,
+        measured_height=720,
+    )
+    cached = {key: result}
+    combos = [("MJPG", 1920, 1080, 30)]
+
+    to_test, skipped = _combos_needing_validation(combos, cached, tolerance=0.15)
+
+    assert to_test == [("MJPG", 1920, 1080, 30)]
+    assert skipped == 0
