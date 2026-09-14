@@ -785,6 +785,7 @@ class CameraPanel(QWidget):
             fallback_index=idx,
             fallback_devnode=dev,
         )
+        self._log(f"Opening Validate camera capabilities dialog for [{idx}] {device_name or '?'} (devnode={dev})")
         dialog = ValidateCapabilitiesDialog(
             modes_by_format=self._modes_by_format,
             devnode=dev,
@@ -795,9 +796,11 @@ class CameraPanel(QWidget):
         # Stop/restart this camera's live preview
         dialog.validationStarted.connect(self.validateStarted.emit)
         dialog.validationFinished.connect(self.validateFinished.emit)
+        dialog.log.connect(self._log)
         dialog.exec()
+        self._log("Closed Validate camera capabilities dialog")
         # Remove combiantions that failed validation and mark combinations
-        # that passed validation as no longer unvalidated 
+        # that passed validation as no longer unvalidated
         self._build_combos()
         self._refresh_combo_choices(changed=None)
 

@@ -70,6 +70,26 @@ def _effective_result(
     return {**result, "passed": passed}
 
 
+def _summarize_validation_result(result: Dict[str, Any]) -> str:
+    """Human-readable one-line summary of a `validate_combination()` result,
+    shared by the results table and the session log."""
+    if result.get("passed"):
+        return (
+            f"PASS (measured {result.get('measured_fps'):.2f}fps, "
+            f"{result.get('measured_width')}x{result.get('measured_height')})"
+        )
+    if not result.get("could_open", True):
+        return "NOT SUPPORTED (device could not open at this combination)"
+    parts = []
+    measured_fps = result.get("measured_fps")
+    if measured_fps is not None:
+        parts.append(f"measured {measured_fps:.2f}fps")
+    mw, mh = result.get("measured_width"), result.get("measured_height")
+    if mw is not None and mh is not None:
+        parts.append(f"{mw}x{mh}")
+    return "FAIL" + (f" ({', '.join(parts)})" if parts else "")
+
+
 def _combos_needing_validation(
     combos: List[Tuple[str, int, int, int]],
     cached: Dict[str, Dict[str, Any]],
@@ -93,7 +113,7 @@ class _ValidateCombinationsThread(QThread):
     combo_validated = pyqtSignal(str, int, int, int, dict)
     progress = pyqtSignal(int, int)
     failed = pyqtSignal(str)
-    cancelled = pyqtSignal()
+    canceled = pyqtSignal()
 
     def __init__(
         self,
@@ -128,7 +148,7 @@ class _ValidateCombinationsThread(QThread):
             total = len(self._combos)
             for i, (pixel_format, width, height, fps) in enumerate(self._combos, start=1):
                 if self._cancel_requested:
-                    self.cancelled.emit()
+                    self.canceled.emit()
                     return
                 result = validate_combination(
                     devnode=self._devnode,
@@ -188,6 +208,7 @@ class ValidateCapabilitiesDialog(QDialog):
 
     validationStarted = pyqtSignal()
     validationFinished = pyqtSignal()
+    log = pyqtSignal(str, str)
 
     def __init__(
         self,
@@ -226,8 +247,8 @@ class ValidateCapabilitiesDialog(QDialog):
         select_row = QHBoxLayout()
         btn_select_all = QPushButton("Select all")
         btn_deselect_all = QPushButton("Deselect all")
-        btn_select_all.clicked.connect(lambda: [cb.setChecked(True) for cb in self._all_checkboxes])
-        btn_deselect_all.clicked.connect(lambda: [cb.setChecked(False) for cb in self._all_checkboxes])
+        btn_select_all.clicked.connect(self._on_select_all)
+        btn_deselect_all.clicked.connect(self._on_deselect_all)
         select_row.addWidget(btn_select_all)
         select_row.addWidget(btn_deselect_all)
         select_row.addStretch(1)
@@ -297,7 +318,7 @@ class ValidateCapabilitiesDialog(QDialog):
             "Results are already saved as each combination finishes -- this just "
             "closes the dialog (same as the window's own close button)."
         )
-        self.btn_close.clicked.connect(self.accept)
+        self.btn_close.clicked.connect(self._on_save_and_close)
 
         progress_row = QHBoxLayout()
         progress_row.addWidget(self.progress_bar)
@@ -328,8 +349,25 @@ class ValidateCapabilitiesDialog(QDialog):
 
         self._refresh_results_table()
 
+    def _log(self, msg: str, loglevel: str = "INFO"):
+        self.log.emit(msg, loglevel)
+
     def _device_key(self) -> str:
         return self._device_name or self._devnode or "unknown"
+
+    def _on_select_all(self):
+        self._log("Validate camera capabilities: 'Select all' clicked", loglevel='DEBUG')
+        for cb in self._all_checkboxes:
+            cb.setChecked(True)
+
+    def _on_deselect_all(self):
+        self._log("Validate camera capabilities: 'Deselect all' clicked", loglevel='DEBUG')
+        for cb in self._all_checkboxes:
+            cb.setChecked(False)
+
+    def _on_save_and_close(self):
+        self._log("Validate camera capabilities: 'Save and close' clicked", loglevel='DEBUG')
+        self.accept()
 
     def _checked_selection(self) -> Tuple[set, set, set]:
         checked_formats = {v for v, cb in self._format_checkboxes.items() if cb.isChecked()}
@@ -391,8 +429,18 @@ class ValidateCapabilitiesDialog(QDialog):
         return None
 
     def _on_validate(self):
+        checked_formats, checked_resolutions, checked_fps = self._checked_selection()
+        self._log(
+            "Validating camera capabilities: "
+            f"pixel_formats={sorted(checked_formats)}, "
+            f"resolutions={sorted(checked_resolutions)}, fps={sorted(checked_fps)}"
+        )
         combos = self._matching_combos()
         if not combos:
+            self._log(
+                "Validate camera capabilities: no declared combination matches the current selection",
+                loglevel="WARNING",
+            )
             QMessageBox.information(
                 self, "Nothing to validate",
                 "No declared combination matches the checked frame rate/resolution/"
@@ -406,12 +454,23 @@ class ValidateCapabilitiesDialog(QDialog):
         to_test, skipped_passed = _combos_needing_validation(combos, cached, tolerance)
 
         if not to_test:
+            self._log(
+                f"Validate camera capabilities: all {skipped_passed} selected combination(s) "
+                "already passed validation in a previous run; nothing to re-test"
+            )
             QMessageBox.information(
                 self, "Nothing to validate",
                 f"All {skipped_passed} selected combination(s) already passed validation "
                 "in a previous run. Nothing to re-test.",
             )
             return
+
+        self._log(
+            f"Validate camera capabilities: starting validation of {len(to_test)} "
+            f"combination(s) ({skipped_passed} already-passing combination(s) skipped): "
+            f"tolerance={tolerance * 100:.0f}%, warmup={self.warmup_spin.value():.1f}s, "
+            f"duration={self.duration_spin.value():.1f}s"
+        )
 
         self.btn_validate.setEnabled(False)
         self.btn_cancel.setVisible(True)
@@ -436,7 +495,7 @@ class ValidateCapabilitiesDialog(QDialog):
         self._thread = thread
         thread.combo_validated.connect(self._on_combo_validated)
         thread.progress.connect(self._on_progress)
-        thread.cancelled.connect(self._on_thread_cancelled)
+        thread.canceled.connect(self._on_thread_canceled)
         thread.finished.connect(self._on_validation_finished)
         thread.failed.connect(self._on_validation_failed)
         self.validationStarted.emit()
@@ -444,12 +503,17 @@ class ValidateCapabilitiesDialog(QDialog):
 
     def _on_cancel(self):
         if self._thread is not None:
+            self._log("Camera capability validation canceled")
             self.btn_cancel.setEnabled(False)
-            self.progress_label.setText(self.progress_label.text() + " -- cancelling...")
+            self.progress_label.setText(self.progress_label.text() + " -- canceling...")
             self._thread.request_cancel()
 
-    def _on_thread_cancelled(self):
-        self.progress_label.setText("Cancelled.")
+    def _on_thread_canceled(self):
+        self.progress_label.setText("canceled.")
+        self._log(
+            f"Validate camera capabilities: canceled ({len(self._pending_results)} "
+            "combination(s) completed before canceling)"
+        )
 
     def _on_progress(self, i: int, total: int):
         self.progress_bar.setValue(i)
@@ -465,16 +529,29 @@ class ValidateCapabilitiesDialog(QDialog):
             "measured_width": result["measured_width"],
             "measured_height": result["measured_height"],
         }
+        self._log(
+            f"Validate camera capabilities: {pixel_format} {width}x{height}@{fps:g}fps -> "
+            f"{_summarize_validation_result(result)}",
+            loglevel="INFO" if result.get("passed") else "WARNING",
+        )
         row = self._row_for_combo(pixel_format, width, height, fps)
         if row is not None:
             self._set_result_row(row, pixel_format, width, height, fps, result)
 
     def _on_validation_finished(self):
         # Whatever combinations completed before a cancel (or a natural
-        # finish) are kept -- cancelling doesn't discard results already
+        # finish) are kept -- canceling doesn't discard results already
         # measured, only skips the ones not yet reached.
         if self._pending_results:
             store_validated_combinations(sys.platform, self._device_key(), self._pending_results)
+            n_passed = sum(1 for r in self._pending_results.values() if r.get("passed"))
+            n_not_supported = sum(1 for r in self._pending_results.values() if not r.get("could_open", True))
+            n_failed = len(self._pending_results) - n_passed - n_not_supported
+            self._log(
+                "Camera capabilities validation completed: "
+                f"{len(self._pending_results)} combination(s) tested: "
+                f"{n_passed} passed, {n_failed} failed, {n_not_supported} not supported "
+            )
         self.btn_validate.setEnabled(True)
         self.btn_cancel.setVisible(False)
         self.progress_bar.setVisible(False)
@@ -483,6 +560,7 @@ class ValidateCapabilitiesDialog(QDialog):
         self.validationFinished.emit()
 
     def _on_validation_failed(self, msg: str):
+        self._log(f"Camera capabilities validation run failed: {msg}", loglevel="ERROR")
         QMessageBox.critical(self, "Validation failed", msg)
 
     def closeEvent(self, event):
