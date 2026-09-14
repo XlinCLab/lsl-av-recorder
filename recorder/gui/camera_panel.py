@@ -846,7 +846,7 @@ class CameraPanel(QWidget):
         self.setUpdatesEnabled(True)
         self._log(
             "Capabilities loaded "
-            f"(from_cache={self._caps_from_cache}): {len(self._combos)} verified combination(s), "
+            f"(from_cache={self._caps_from_cache}): "
             f"pixel_formats={sorted(self._modes_by_format.keys())}, "
             f"fps={sorted({int(v) for v in (caps.get('fps') or []) if int(v) > 0})}, "
             f"auto_exposure={bool(caps.get('supports_auto_exposure'))}, "
