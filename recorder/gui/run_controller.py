@@ -13,6 +13,7 @@ from typing import Callable, Dict, List, Optional
 import numpy as np
 from pylsl import StreamInfo, StreamInlet
 
+from ..audio.devices import list_input_devices
 from ..audio.lsl_audio import (AudioLSLStreamer, AudioStreamSettings,
                                _dtype_format)
 from ..config import AppConfig, VideoCamConfig
@@ -26,6 +27,23 @@ from ..xdf.xdf_writer import (FULL_BUFFER_BLOCK_THREAD_POLICY,
                               FULL_BUFFER_DEFAULT_POLICY,
                               FULL_BUFFER_DROP_NEWEST_POLICY,
                               FULL_BUFFER_POLICIES, XDFWriter)
+from .preview_manager import preview_key
+
+
+def _resolve_audio_device_name(device) -> str:
+    """Human-readable name for an audio input device
+    selector for display purposes."""
+    if device is None:
+        return "(default)"
+    if isinstance(device, int):
+        try:
+            for d in list_input_devices():
+                if d["index"] == device:
+                    return str(d["name"])
+        except Exception:
+            pass
+        return f"Device {device}"
+    return str(device)
 
 
 class RunController:
@@ -35,12 +53,14 @@ class RunController:
         status_cb: Optional[Callable[[str], None]] = None,
         lsl_streams: Optional[List[StreamInfo]] = None,
         preview_release_cb: Optional[Callable[[VideoCamConfig], bool]] = None,
-        preview_frame_cb: Optional[Callable[[int, object], None]] = None,
+        preview_frame_cb: Optional[Callable[[str, object], None]] = None,
+        divergence_cb: Optional[Callable[[str, str], bool]] = None,
     ):
         self.cfg = cfg
         self.status_cb = status_cb
         self.preview_release_cb = preview_release_cb
         self.preview_frame_cb = preview_frame_cb
+        self.divergence_cb = divergence_cb
         self._running = False
 
         # Audio and video streams
@@ -251,15 +271,22 @@ class RunController:
 
     def _add_streams_to_xdf_writer(self, xdf_writer: XDFWriter):
         if self.video_enabled:
+            videos_by_label = {vr.cam.Label: vr for vr in self.videos}
             for cam in self.cams:
                 video_path = self._get_video_output_path(cam)
+                vr = videos_by_label.get(cam.Label)
+                # width/height reflect what the capture backend actually delivered
+                # (VideoRecorder.writer_size, what the video file was written at),
+                # not necessarily the configured cam.Width/Height
+                actual_width, actual_height = vr.writer_size if vr and vr.writer_size else (cam.Width, cam.Height)
                 sid = xdf_writer.add_video_stream(
                     name=f"Camera-{cam.Label}",
                     camera_id=str(cam.DeviceIndex),
                     video_path=video_path,
-                    width=cam.Width,
-                    height=cam.Height,
+                    width=actual_width,
+                    height=actual_height,
                     fps=cam.FPS,
+                    pixel_format=vr.actual_pixel_format if vr else None,
                 )
                 self.video_sids[cam.Label] = sid
                 self.info(f"Initialized video stream from camera <{cam.Label}> in XDF")
@@ -357,6 +384,7 @@ class RunController:
                 aset.device = int(self.cfg.Audio.Device)
             except ValueError:
                 aset.device = self.cfg.Audio.Device
+        aset.device_name = _resolve_audio_device_name(aset.device)
         return aset
 
     def _get_active_cams(self) -> List:
@@ -383,8 +411,8 @@ class RunController:
         video_path = self._get_video_output_path(cam)
         preview_cb = None
         if self.preview_frame_cb:
-            cam_index = int(cam.DeviceIndex)
-            preview_cb = lambda frame, idx=cam_index: self.preview_frame_cb(idx, frame)
+            key = preview_key(cam)
+            preview_cb = lambda frame, k=key: self.preview_frame_cb(k, frame)
         vr = VideoRecorder(
             cam_cfg=cam,
             output_path=video_path,
@@ -394,6 +422,7 @@ class RunController:
             ),
             preview_cb=preview_cb,
             preview_fps=getattr(self.cfg.Video, "PreviewFPS", 15),
+            divergence_cb=self.divergence_cb,
         )
         self.videos.append(vr)
         self.info(f"Initialized video stream for camera {cam.Label}")

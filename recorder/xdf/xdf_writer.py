@@ -434,6 +434,7 @@ class XDFWriter:
         width: int,
         height: int,
         fps: Optional[float] = None,
+        pixel_format: Optional[str] = None,
     ) -> int:
         """
         Video stream stores frame index (int64) with timestamps.
@@ -448,9 +449,18 @@ class XDFWriter:
             source_id=f"camera:{camera_id}",
             extra={
                 "video_path": video_path,
+                # NB: width and height are the measured, actually delivered dimensions,
+                # not necessarily the configured/declared dimensions
                 "width": width,
                 "height": height,
                 "fps": fps or "irregular",
+                # NB: `pixel_format`, if given, is the pixel format the platform capture
+                # backend actually negotiated (VideoRecorder.actual_pixel_format).
+                # This is recorded as metadata here as it cannot be independently verified
+                # after the fact the way fps/frame count can be, since every backend
+                # converts delivered frames to a uniform format regardless of native
+                # capture format, so no trace survives into the recorded video file itself.
+                "pixel_format": pixel_format or "unknown",
             },
         )
 

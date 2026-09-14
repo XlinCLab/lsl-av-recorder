@@ -9,7 +9,8 @@ from __future__ import annotations
 from recorder.video import devices as devices_mod
 from recorder.video.devices import (_parse_linux_v4l2_devices,
                                     _parse_mac_avfoundation_video_devices,
-                                    list_video_devices)
+                                    list_video_devices,
+                                    resolve_cv2_device_index)
 
 MAC_LIST = """
 [AVFoundation indev @ 0x1] AVFoundation video devices:
@@ -103,3 +104,66 @@ def test_list_video_devices_windows(monkeypatch, as_platform):
     ]
     monkeypatch.setattr(devices_mod, "list_windows_video_devices", lambda: fake_devices)
     assert list_video_devices() == fake_devices
+
+
+# ---------------------------------------------------------------------------
+# resolve_cv2_device_index
+# ---------------------------------------------------------------------------
+
+class _FakeCamInfo:
+    def __init__(self, name: str, index: int):
+        self.name = name
+        self.index = index
+
+
+def test_resolve_cv2_device_index_finds_current_match(monkeypatch, as_platform):
+    """Resolves to whatever index enumerate_cameras currently reports for this name,
+    which is not necessarily the ffmpeg/list_video_devices() index 
+    passed as fallback, since the two enumerations aren't guaranteed to agree."""
+    as_platform(devices_mod, "mac")
+    monkeypatch.setattr(
+        devices_mod, "enumerate_cameras",
+        lambda backend: [_FakeCamInfo("Logitech BRIO", 0), _FakeCamInfo("FaceTime HD Camera", 1)],
+    )
+    assert resolve_cv2_device_index("FaceTime HD Camera", fallback_index=0) == 1
+
+
+def test_resolve_cv2_device_index_falls_back_when_not_found(monkeypatch, as_platform):
+    """A name not present in the current cv2 enumeration (e.g. unplugged)
+    falls back to the given index rather than raising or guessing."""
+    as_platform(devices_mod, "mac")
+    monkeypatch.setattr(devices_mod, "enumerate_cameras", lambda backend: [_FakeCamInfo("Logitech BRIO", 0)])
+    assert resolve_cv2_device_index("Unplugged Cam", fallback_index=3) == 3
+
+
+def test_resolve_cv2_device_index_falls_back_when_lookup_raises(monkeypatch, as_platform):
+    """A runtime failure in enumerate_cameras (e.g. transient device/permission
+    error) degrades gracefully to the fallback instead of crashing capture."""
+    as_platform(devices_mod, "mac")
+
+    def boom(backend):
+        raise RuntimeError("camera access denied")
+
+    monkeypatch.setattr(devices_mod, "enumerate_cameras", boom)
+    assert resolve_cv2_device_index("FaceTime HD Camera", fallback_index=2) == 2
+
+
+def test_resolve_cv2_device_index_skipped_without_name(monkeypatch, as_platform):
+    """No name to match against means no lookup is attempted."""
+    as_platform(devices_mod, "mac")
+    called = []
+    monkeypatch.setattr(devices_mod, "enumerate_cameras", lambda backend: called.append(1) or [])
+
+    assert resolve_cv2_device_index(None, fallback_index=5) == 5
+    assert not called
+
+
+def test_resolve_cv2_device_index_skipped_off_mac(monkeypatch, as_platform):
+    """This lookup only applies on macOS; elsewhere the fallback is trusted as-is."""
+    for platform in ["windows", "linux"]:
+        as_platform(devices_mod, platform)
+        called = []
+        monkeypatch.setattr(devices_mod, "enumerate_cameras", lambda backend: called.append(1) or [])
+
+        assert resolve_cv2_device_index("FaceTime HD Camera", fallback_index=4) == 4
+        assert not called

@@ -2,31 +2,60 @@ from __future__ import annotations
 
 from typing import Dict
 
-from PyQt6.QtCore import QObject, Qt, QThread
-from PyQt6.QtGui import QImage, QPixmap
+from PyQt6.QtCore import QObject, QRect, Qt, QThread
+from PyQt6.QtGui import QColor, QImage, QPainter, QPixmap
 
-from .camera_worker import CameraWorker
+from .camera_worker import CameraWorker, compute_preview_key
+
+
+def _draw_caption(pix: QPixmap, text: str) -> None:
+    """Burn a semi-transparent caption bar containing device label
+    into the bottom of a preview frame."""
+    if not text:
+        return
+    painter = QPainter(pix)
+    try:
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        bar_height = max(18, int(pix.height() * 0.12))
+        bar_rect = QRect(0, pix.height() - bar_height, pix.width(), bar_height)
+        painter.fillRect(bar_rect, QColor(0, 0, 0, 160))
+        painter.setPen(QColor(255, 255, 255))
+        font = painter.font()
+        font.setPointSize(max(9, bar_height // 2))
+        painter.setFont(font)
+        painter.drawText(bar_rect, Qt.AlignmentFlag.AlignCenter, text)
+    finally:
+        painter.end()
+
+
+def preview_key(cam_cfg) -> str:
+    """preview_manager's view of compute_preview_key
+    reading straight from a VideoCamConfig."""
+    return compute_preview_key(cam_cfg.DeviceName, cam_cfg.DevNode, cam_cfg.DeviceIndex)
 
 
 class PreviewManager(QObject):
     def __init__(self, main_window):
         super().__init__()
         self.main = main_window
-        self.threads: Dict[int, QThread] = {}
-        self.workers: Dict[int, CameraWorker] = {}
+        self.threads: Dict[str, QThread] = {}
+        self.workers: Dict[str, CameraWorker] = {}
+        # Keys (preview_key(cam)) of cameras currently supplying preview
+        # frames from an active recording's VideoRecorder.preview_cb,
+        # mapped to their configured Label
+        self._recording_preview_labels: Dict[str, str] = {}
 
-    def _request_stop(self, cam_index: int):
-        idx = int(cam_index)
-        # Pop immediately so a new preview can be registered for the same index.
-        worker = self.workers.pop(idx, None)
-        thread = self.threads.pop(idx, None)
+    def _request_stop(self, key: str):
+        # Pop immediately so a new preview can be registered for the same key.
+        worker = self.workers.pop(key, None)
+        thread = self.threads.pop(key, None)
         self.main.preview_panel.set_active_cameras(self.workers.keys())
         if not thread:
             return
         if worker:
             worker.stop_preview()
         # Capture specific objects so the finished handler never touches the dict
-        # (which may already hold a new worker/thread for the same index by the
+        # (which may already hold a new worker/thread for the same key by the
         # time the signal fires, causing the new thread to be erroneously deleted)
         _w, _t = worker, thread
 
@@ -38,16 +67,16 @@ class PreviewManager(QObject):
         thread.finished.connect(_cleanup)
         thread.quit()
         # Wait briefly so the old camera releases its device before a new capture
-        # for the same index tries to open it.
+        # for the same key tries to open it.
         thread.wait(2000)
 
     def start_cam_preview(self, cam_cfg):
-        idx = int(cam_cfg.DeviceIndex)
-        if idx in self.workers:
+        key = preview_key(cam_cfg)
+        if key in self.workers:
             return
 
         worker = CameraWorker(
-            cam_index=idx,
+            cam_index=int(cam_cfg.DeviceIndex),
             devnode=cam_cfg.DevNode,
             label=cam_cfg.Label,
             fps=cam_cfg.FPS,
@@ -57,6 +86,7 @@ class PreviewManager(QObject):
             hue=cam_cfg.Hue,
             saturation=cam_cfg.Saturation,
             pixel_format=cam_cfg.PixelFormat,
+            device_name=cam_cfg.DeviceName,
         )
         thread = QThread()
         worker.moveToThread(thread)
@@ -65,21 +95,28 @@ class PreviewManager(QObject):
         worker.status.connect(self.main.log)
         thread.started.connect(worker.start_preview)
 
-        self.workers[idx] = worker
-        self.threads[idx] = thread
+        self.workers[key] = worker
+        self.threads[key] = thread
         thread.start()
         self.main.preview_panel.set_active_cameras(self.workers.keys())
 
     def stop_all_previews(self):
-        for idx in list(self.workers.keys()):
-            self._request_stop(idx)
+        for key in list(self.workers.keys()):
+            self._request_stop(key)
         self.main.preview_panel.set_active_cameras([])
+        self._recording_preview_labels = {}
 
-    def stop_cam_preview(self, cam_index: int) -> bool:
-        idx = int(cam_index)
-        exists = idx in self.workers
+    def set_recording_preview_labels(self, labels: Dict[str, str]) -> None:
+        """Register the cameras (preview_key -> configured Label) an active
+        recording will be feeding preview frames for via its own
+        VideoRecorder.preview_cb, so on_frame accepts them even though no
+        standalone CameraWorker exists for them during the recording."""
+        self._recording_preview_labels = dict(labels)
+
+    def stop_cam_preview(self, key: str) -> bool:
+        exists = key in self.workers
         if exists:
-            self._request_stop(idx)
+            self._request_stop(key)
         return exists
 
     def start_preview_all(self):
@@ -89,8 +126,21 @@ class PreviewManager(QObject):
                 continue
             self.start_cam_preview(cam_cfg)
 
-    def on_frame(self, cam_index: int, frame_bgr):
-        lbl = self.main.preview_panel.ensure_label(int(cam_index))
+    def on_frame(self, key: str, frame_bgr):
+        # A worker can emit one more frame after stop_preview() sets its
+        # _running flag False -- it may already be past that check, mid-loop,
+        # when the flag flips. That frame's frameReady signal is queued
+        # and can be delivered here after this key has already been torn down
+        # or reassigned to a different camera, so it must be dropped rather
+        # than rendered. Otherwise, it resurrects a stale preview label
+        # showing a frozen last frame. Frames from an active recording (see
+        # set_recording_preview_labels) have no worker at all and are
+        # accepted on that separate basis instead.
+        worker = self.workers.get(key)
+        recording_label = self._recording_preview_labels.get(key)
+        if worker is None and recording_label is None:
+            return
+        lbl = self.main.preview_panel.ensure_label(key)
         h, w, ch = frame_bgr.shape
         rgb = frame_bgr[:, :, ::-1].copy()
         qimg = QImage(rgb.data, w, h, ch * w, QImage.Format.Format_RGB888)
@@ -100,5 +150,7 @@ class PreviewManager(QObject):
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.FastTransformation,
         )
+        caption = (worker.label if worker else recording_label) or key
+        _draw_caption(pix, caption)
         lbl.setPixmap(pix)
         lbl.setText("")

@@ -10,7 +10,8 @@ from PyQt6.QtWidgets import (QGridLayout, QGroupBox, QLabel, QVBoxLayout,
 class PreviewPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.labels: Dict[int, QLabel] = {}
+        # Keyed by preview_manager.preview_key (device identity), not a raw numeric index
+        self.labels: Dict[str, QLabel] = {}
 
         self.group = QGroupBox("Live Preview")
         self.grid = QGridLayout()
@@ -19,8 +20,8 @@ class PreviewPanel(QWidget):
         layout.addWidget(self.group)
         self.setLayout(layout)
 
-    def _make_label(self, cam_index: int) -> QLabel:
-        lbl = QLabel(f"Camera {cam_index}: inactive")
+    def _make_label(self, key: str) -> QLabel:
+        lbl = QLabel(f"Camera {key}: inactive")
         lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lbl.setMinimumSize(360, 220)
         lbl.setStyleSheet("border: 1px solid #666; background: #111; color: #ddd;")
@@ -32,21 +33,21 @@ class PreviewPanel(QWidget):
             if item and item.widget():
                 item.widget().setParent(None)
 
-        cams: List[int] = sorted(self.labels.keys())
+        cams: List[str] = sorted(self.labels.keys())
         cols = 2 if len(cams) > 1 else 1
-        for idx, cam_index in enumerate(cams):
+        for idx, key in enumerate(cams):
             r = idx // cols
             c = idx % cols
-            self.grid.addWidget(self.labels[cam_index], r, c)
+            self.grid.addWidget(self.labels[key], r, c)
 
-    def ensure_label(self, cam_index: int) -> QLabel:
-        if cam_index not in self.labels:
-            self.labels[cam_index] = self._make_label(cam_index)
+    def ensure_label(self, key: str) -> QLabel:
+        if key not in self.labels:
+            self.labels[key] = self._make_label(key)
             self._rebuild_grid()
-        return self.labels[cam_index]
+        return self.labels[key]
 
-    def set_active_cameras(self, cam_indices: Iterable[int]):
-        active = set(int(x) for x in cam_indices)
+    def set_active_cameras(self, keys: Iterable[str]):
+        active = set(str(x) for x in keys)
         removed = [k for k in self.labels if k not in active]
         for k in removed:
             lbl = self.labels.pop(k)

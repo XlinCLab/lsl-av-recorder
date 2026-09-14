@@ -11,6 +11,7 @@ from pylsl import local_clock
 @dataclass
 class AudioStreamSettings:
     device: Optional[Union[int, str]] = None
+    device_name: Optional[str] = None
     samplerate: int = 48000
     channels: int = 1
     bitdepth: int = 32  # 16/32/64

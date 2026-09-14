@@ -13,9 +13,15 @@ from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
 from ..video.color_adjust import apply_color_adjustments
 from ..video.constants import (DEFAULT_BRIGHTNESS, DEFAULT_HUE,
                                DEFAULT_SATURATION)
+from ..video.devices import resolve_cv2_device_index
 
 # LSL stream type published by CameraWorker's preview outlet
 CAMERA_PREVIEW_STREAM_TYPE = "VideoFrame"
+
+
+def compute_preview_key(device_name: Optional[str], devnode: str, cam_index: int) -> str:
+    """Stable identity for a camera's preview worker slot."""
+    return str(device_name or devnode or f"idx{cam_index}")
 
 
 @dataclass
@@ -27,8 +33,9 @@ class RecordParams:
 
 
 class CameraWorker(QObject):
-    # preview frames to GUI
-    frameReady = pyqtSignal(int, object)
+    # preview frames to GUI, keyed by a stable per-camera identity
+    # rather than the raw, potentially colliding/drifting numeric device index
+    frameReady = pyqtSignal(object, object)
     status = pyqtSignal(str)
 
     def __init__(
@@ -43,11 +50,14 @@ class CameraWorker(QObject):
         hue: Optional[int] = None,
         saturation: Optional[int] = None,
         pixel_format: Optional[str] = None,
+        device_name: Optional[str] = None,
     ):
         super().__init__()
         self.cam_index = int(cam_index)
         self.devnode = devnode
         self.label = label
+        self.device_name = device_name
+        self.preview_key = compute_preview_key(device_name, devnode, self.cam_index)
         self.fps = int(fps)
         self.w, self.h = int(size[0]), int(size[1])
         self.preview_fps = max(1, int(preview_fps))
@@ -88,7 +98,8 @@ class CameraWorker(QObject):
 
     def _open_cap(self):
         if sys.platform == "darwin":  # MacOS
-            self.cap = cv2.VideoCapture(self.cam_index, cv2.CAP_AVFOUNDATION)
+            cv2_index = resolve_cv2_device_index(self.device_name, self.cam_index)
+            self.cap = cv2.VideoCapture(cv2_index, cv2.CAP_AVFOUNDATION)
         elif sys.platform.startswith("linux"):
             source = self.devnode if self.devnode else self.cam_index
             self.cap = cv2.VideoCapture(source, cv2.CAP_V4L2)
@@ -209,7 +220,7 @@ class CameraWorker(QObject):
             # Throttled preview
             now = time.monotonic()
             if now >= next_preview:
-                self.frameReady.emit(self.cam_index, frame.copy())
+                self.frameReady.emit(self.preview_key, frame.copy())
                 next_preview = now + preview_interval
 
         # cleanup
