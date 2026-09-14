@@ -81,7 +81,7 @@ To load a different config in normal GUI use:
 ## Camera Controls and Capability Detection
 Camera capability discovery and configuration is platform-specific. Depending on the platform, some camera controls may not be supported. Furthermore, the same physical camera may report different capabilities (supported pixel formats, resolutions, and FPS) on different operating systems.
 
-**Note:** resolution/FPS/pixel format combinations that a camera declares as supported are not always actually achievable in practice; a camera may accept a setting but fail to sustain it once capture starts. Always use the **Test recording settings** button before a real recording to confirm your configured settings actually work as expected with the hardware.
+**Note:** resolution/FPS/pixel format combinations that a camera declares as supported are not always actually achievable in practice; a camera may accept a setting but fail to sustain it once capture starts. Capability discovery on every platform is purely declarative (reads what the device/driver claims to support). Use **Validate camera capabilities** (within each camera's tab) to empirically confirm specific combinations you plan to use, and always use **Test recording settings** before a real recording as a final check with your actual configured settings across all active streams.
 
 ### Linux
 Uses `v4l2-ctl` to query and control camera settings:
@@ -97,12 +97,15 @@ Uses native AVFoundation (via `pyobjc-framework-AVFoundation`) to query each cam
 - Auto-exposure / auto-focus are treated as unsupported
 
 ### Windows
-On Windows, device capabilities are probed and/or tested empirically on first use, which may take up to a few minutes. These device capabilities are then cached and reused for future sessions, such that this capability probing/test step only runs once per device. This probe additionally runs again when the application version has changed from the version in the cache.
-
 Interfaces with `DirectShow` via `COM` (through `pygrabber`) for both capability discovery and frame capture:
-- Supported pixel formats, resolutions, and FPS are queried from the device, and the declared max FPS per mode is empirically verified (and corrected down if the declared maximum frame rate cannot be verified)
+- Supported pixel formats, resolutions, and FPS are queried directly from the device's declared `IAMStreamConfig` formats
 - Brightness/hue/saturation and auto-exposure/auto-focus are applied via `COM` camera-control interfaces
 - Resolution/FPS/pixel format have no separate "Apply settings" pre-flight step as in Linux and MacOS; instead, they are applied when the capture opens at preview/recording start
+
+### Validate Camera Capabilities
+Every platform's capability discovery is declarative only (a device/driver can declare a combination that it cannot actually deliver and/or sustain in practice). The **Validate camera capabilities** button in each camera's tab opens a window listing every declared frame rate, resolution, and pixel format for that device as three checkable lists; check the values you wish to validate and click **Validate selected** to empirically open the device at every declared combination matching your selection and measure real delivered fps. A combination confirmed NOT to work is excluded from the FPS/Resolution/Pixel-format dropdowns elsewhere in that camera's tab.
+
+Note: Starting a real recording with a camera whose current selection has never been empirically confirmed prompts for explicit confirmation first.
 
 ## LSL Integration
 - Every camera's frame index and timestamp are published live as its own LSL outlet (`VideoFrames_cam-XX_role-<label>`, type `VideoFrame`) for the lifetime of the camera worker, independent of the in-app XDF writer, so external LSL clients can also record video timing.

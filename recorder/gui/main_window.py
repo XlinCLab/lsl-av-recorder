@@ -849,9 +849,9 @@ class MainWindow(QMainWindow):
             panel.set_remove_enabled(enabled)
 
     def _update_camera_settings_controls(self):
-        # Apply settings / Refresh device capabilities both probe or
-        # reconfigure a camera's device, which must not run while a
-        # recording is active.
+        # Apply settings / Refresh device capabilities / Validate camera
+        # capabilities all probe or reconfigure a camera's device, which must
+        # not run while a recording is active.
         for panel in self.cam_panels:
             panel.set_settings_controls_enabled(not self._recording_active)
 
@@ -884,6 +884,8 @@ class MainWindow(QMainWindow):
         panel.capabilitiesLoadFinished.connect(self._on_caps_load_finished)
         panel.capabilitiesLoadFinished.connect(lambda p=panel: self._start_preview_for_cam(p.to_config()))
         panel.capabilitiesLoadProgress.connect(self._on_caps_load_progress)
+        panel.validateStarted.connect(lambda p=panel: self._stop_preview_for_cam(p.to_config()))
+        panel.validateFinished.connect(lambda p=panel: self._start_preview_for_cam(p.to_config()))
         panel.removeRequested.connect(self._on_remove_camera)
         panel.log.connect(self.log)
         self.cam_panels.append(panel)
@@ -997,12 +999,46 @@ class MainWindow(QMainWindow):
         if self._testing_active:
             return
         self.pull_gui_into_cfg()
+        if not self._confirm_unvalidated_camera_combinations():
+            return
         try:
             # Stop preview workers; recording will supply frames for preview.
             self.preview_mgr.stop_all_previews()
             self._begin_start_sequence()
         except Exception as e:
             QMessageBox.critical(self, "Start failed", str(e))
+
+    def _confirm_unvalidated_camera_combinations(self) -> bool:
+        """If any enabled camera's current selection has never been empirically
+        confirmed via "Validate camera capabilities", require an explicit choice
+        to proceed anyway or go back and validate first. Returns True to proceed."""
+        unvalidated = []
+        for panel in self.cam_panels:
+            cam_cfg = panel.to_config()
+            if not cam_cfg.Enabled:
+                continue
+            if not panel.is_current_selection_validated():
+                unvalidated.append(
+                    f"{cam_cfg.Label}: {cam_cfg.Width}x{cam_cfg.Height} @ "
+                    f"{cam_cfg.FPS}fps ({cam_cfg.PixelFormat})"
+                )
+        if not unvalidated:
+            return True
+        body = (
+            "The following camera(s) are configured with a resolution/FPS/pixel-format "
+            "combination that has not been empirically confirmed via "
+            "\"Validate camera capabilities\":\n\n"
+            + "\n".join(f"- {line}" for line in unvalidated)
+            + "\n\nStart the recording anyway?"
+        )
+        confirm = QMessageBox.question(
+            self,
+            "Unvalidated camera settings",
+            body,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return confirm == QMessageBox.StandardButton.Yes
 
     def _begin_start_sequence(self):
         if self._start_apply_thread and self._start_apply_thread.isRunning():

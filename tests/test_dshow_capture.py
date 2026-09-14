@@ -13,7 +13,6 @@ from recorder.video.dshow_capture import (_build_capabilities_from_formats,
                                           _find_format_index,
                                           _media_type_for_format_index,
                                           _normalize_formats, _sane_default,
-                                          _snap_to_common_fps,
                                           summarize_formats)
 
 
@@ -144,17 +143,6 @@ def test_build_capabilities_skips_nonpositive_dimensions():
     ])
     caps = _build_capabilities_from_formats(formats=formats)
     assert caps["modes"] == [{"width": 640, "height": 480, "fps": [30]}]
-
-
-# ---------------------------------------------------------------------------
-# _snap_to_common_fps
-# ---------------------------------------------------------------------------
-
-def test_snap_to_common_fps_picks_nearest_common_value():
-    """A noisy measured fps snaps to the nearest valid fps value."""
-    assert _snap_to_common_fps(value=29.4) == 30
-    assert _snap_to_common_fps(value=58.0) == 60
-    assert _snap_to_common_fps(value=23.7) == 24
 
 
 # ---------------------------------------------------------------------------

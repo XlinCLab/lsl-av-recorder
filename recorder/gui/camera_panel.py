@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import sys
 from typing import Any, Optional
 
-from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtCore import QSize, QThread, pyqtSignal
 from PyQt6.QtWidgets import (QCheckBox, QComboBox, QFormLayout, QHBoxLayout,
                              QLineEdit, QMessageBox, QPushButton, QSpinBox,
-                             QTextEdit, QVBoxLayout, QWidget)
+                             QStyle, QTextEdit, QVBoxLayout, QWidget)
 
 from ..config import VideoCamConfig
-from ..video.camera_settings import (apply_camera_controls,
+from ..video.camera_settings import (apply_camera_controls, combination_key,
                                      get_camera_capabilities,
+                                     load_validated_combinations,
                                      summarize_control_application)
 from ..video.constants import (BRIGHTNESS_RANGE, DEFAULT_BRIGHTNESS,
                                DEFAULT_CAMERA_FPS, DEFAULT_HUE,
@@ -19,6 +21,7 @@ from ..video.constants import (BRIGHTNESS_RANGE, DEFAULT_BRIGHTNESS,
                                V4L2_MANUAL_EXPOSURE_MODE,
                                V4L2_MANUAL_FOCUS_MODE)
 from ..video.devices import list_video_devices
+from .validate_capabilities import ValidateCapabilitiesDialog
 
 
 class _CapabilitiesThread(QThread):
@@ -88,6 +91,8 @@ class CameraPanel(QWidget):
     capabilitiesLoadStarted = pyqtSignal()
     capabilitiesLoadFinished = pyqtSignal()
     capabilitiesLoadProgress = pyqtSignal(int, str)
+    validateStarted = pyqtSignal()
+    validateFinished = pyqtSignal()
 
     _UNSELECTED_DEVICE_LABEL = "Select a camera..."
     _UNSET_VALUE_LABEL = "Not set"
@@ -163,12 +168,29 @@ class CameraPanel(QWidget):
         form_left.addRow("Resolution", self.resolution)
         form_left.addRow("Pixel format", self.pixel_format)
 
-        self.btn_mode_help = QPushButton("? Supported combinations")
-        self.btn_mode_help.setToolTip(
-            "Show every FPS/resolution/pixel-format combination confirmed to "
-            "work on this camera."
+        camera_settings_row = QHBoxLayout()
+        self.btn_validate_caps = QPushButton("Validate camera capabilities")
+        self.btn_validate_caps.setToolTip(
+            "Empirically confirm that this device can actually achieve "
+            "declared frame rate/resolution/pixel format values of interest."
         )
-        form_left.addRow("", self.btn_mode_help)
+        self.btn_mode_help = QPushButton()
+        self.btn_mode_help.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_TitleBarContextHelpButton)
+        )
+        self.btn_mode_help.setIconSize(QSize(16, 16))
+        self.btn_mode_help.setFixedSize(28, 28)
+        self.btn_mode_help.setToolTip(
+            "Show every FPS/resolution/pixel-format combination "
+            "declared to be supported on this camera device."
+        )
+        self.btn_apply = QPushButton("Apply settings")
+        camera_settings_row.addWidget(self.btn_mode_help)
+        camera_settings_row.addWidget(self.btn_validate_caps)
+        camera_settings_row.addWidget(self.btn_apply)
+        left_column = QVBoxLayout()
+        left_column.addLayout(form_left)
+        left_column.addLayout(camera_settings_row)
 
         form_right = QFormLayout()
         form_right.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
@@ -179,13 +201,12 @@ class CameraPanel(QWidget):
         form_right.addRow("Auto-focus", self.auto_focus)
 
         columns = QHBoxLayout()
-        columns.addLayout(form_left, 0)
+        columns.addLayout(left_column, 0)
         columns.addLayout(form_right, 0)
         columns.addStretch(1)
 
         self.btn_refresh_devices = QPushButton("Refresh video devices")
         self.btn_refresh_caps = QPushButton("Refresh device capabilities")
-        self.btn_apply = QPushButton("Apply settings")
         self.btn_remove = QPushButton("Remove camera")
         self.text = QTextEdit()
         self.text.setReadOnly(True)
@@ -193,7 +214,6 @@ class CameraPanel(QWidget):
         action_row = QHBoxLayout()
         action_row.addWidget(self.btn_refresh_devices)
         action_row.addWidget(self.btn_refresh_caps)
-        action_row.addWidget(self.btn_apply)
         action_row.addWidget(self.btn_remove)
 
         layout = QVBoxLayout()
@@ -212,6 +232,7 @@ class CameraPanel(QWidget):
             self.auto_exposure,
             self.auto_focus,
             self.btn_refresh_caps,
+            self.btn_validate_caps,
             self.btn_apply,
         ]
 
@@ -229,6 +250,7 @@ class CameraPanel(QWidget):
 
         self.btn_refresh_devices.clicked.connect(self.refresh_video_devices)
         self.btn_refresh_caps.clicked.connect(self.refresh_capabilities)
+        self.btn_validate_caps.clicked.connect(self.on_validate_capabilities)
         self.btn_apply.clicked.connect(self.on_apply)
         self.btn_mode_help.clicked.connect(self._show_supported_combinations)
         self.btn_remove.clicked.connect(lambda: self.removeRequested.emit(self))
@@ -356,18 +378,35 @@ class CameraPanel(QWidget):
             )
         return messages
 
+    def is_current_selection_validated(self) -> bool:
+        """True only if the currently selected pixel format/resolution/fps combination
+        has an empirical PASS recorded via "Validate camera capabilities"
+        on this exact device. Returns False for both an unvalidated
+        selection and an incomplete selection."""
+        pf = self._selected_pixel_format()
+        resolution = self._selected_resolution()
+        fps = self._selected_fps()
+        if pf is None or resolution is None or fps is None:
+            return False
+        width, height = resolution
+        validated = load_validated_combinations(sys.platform, self._device_cache_key())
+        result = validated.get(combination_key(pf, width, height, fps))
+        return bool(result and result.get("passed"))
+
     def set_remove_enabled(self, enabled: bool):
         self.btn_remove.setEnabled(enabled)
 
     def set_settings_controls_enabled(self, enabled: bool):
-        """Enable/disable Apply settings and Refresh device capabilities --
-        both probe or reconfigure this camera's device, which must not run
-        while a recording is active, since RunController's own capture may
-        be holding that same device open."""
+        """Enable/disable Apply settings, Refresh device capabilities, and
+        Validate camera capabilities: all three probe or reconfigure this
+        camera's device, which must not run while a recording is active,
+        since RunController's own capture may be holding that same device
+        open."""
         has_device = isinstance(self.device_name.currentData(), dict)
         final = enabled and has_device
         self.btn_apply.setEnabled(final)
         self.btn_refresh_caps.setEnabled(final)
+        self.btn_validate_caps.setEnabled(final)
 
     def _set_fps_choices(self, fps_values: list[int], current_fps: int | None):
         fps_sorted = sorted({int(x) for x in fps_values if int(x) > 0})
@@ -435,13 +474,25 @@ class CameraPanel(QWidget):
         data = self.pixel_format.currentData()
         return str(data).upper() if data else None
 
+    def _device_cache_key(self) -> str:
+        return self._device_name or self.devnode.text().strip() or "unknown"
+
     def _build_combos(self) -> None:
         """Flatten _modes_by_format into the (pixel_format, width, height, fps)
-        triples used to drive cascading selection and validation."""
+        triples used to drive cascading selection and validation, excluding
+        any combination empirically found NOT to work via "Validate camera
+        capabilities" on this exact device. A declared-but-disproven
+        combination should not still be offered as if it were viable; a
+        combination that's merely never been validated is left in (only a
+        confirmed failure removes it)."""
+        validated = load_validated_combinations(sys.platform, self._device_cache_key())
+        failed_keys = {key for key, result in validated.items() if result.get("passed") is False}
         combos: list[tuple[str, int, int, int]] = []
         for fmt, modes in self._modes_by_format.items():
             for w, h, fps_values in modes:
                 for f in fps_values:
+                    if combination_key(fmt, w, h, f) in failed_keys:
+                        continue
                     combos.append((fmt, int(w), int(h), int(f)))
         self._combos = combos
         self._combos_set = set(combos)
@@ -712,6 +763,43 @@ class CameraPanel(QWidget):
             if str(dev.get("name")) == name:
                 return int(dev.get("index", fallback_index)), str(dev.get("devnode") or fallback_devnode)
         return fallback_index, fallback_devnode
+
+    def on_validate_capabilities(self):
+        if not self._modes_by_format:
+            QMessageBox.information(
+                self, "Nothing to validate",
+                "No declared capabilities loaded yet for this camera. "
+                "Refresh device capabilities first.",
+            )
+            return
+        dev = self.devnode.text().strip()
+        idx = int(self.device_index.value())
+        dev_info = self.device_name.currentData()
+        device_name = None
+        if isinstance(dev_info, dict):
+            device_name = str(dev_info.get("name") or "").strip() or None
+        if not device_name:
+            device_name = self._device_name
+        idx, dev = self._resolve_device_identity_by_name(
+            name=device_name,
+            fallback_index=idx,
+            fallback_devnode=dev,
+        )
+        dialog = ValidateCapabilitiesDialog(
+            modes_by_format=self._modes_by_format,
+            devnode=dev,
+            device_index=idx,
+            device_name=device_name,
+            parent=self,
+        )
+        # Stop/restart this camera's live preview
+        dialog.validationStarted.connect(self.validateStarted.emit)
+        dialog.validationFinished.connect(self.validateFinished.emit)
+        dialog.exec()
+        # Remove combiantions that failed validation and mark combinations
+        # that passed validation as no longer unvalidated 
+        self._build_combos()
+        self._refresh_combo_choices(changed=None)
 
     def refresh_capabilities(self):
         if self._caps_loading:

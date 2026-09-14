@@ -2,21 +2,28 @@ import json
 import logging
 import re
 import sys
+import time
 from typing import Any, Dict
+
+import cv2
 
 from ..utils.constants import _project_root
 from ..utils.utils import (_extract_default, _extract_range, get_commit_hash,
                            run_capture_cmd)
-from ..video.avfoundation_capture import (mode_supported,
+from ..video.avfoundation_capture import (force_active_format, mode_supported,
                                           probe_avfoundation_capabilities)
 from ..video.constants import (AUTO_VALUE_BY_CONTROL, BRIGHTNESS_RANGE,
                                CAMERA_CAPS_CACHE, DEFAULT_CAMERA_FPS,
-                               HUE_RANGE, IS_LINUX, IS_MAC, IS_WINDOWS,
-                               MAC_UNSUPPORTED_CONTROLS, SATURATION_RANGE,
-                               V4L2_AUTO_EXPOSURE_MODE, V4L2_AUTO_FOCUS_MODE,
-                               V4L2_CONTROL_MAP, V4L2_MANUAL_EXPOSURE_MODE)
+                               DEFAULT_FPS_TOLERANCE,
+                               DEFAULT_VALIDATION_DURATION,
+                               DEFAULT_VALIDATION_WARMUP, HUE_RANGE, IS_LINUX,
+                               IS_MAC, IS_WINDOWS, MAC_UNSUPPORTED_CONTROLS,
+                               SATURATION_RANGE, V4L2_AUTO_EXPOSURE_MODE,
+                               V4L2_AUTO_FOCUS_MODE, V4L2_CONTROL_MAP,
+                               V4L2_MANUAL_EXPOSURE_MODE)
 from ..video.dshow_capture import (get_windows_camera_capabilities,
                                    set_windows_camera_controls)
+from .devices import resolve_cv2_device_index
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
@@ -62,6 +69,14 @@ def _store_cached_capabilities(
             data = {}
     if not isinstance(data, dict):
         data = {}
+    # This entry's own previously-recorded validated combinations (if any)
+    # survive a fresh re-probe at the same commit hash
+    existing_entry = data.get(cache_key)
+    validated = existing_entry.get("validated") if isinstance(existing_entry, dict) else None
+    new_entry: Dict[str, Any] = {"caps": caps}
+    if isinstance(validated, dict):
+        new_entry["validated"] = validated
+
     # Remove older entries for the same device on this OS (different commit hash).
     for key in list(data.keys()):
         if key == cache_key:
@@ -69,7 +84,70 @@ def _store_cached_capabilities(
         parts = str(key).split("|", 2)
         if len(parts) == 3 and parts[0] == os_name and parts[2] == device_name:
             data.pop(key, None)
-    data[cache_key] = {"caps": caps}
+    data[cache_key] = new_entry
+    try:
+        CAMERA_CAPS_CACHE.write_text(
+            json.dumps(data, indent=2, sort_keys=True, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except Exception:
+        return
+
+
+def combination_key(pixel_format: str, width: int, height: int, fps: float) -> str:
+    """Canonical, stable key for one (pixel format, resolution, fps)
+    combination, used both as a validated-combinations cache key and to
+    identify a combination through the GUI validation dialog."""
+    return f"{str(pixel_format).upper()}|{int(width)}x{int(height)}|{fps:g}"
+
+
+def load_validated_combinations(os_name: str, device_name: str) -> Dict[str, Dict[str, Any]]:
+    """Combination key (see `combination_key`) -> {"passed", "measured_fps",
+    "could_open", "validated_at"} for every combination empirically validated
+    on this device at the current commit."""
+    if not CAMERA_CAPS_CACHE.exists():
+        return {}
+    try:
+        data = json.loads(CAMERA_CAPS_CACHE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    cache_key = _capabilities_cache_key(os_name, get_commit_hash(_project_root()), device_name)
+    entry = data.get(cache_key)
+    if not isinstance(entry, dict):
+        return {}
+    validated = entry.get("validated")
+    return dict(validated) if isinstance(validated, dict) else {}
+
+
+def store_validated_combinations(
+    os_name: str,
+    device_name: str,
+    results: Dict[str, Dict[str, Any]],
+) -> None:
+    """Merge `results` into previously-recorded results for this device at
+    the current commit, rather than overwriting everything."""
+    try:
+        CAMERA_CAPS_CACHE.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        return
+    data: Dict[str, Any] = {}
+    if CAMERA_CAPS_CACHE.exists():
+        try:
+            data = json.loads(CAMERA_CAPS_CACHE.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+    if not isinstance(data, dict):
+        data = {}
+    cache_key = _capabilities_cache_key(os_name, get_commit_hash(_project_root()), device_name)
+    entry = data.get(cache_key)
+    entry = dict(entry) if isinstance(entry, dict) else {}
+    existing_validated = entry.get("validated")
+    merged = dict(existing_validated) if isinstance(existing_validated, dict) else {}
+    merged.update(results)
+    entry["validated"] = merged
+    data[cache_key] = entry
     try:
         CAMERA_CAPS_CACHE.write_text(
             json.dumps(data, indent=2, sort_keys=True, ensure_ascii=False),
@@ -362,6 +440,174 @@ def get_camera_capabilities(
             pass
     _store_cached_capabilities(cache_key, caps, os_name, name_key)
     return caps
+
+
+def _measure_open_capture_fps(
+        cap,
+        warmup: float = DEFAULT_VALIDATION_WARMUP,
+        duration: float = DEFAULT_VALIDATION_DURATION,
+    ) -> float | None:
+    """Shared measurement loop for any already-open capture object exposing
+    `read() -> (bool, frame)` (cv2.VideoCapture, used identically by the macOS
+    and Linux validators below). Discards a `warmup` window (auto-exposure/
+    bandwidth throttling settling, an initial burst of buffered frames) before
+    counting real delivered frames over `duration` seconds."""
+    warmup_end = time.monotonic() + warmup
+    while time.monotonic() < warmup_end:
+        cap.read()
+    count = 0
+    start = time.monotonic()
+    while time.monotonic() - start < duration:
+        ok, _ = cap.read()
+        if ok:
+            count += 1
+    elapsed = time.monotonic() - start
+    if elapsed <= 0 or count == 0:
+        return None
+    return count / elapsed
+
+
+def _mac_measure_achievable_fps(
+    device_index: int | None,
+    device_name: str | None,
+    width: int,
+    height: int,
+    pixel_format: str,
+    fps: float,
+    warmup: float = DEFAULT_VALIDATION_WARMUP,
+    duration: float = DEFAULT_VALIDATION_DURATION,
+    retries: int = 2,
+    retry_delay: float = 1.0,
+) -> tuple[float | None, bool]:
+    """[macOS] Open a real capture at this exact combination the same way VideoRecorder
+    does for an actual recording , then measure real delivered fps."""
+    could_open = False
+    for attempt in range(retries):
+        if attempt > 0:
+            time.sleep(retry_delay)
+        cv2_index = resolve_cv2_device_index(device_name, device_index)
+        cap = cv2.VideoCapture(cv2_index, cv2.CAP_AVFOUNDATION)
+        try:
+            if not cap.isOpened():
+                continue
+            could_open = True
+            forced = force_active_format(
+                device_index=device_index,
+                width=width,
+                height=height,
+                fps=fps,
+                pixel_format=pixel_format,
+                device_name=device_name,
+            )
+            if not forced:
+                continue
+            measured = _measure_open_capture_fps(cap, warmup=warmup, duration=duration)
+            if measured is not None:
+                return measured, True
+        finally:
+            cap.release()
+    return None, could_open
+
+
+def _linux_measure_achievable_fps(
+    devnode: str,
+    width: int,
+    height: int,
+    pixel_format: str,
+    fps: float,
+    warmup: float = DEFAULT_VALIDATION_WARMUP,
+    duration: float = DEFAULT_VALIDATION_DURATION,
+    retries: int = 2,
+    retry_delay: float = 1.0,
+) -> tuple[float | None, bool]:
+    """[Linux] Open a real capture at this exact combination the same way
+    VideoRecorder does for an actual recording , then measure real delivered fps."""
+    could_open = False
+    for attempt in range(retries):
+        if attempt > 0:
+            time.sleep(retry_delay)
+        cap = cv2.VideoCapture(devnode, cv2.CAP_V4L2)
+        try:
+            if not cap.isOpened():
+                continue
+            could_open = True
+            if pixel_format and len(str(pixel_format)) == 4:
+                cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*str(pixel_format).upper()))
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+            cap.set(cv2.CAP_PROP_FPS, fps)
+            measured = _measure_open_capture_fps(cap, warmup=warmup, duration=duration)
+            if measured is not None:
+                return measured, True
+        finally:
+            cap.release()
+    return None, could_open
+
+
+def validate_combination(
+    devnode: str,
+    device_index: int | None,
+    pixel_format: str,
+    width: int,
+    height: int,
+    fps: float,
+    device_name: str | None = None,
+    fps_tolerance: float = DEFAULT_FPS_TOLERANCE,
+    warmup: float = DEFAULT_VALIDATION_WARMUP,
+    duration: float = DEFAULT_VALIDATION_DURATION,
+) -> Dict[str, Any]:
+    """Open the device at this exact (pixel format, resolution, fps)
+    combination and measure real delivered throughput.
+
+    `fps_tolerance` is a fraction (0.15 = 15%): how far the measured rate may
+    diverge from the requested one, in either direction, before the
+    combination counts as failed.
+    `warmup`/`duration` (seconds) control how long to wait before measuring
+    and how long to measure for.
+
+    Returns {"passed": bool, "measured_fps": float | None, "could_open": bool}.
+    `passed` requires the device to open AND the measured rate to land within
+    +/-fps_tolerance of the requested fps.
+    """
+    if IS_WINDOWS:
+        from .dshow_capture import _windows_measure_achievable_fps
+        measured, could_open = _windows_measure_achievable_fps(
+            device_index=device_index,
+            width=width,
+            height=height,
+            pixel_format=pixel_format,
+            target_fps=fps,
+            warmup=warmup,
+            duration=duration,
+        )
+    elif IS_MAC:
+        measured, could_open = _mac_measure_achievable_fps(
+            device_index=device_index,
+            device_name=device_name,
+            width=width,
+            height=height,
+            pixel_format=pixel_format,
+            fps=fps,
+            warmup=warmup,
+            duration=duration,
+        )
+    elif IS_LINUX:
+        measured, could_open = _linux_measure_achievable_fps(
+            devnode=devnode,
+            width=width,
+            height=height,
+            pixel_format=pixel_format,
+            fps=fps,
+            warmup=warmup,
+            duration=duration,
+        )
+    else:
+        raise OSError(f"Unsupported OS: {sys.platform}")
+    passed = bool(
+        could_open and measured is not None
+        and (1 - fps_tolerance) * fps <= measured <= (1 + fps_tolerance) * fps
+    )
+    return {"passed": passed, "measured_fps": measured, "could_open": could_open}
 
 
 def get_control_settings_string(controls: dict) -> str:
