@@ -13,13 +13,13 @@ from datetime import datetime
 from typing import List, Optional
 
 from pylsl import StreamInfo
-from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
+from PyQt6.QtCore import QSize, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
                              QComboBox, QDoubleSpinBox, QFileDialog,
                              QFormLayout, QHBoxLayout, QLabel, QLineEdit,
                              QMainWindow, QMessageBox, QProgressDialog,
                              QPushButton, QScrollArea, QSizePolicy, QSpinBox,
-                             QSplitter, QTableWidget, QTableWidgetItem,
+                             QSplitter, QStyle, QTableWidget, QTableWidgetItem,
                              QTabWidget, QTextEdit, QVBoxLayout, QWidget)
 
 from ..audio.devices import (default_input_device_index,
@@ -300,10 +300,58 @@ class MainWindow(QMainWindow):
         idx = self.writer_drop_policy.findData(policy)
         if idx >= 0:
             self.writer_drop_policy.setCurrentIndex(idx)
-        bf.addRow("Audio buffer seconds", self.audio_buffer_seconds)
-        bf.addRow("Video buffer frames", self.video_buffer_frames)
-        bf.addRow("Writer queue size", self.writer_queue_size)
-        bf.addRow("When full", self.writer_drop_policy)
+        bf.addRow("Audio buffer seconds", self._with_help_icon(
+            self.audio_buffer_seconds,
+            "Audio buffer seconds",
+            "How many seconds of audio samples to accumulate locally before handing "
+            "them off as a single write task.\n\n"
+            "0 disables batching: every set of captured audio samples is queued "
+            "for writing individually, as soon as they arrive.\n\n"
+            ">0 values group multiple sets of captured samples into fewer, "
+            "larger writes, which reduces how many items land in the writer queue "
+            "per second (see 'Writer queue size').",
+        ))
+        bf.addRow("Video buffer frames", self._with_help_icon(
+            self.video_buffer_frames,
+            "Video buffer frames",
+            "How many frames' worth of timestamps/frame-indices to accumulate per "
+            "camera before handing them off as a single write task.\n\n"
+            "0 disables batching: every captured frame is queued for "
+            "writing individually.\n\n"
+            ">0 values group multiple frames from the same camera into "
+            "fewer, larger writes, which reduces how many items land in the writer "
+            "queue per second (see 'Writer queue size').",
+        ))
+        bf.addRow("Writer queue size", self._with_help_icon(
+            self.writer_queue_size,
+            "Writer queue size",
+            "Maximum number of pending write tasks (from audio and every camera, "
+            "combined) held in memory between capture and background XDF disk writing.\n\n"
+            "This decouples time-sensitive stream capture from disk I/O jitter: "
+            "a capture thread simply adds a task to this queue, "
+            "instead of blocking further capture due to a slow write to disk.\n\n"
+            "Batching ('Audio buffer seconds'/'Video buffer frames') reduces how "
+            "many tasks are enqueued per second, so the same queue size then covers "
+            "a longer time buffer before it can fill up, but at the cost of more "
+            "memory per queued task (each task now holds more data).\n\n"
+            "If the queue does fill up, the 'When full' policy decides what happens next."
+        ))
+        bf.addRow("When full", self._with_help_icon(
+            self.writer_drop_policy,
+            "When full (writer queue drop policy)",
+            "What to do when the writer queue is full and a new write task needs to "
+            "be enqueued:\n\n"
+            "- Drop oldest (recommended): discard the oldest still-queued task to "
+            "free up space, so capture threads are never blocked. Some already-buffered "
+            "(older) data is lost, but capture is never stalled.\n\n"
+            "- Drop newest (incoming): discard the new task instead, keeping "
+            "whatever was already queued. Newer data is lost instead of older data.\n\n"
+            "- Block capture thread: wait briefly for space to free up rather than "
+            "dropping anything, guaranteeing no data loss here. However, this can stall "
+            "the capture thread itself if the disk cannot keep up, risking "
+            "dropped/delayed frames further upstream (e.g. in the camera driver) "
+            "instead of a controlled drop in this queue.",
+        ))
         buffering_widget.setLayout(bf)
         self.tabs.addTab(buffering_widget, "Buffering")
         self.audio_buffer_seconds.valueChanged.connect(
@@ -535,6 +583,19 @@ class MainWindow(QMainWindow):
     def _log_gui_change(self, field: str, value):
         """Log a GUI setting change."""
         self.log(f"Setting changed: {field} = {value!r}")
+
+    def _with_help_icon(self, widget: QWidget, title: str, text: str) -> QHBoxLayout:
+        """Wrap `widget` with a trailing "?" icon button containing help/additional information."""
+        btn_help = QPushButton()
+        btn_help.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TitleBarContextHelpButton))
+        btn_help.setIconSize(QSize(12, 12))
+        btn_help.setFixedSize(24, 24)
+        #btn_help.setToolTip(text)
+        btn_help.clicked.connect(lambda: QMessageBox.information(self, title, text))
+        row = QHBoxLayout()
+        row.addWidget(widget)
+        row.addWidget(btn_help)
+        return row
 
     def _open_app_session_log(self):
         """Open the app-level session log file for the lifetime of this
