@@ -215,11 +215,8 @@ def test_recorder_has_no_dtype_for_string_stream(monkeypatch, xdf_path):
     sid = add_marker_stream(w)
 
     _patch_inlet(monkeypatch, object())
-    rec = LslInletRecorder(
-        stream_info=_FakeStringStreamInfo(),
-        stream_id=sid,
-        xdf_writer=w,
-    )
+    rec = LslInletRecorder(stream_info=_FakeStringStreamInfo())
+    rec.attach_output(w, sid)
     w.stop()
 
     assert rec.xdf_format == "string"
@@ -234,11 +231,8 @@ def test_recorder_writes_string_samples_via_process_chunk(monkeypatch, xdf_path)
     sid = add_marker_stream(w)
 
     _patch_inlet(monkeypatch, object())  # inlet.pull_chunk() isn't used by this test
-    rec = LslInletRecorder(
-        stream_info=_FakeStringStreamInfo(),
-        stream_id=sid,
-        xdf_writer=w,
-    )
+    rec = LslInletRecorder(stream_info=_FakeStringStreamInfo())
+    rec.attach_output(w, sid)
 
     # Mirrors what StreamInlet.pull_chunk() hands back for a cf_string inlet:
     # a list of samples, each itself a list of decoded str (one per channel)
@@ -263,15 +257,42 @@ def test_recorder_ignores_empty_chunk(monkeypatch, xdf_path):
     sid = add_marker_stream(w)
 
     _patch_inlet(monkeypatch, object())
-    rec = LslInletRecorder(
-        stream_info=_FakeStringStreamInfo(),
-        stream_id=sid,
-        xdf_writer=w,
-    )
+    rec = LslInletRecorder(stream_info=_FakeStringStreamInfo())
+    rec.attach_output(w, sid)
     rec._process_chunk(samples=[], timestamps=[])
     w.stop()
 
     assert load_by_name(xdf_path)[MARKER_STREAM_NAME]["time_series"] == []
+
+
+def test_recorder_discards_chunks_pulled_before_attach_output(monkeypatch, xdf_path):
+    """A chunk processed before attach_output() has been called (i.e. still
+    in the video/audio-matching warm-up window) is discarded, not written.
+    Once attached, subsequent chunks are written normally."""
+    w = XDFWriter(xdf_path)
+    w.start()
+    sid = add_marker_stream(w)
+
+    _patch_inlet(monkeypatch, object())
+    rec = LslInletRecorder(stream_info=_FakeStringStreamInfo())
+    assert rec.xdf_writer is None
+    assert rec.stream_id is None
+
+    # Not yet attached: must not raise error (no xdf_writer to write into)
+    # and must not write anything
+    rec._process_chunk(samples=[["Stimulus/S1"]], timestamps=[10.0])
+
+    rec.attach_output(w, sid)
+    assert rec.xdf_writer is w
+    assert rec.stream_id == sid
+
+    rec._process_chunk(samples=[["Stimulus/S2"]], timestamps=[11.0])
+    w.stop()
+
+    markers = load_by_name(xdf_path)[MARKER_STREAM_NAME]
+    # Only the post-attach chunk was written; the pre-attach one was discarded
+    assert markers["time_series"] == [["Stimulus/S2"]]
+    np.testing.assert_allclose(markers["time_stamps"], [11.0])
 
 
 def test_pyxdf_reads_back_multichannel_string_samples(xdf_path):

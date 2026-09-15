@@ -188,8 +188,7 @@ class RunController:
         xdf_writer.start()
         self.info(f"XDF writer started")
         self._add_streams_to_xdf_writer(xdf_writer)
-        self._initialize_lsl_recorders(xdf_writer)
-        self._start_lsl_recorders()
+        self._attach_lsl_recorders(xdf_writer)
 
         # Once all streams initialized, started, and added to XDF writer,
         # connect XDF writer to RunController to begin recording stream data to XDF
@@ -338,21 +337,15 @@ class RunController:
             return None
         return extract_channel_info(full_info) or None
 
-    def _initialize_lsl_recorders(self, xdf_writer: XDFWriter):
+    def _initialize_lsl_recorders(self):
+        """Create (connect) an LslInletRecorder for each discovered LSL stream."""
         self.lsl_recorders = []
         if not self.lsl_streams:
             return
         for stream in self.lsl_streams:
             try:
-                sid = xdf_writer.streams.get(f"lsl:{stream.uid()}")
-                if sid is None:
-                    self.warning(f"LSL stream not registered in XDF: {stream.name()}")
-                    continue
                 rec = LslInletRecorder(
                     stream_info=stream,
-                    stream_id=sid,
-                    xdf_writer=xdf_writer,
-                    clock_offset_interval_s=xdf_writer._clock_offset_interval_s,
                     status_cb=self.log,
                 )
                 self.lsl_recorders.append(rec)
@@ -363,6 +356,16 @@ class RunController:
     def _start_lsl_recorders(self):
         for rec in self.lsl_recorders:
             rec.start()
+
+    def _attach_lsl_recorders(self, xdf_writer: XDFWriter):
+        """Wire each already-running LslInletRecorder up to actually write
+        into the XDF file."""
+        for rec in self.lsl_recorders:
+            sid = xdf_writer.streams.get(f"lsl:{rec.stream_info.uid()}")
+            if sid is None:
+                self.warning(f"LSL stream not registered in XDF: {rec.stream_info.name()}")
+                continue
+            rec.attach_output(xdf_writer, sid)
 
     def _stop_lsl_recorders(self):
         for rec in self.lsl_recorders:
@@ -455,6 +458,9 @@ class RunController:
                 self._video_idx_buf.setdefault(cam.Label, [])
                 self._initialize_video_stream(cam)
 
+        # Initialize external LSL stream inlets
+        self._initialize_lsl_recorders()
+
     def _start_streams(self, sleep_timer: float | int = 3):
         # NB: Start video before audio
         if self.video_enabled:
@@ -476,6 +482,9 @@ class RunController:
         if self.audio_enabled:
             self.audio.start()
             self.info("Audio capture started")
+        if self.lsl_recorders:
+            self._start_lsl_recorders()
+            self.info(f"Started {len(self.lsl_recorders)} LSL inlet(s)")
         # Sleep for N seconds before continuing in order
         # to give the streams a chance to "warm up"
         sleep(sleep_timer)

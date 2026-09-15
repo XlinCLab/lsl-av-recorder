@@ -229,11 +229,8 @@ def test_recorder_forwards_time_correction_unmodified(monkeypatch, xdf_path):
     sid = add_eeg_stream(w)
 
     _patch_inlet(monkeypatch, FakeInlet())
-    rec = LslInletRecorder(
-        stream_info=_FakeStreamInfo(),
-        stream_id=sid,
-        xdf_writer=w,
-    )
+    rec = LslInletRecorder(stream_info=_FakeStreamInfo())
+    rec.attach_output(w, sid)
 
     before = local_clock()
     rec._record_clock_offset()
@@ -266,10 +263,9 @@ def test_recorder_skips_offset_on_timeout(monkeypatch, xdf_path):
     _patch_inlet(monkeypatch, FakeInlet())
     rec = LslInletRecorder(
         stream_info=_FakeStreamInfo(),
-        stream_id=sid,
-        xdf_writer=w,
         status_cb=lambda msg, loglevel: logs.append((loglevel, msg)),
     )
+    rec.attach_output(w, sid)
 
     rec._record_clock_offset()  # must not raise error
     w.write_lsl_samples(

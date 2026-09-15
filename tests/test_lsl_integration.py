@@ -87,11 +87,10 @@ def test_lsl_inlet_recorder_receives_real_outlet(xdf_path):
     logs = []
     rec = LslInletRecorder(
         stream_info=stream_info,
-        stream_id=sid,
-        xdf_writer=w,
         clock_offset_interval_s=1.0,
         status_cb=lambda msg, loglevel: logs.append((loglevel, msg)),
     )
+    rec.attach_output(w, sid)
     # Force the data connection to be live before any samples are pushed
     rec.inlet.open_stream(timeout=5.0)
     rec.start()

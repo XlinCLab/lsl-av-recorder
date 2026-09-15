@@ -64,12 +64,12 @@ class LslInletRecorder:
     def __init__(
         self,
         stream_info: StreamInfo,
-        stream_id: int,
-        xdf_writer: XDFWriter,
         chunk_size: int = 128,
         pull_timeout: float = 0.1,
         clock_offset_interval_s: float = 5.0,
         time_correction_timeout: float = 5.0,
+        stream_id: Optional[int] = None,
+        xdf_writer: Optional[XDFWriter] = None,
         status_cb: Optional[Callable[[str, str], None]] = None,
     ):
         self.stream_info = stream_info
@@ -89,6 +89,11 @@ class LslInletRecorder:
         self.xdf_format = fmt
         self.dtype = dtype
 
+    def attach_output(self, xdf_writer: XDFWriter, stream_id: int):
+        self.xdf_writer = xdf_writer
+        self.stream_id = stream_id
+        self._next_offset_at = 0.0
+
     def log(self, msg: str, loglevel: str = "INFO"):
         if self.status_cb:
             self.status_cb(msg, loglevel)
@@ -103,6 +108,8 @@ class LslInletRecorder:
         if self._running:
             return
         self._running = True
+        # 0.0 forces the offset loop's first iteration to measure right away
+        self._next_offset_at = 0.0
         uid = self.stream_info.uid()
         self._thread = threading.Thread(
             target=self._loop, name=f"LSLInlet-{uid}", daemon=True
@@ -133,7 +140,7 @@ class LslInletRecorder:
             self._process_chunk(samples, timestamps)
 
     def _process_chunk(self, samples, timestamps):
-        if not timestamps:
+        if not timestamps or self.xdf_writer is None:
             return
         # String samples (e.g. marker/trigger streams) have no fixed dtype
         values = samples if self.dtype is None else np.asarray(samples, dtype=self.dtype)
@@ -141,14 +148,10 @@ class LslInletRecorder:
         self.xdf_writer.write_lsl_samples(self.stream_id, ts, values)
 
     def _offset_loop(self):
-        # Take an initial measurement immediately so the file has an early
-        # anchor, then repeat on the configured interval.
-        self._record_clock_offset()
-        next_t = self._next_t()
         while self._running:
-            if time.monotonic() >= next_t:
+            if time.monotonic() >= self._next_offset_at:
                 self._record_clock_offset()
-                next_t = self._next_t()
+                self._next_offset_at = self._next_t()
             time.sleep(0.05)
 
     def _next_t(self):
@@ -170,6 +173,8 @@ class LslInletRecorder:
             return
         except Exception as exc:
             self.warning(f"time_correction failed for <{self.stream_info.name()}>: {exc}")
+            return
+        if self.xdf_writer is None:
             return
         try:
             self.xdf_writer.record_clock_offset(self.stream_id, offset=offset, now=now)
