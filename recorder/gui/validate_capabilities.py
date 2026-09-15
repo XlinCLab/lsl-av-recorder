@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys
 from typing import Any, Dict, List, Optional, Tuple
 
-from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import (QCheckBox, QDialog, QDoubleSpinBox, QGridLayout,
                              QGroupBox, QHBoxLayout, QLabel, QMessageBox,
                              QProgressBar, QPushButton, QSpinBox, QTableWidget,
@@ -168,6 +168,31 @@ class _ValidateCombinationsThread(QThread):
             self.failed.emit(str(exc))
 
 
+class _SortableItem(QTableWidgetItem):
+    """QTableWidgetItem that sorts by an explicit `sort_key` instead of its
+    display text, in order to correctly sort numeric/tuple values."""
+
+    def __init__(self, text: str, sort_key):
+        super().__init__(text)
+        self._sort_key = sort_key
+
+    def __lt__(self, other):
+        if isinstance(other, _SortableItem):
+            return self._sort_key < other._sort_key
+        return super().__lt__(other)
+
+
+def _result_status_rank(result: Optional[Dict[str, Any]]) -> int:
+    """Sort key for the Result column: worst to best."""
+    if result is None:
+        return -1
+    if result.get("passed"):
+        return 2
+    if not result.get("could_open", True):
+        return 0
+    return 1
+
+
 def _make_checkbox_grid(values: List, formatter=str) -> Tuple[QWidget, Dict[Any, QCheckBox]]:
     """Just the wrapping grid of checkboxes -- select-all/deselect-all is
     handled once, collectively, at the dialog level (see
@@ -324,6 +349,7 @@ class ValidateCapabilitiesDialog(QDialog):
             ["Pixel format", "Resolution", "FPS", "Result", "Measured FPS", "Measured resolution"]
         )
         self.results_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.results_table.setSortingEnabled(True)
 
         self.btn_close = QPushButton("Save and close")
         self.btn_close.setToolTip(
@@ -404,39 +430,58 @@ class ValidateCapabilitiesDialog(QDialog):
         cached = load_validated_combinations(sys.platform, self._device_key())
         tolerance = self.fps_tolerance_spin.value() / 100.0
         self._displayed_combos = self._matching_combos()
+        was_sorting = self.results_table.isSortingEnabled()
+        self.results_table.setSortingEnabled(False)
         self.results_table.setRowCount(len(self._displayed_combos))
         for row, (pf, w, h, fps) in enumerate(self._displayed_combos):
             key = combination_key(pf, w, h, fps)
             result = self._pending_results.get(key) or cached.get(key)
             self._set_result_row(row, pf, w, h, fps, _effective_result(result, w, h, fps, tolerance))
+        self.results_table.setSortingEnabled(was_sorting)
 
     def _set_result_row(
         self, row: int, pixel_format: str, width: int, height: int, fps: float,
         result: Optional[Dict[str, Any]],
     ):
-        self.results_table.setItem(row, 0, QTableWidgetItem(pixel_format))
-        self.results_table.setItem(row, 1, QTableWidgetItem(f"{width}x{height}"))
-        self.results_table.setItem(row, 2, QTableWidgetItem(f"{fps:g}"))
-        if result is None:
-            status, measured_fps, measured_res = "", "", ""
-        elif result.get("passed"):
-            status = "✅ PASS"
-            measured_fps = f"{result.get('measured_fps'):.2f}" if result.get("measured_fps") is not None else ""
-            measured_res = f"{result.get('measured_width')}x{result.get('measured_height')}"
-        elif not result.get("could_open", True):
-            status, measured_fps, measured_res = "❌ NOT SUPPORTED", "", ""
-        else:
-            status = "⚠️ FAIL"
-            measured_fps = f"{result.get('measured_fps'):.2f}" if result.get("measured_fps") is not None else "n/a"
-            mw, mh = result.get("measured_width"), result.get("measured_height")
-            measured_res = f"{mw}x{mh}" if mw is not None and mh is not None else "n/a"
-        self.results_table.setItem(row, 3, QTableWidgetItem(status))
-        self.results_table.setItem(row, 4, QTableWidgetItem(measured_fps))
-        self.results_table.setItem(row, 5, QTableWidgetItem(measured_res))
+        # NB: Sorting is disabled and then re-applied on every setItem call
+        was_sorting = self.results_table.isSortingEnabled()
+        self.results_table.setSortingEnabled(False)
+        try:
+            pf_item = QTableWidgetItem(pixel_format)
+            pf_item.setData(Qt.ItemDataRole.UserRole, (pixel_format, width, height, fps))
+            self.results_table.setItem(row, 0, pf_item)
+            self.results_table.setItem(row, 1, _SortableItem(f"{width}x{height}", (width, height)))
+            self.results_table.setItem(row, 2, _SortableItem(f"{fps:g}", fps))
+            if result is None:
+                status, measured_fps, measured_res = "", "", ""
+                measured_fps_key, measured_res_key = -1.0, (-1, -1)
+            elif result.get("passed"):
+                status = "✅ PASS"
+                measured_fps = f"{result.get('measured_fps'):.2f}" if result.get("measured_fps") is not None else ""
+                measured_res = f"{result.get('measured_width')}x{result.get('measured_height')}"
+                measured_fps_key = result.get("measured_fps") or -1.0
+                measured_res_key = (result.get("measured_width") or -1, result.get("measured_height") or -1)
+            elif not result.get("could_open", True):
+                status, measured_fps, measured_res = "❌ NOT SUPPORTED", "", ""
+                measured_fps_key, measured_res_key = -1.0, (-1, -1)
+            else:
+                status = "⚠️ FAIL"
+                measured_fps = f"{result.get('measured_fps'):.2f}" if result.get("measured_fps") is not None else "n/a"
+                mw, mh = result.get("measured_width"), result.get("measured_height")
+                measured_res = f"{mw}x{mh}" if mw is not None and mh is not None else "n/a"
+                measured_fps_key = result.get("measured_fps") or -1.0
+                measured_res_key = (mw or -1, mh or -1)
+            self.results_table.setItem(row, 3, _SortableItem(status, _result_status_rank(result)))
+            self.results_table.setItem(row, 4, _SortableItem(measured_fps, measured_fps_key))
+            self.results_table.setItem(row, 5, _SortableItem(measured_res, measured_res_key))
+        finally:
+            self.results_table.setSortingEnabled(was_sorting)
 
     def _row_for_combo(self, pixel_format: str, width: int, height: int, fps: float) -> Optional[int]:
-        for row, (pf, w, h, f) in enumerate(self._displayed_combos):
-            if pf == pixel_format and w == width and h == height and f == fps:
+        target = (pixel_format, width, height, fps)
+        for row in range(self.results_table.rowCount()):
+            item = self.results_table.item(row, 0)
+            if item is not None and item.data(Qt.ItemDataRole.UserRole) == target:
                 return row
         return None
 
