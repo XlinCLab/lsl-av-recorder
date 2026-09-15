@@ -37,6 +37,14 @@ COMMON_FPS_VALUES = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20, 24, 25, 30, 50, 60, 
 # Pixel format
 DEFAULT_PIXEL_FORMAT = "YUYV"
 
+# Parameters for empirical capability validation
+DEFAULT_FPS_TOLERANCE = 0.10
+FPS_TOLERANCE_RANGE = (0.0, 0.20)
+DEFAULT_VALIDATION_WARMUP = 2.0
+DEFAULT_VALIDATION_DURATION = 2.0
+VALIDATION_WARMUP_RANGE = (2.0, 10.0)
+VALIDATION_DURATION_RANGE = (2.0, 10.0)
+
 # UI -> v4l2 control label mapping
 V4L2_CONTROL_MAP = {
     "auto_exposure": "exposure_auto",

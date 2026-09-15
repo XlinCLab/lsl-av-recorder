@@ -13,9 +13,11 @@ import numpy as np
 from ..video.constants import (CAMERA_CONTROL_EXPOSURE,
                                CAMERA_CONTROL_FLAGS_AUTO,
                                CAMERA_CONTROL_FLAGS_MANUAL,
-                               CAMERA_CONTROL_FOCUS, COMMON_FPS_VALUES,
-                               DEFAULT_BRIGHTNESS, DEFAULT_HUE,
-                               DEFAULT_SATURATION, VIDEO_PROC_AMP_BRIGHTNESS,
+                               CAMERA_CONTROL_FOCUS, DEFAULT_BRIGHTNESS,
+                               DEFAULT_HUE, DEFAULT_SATURATION,
+                               DEFAULT_VALIDATION_DURATION,
+                               DEFAULT_VALIDATION_WARMUP,
+                               VIDEO_PROC_AMP_BRIGHTNESS,
                                VIDEO_PROC_AMP_FLAGS_MANUAL, VIDEO_PROC_AMP_HUE,
                                VIDEO_PROC_AMP_SATURATION)
 
@@ -125,48 +127,31 @@ def _build_capabilities_from_formats(formats: List[Dict[str, Any]]) -> Dict[str,
     return caps
 
 
-def _snap_to_common_fps(value: float) -> int:
-    return min(COMMON_FPS_VALUES, key=lambda f: abs(f - value))
-
-
-def _measure_achievable_fps(
+def _windows_measure_achievable_fps(
     device_index: int,
     width: int,
     height: int,
     pixel_format: str,
     target_fps: float,
-    warmup: float = 2.0,
-    duration: float = 2.0,
+    warmup: float = DEFAULT_VALIDATION_WARMUP,
+    duration: float = DEFAULT_VALIDATION_DURATION,
     retries: int = 2,
     retry_delay: float = 1.0,
-) -> tuple[Optional[float], bool]:
+) -> tuple[Optional[float], bool, Optional[int], Optional[int]]:
     """Briefly open a real capture at the given format/resolution/fps and
-    measure the actual delivered frame rate.
+    measure the actual delivered frame rate and resolution.
 
-    Returns (measured_fps, could_open). `could_open` is False only if every
-    attempt failed to even construct/open the capture -- e.g. DirectShow
-    raising VFW_E_CANNOT_CONNECT because no compatible filter chain exists to
-    convert this pixel format to what the sample grabber requests. That's a
-    deterministic, hardware/OS-level failure (retrying changes nothing), as
-    opposed to opening fine but failing to measure any valid frames, which is
-    more plausibly a one-off timing issue.
-
-    DirectShow's IAMStreamConfig::GetStreamCaps has been observed to declare an
-    optimistic maximum (e.g. 60fps) that the device doesn't actually sustain in
-    practice (measured ~30fps) -- capability probing shouldn't just trust that
-    declaration, the same way macOS probing doesn't just trust AVFoundation's
-    self-reported modes without confirming each one actually opens.
+    Returns (measured_fps, could_open, actual_width, actual_height).
+    `could_open` is False only if every attempt failed to even
+    construct/open the capture, e.g. DirectShow raising VFW_E_CANNOT_CONNECT
+    because no compatible filter chain exists to convert this pixel format to
+    what the sample grabber requests. `actual_width`/`actual_height` are the
+    resolution DirectShow actually negotiated (`WindowsDShowVideoCapture.
+    actual_width/height`, read right after opening).
 
     `warmup` is discarded (not counted) before measuring: auto-exposure/
     bandwidth throttling can take a moment to kick in, and an initial burst of
     buffered frames right after opening could otherwise inflate the measurement.
-
-    Retries on failure to open or deliver any frames: the device may still be
-    releasing from whatever previously had it open (e.g. the live preview,
-    typically at whatever resolution/format was just in use) by the time the
-    first combination is probed -- observed in practice as exactly the
-    currently-configured resolution silently keeping its optimistic declared
-    max uncorrected, while every other resolution corrected fine.
     """
     could_open = False
     for attempt in range(retries):
@@ -181,15 +166,14 @@ def _measure_achievable_fps(
                 fps=target_fps,
             )
         except Exception as exc:
-            logger.info(
-                f"FPS verify: {pixel_format} {width}x{height} attempt {attempt + 1}/{retries} "
-                f"could not open capture: {exc}"
-            )
+            if attempt + 1 == retries:
+                logger.debug(f"Could not open capture: {pixel_format} {width}x{height} | {exc}")
             continue
         could_open = True
         try:
             if not cap.isOpened():
                 continue
+            actual_width, actual_height = cap.actual_width, cap.actual_height
             warmup_end = time.monotonic() + warmup
             while time.monotonic() < warmup_end:
                 cap.read(timeout=0.5)
@@ -202,100 +186,17 @@ def _measure_achievable_fps(
             elapsed = time.monotonic() - start
             if elapsed <= 0 or count == 0:
                 continue
-            return count / elapsed, True
+            return count / elapsed, True, actual_width, actual_height
         finally:
             cap.release()
-    return None, could_open
-
-
-def _verify_max_framerates(
-    device_index: int,
-    formats: List[Dict[str, Any]],
-    progress_cb: Optional[Callable[[int, str], None]] = None,
-) -> List[Dict[str, Any]]:
-    """Correct each unique (pixel format, resolution) combination's declared
-    maximum fps against what's actually measured, clamping it down if the
-    driver's declaration is optimistic -- so the GUI never offers, and users
-    never select, a rate the camera can't really sustain.
-
-    Combinations that can never actually be opened on this system (e.g. no
-    compatible DirectShow filter chain to convert that pixel format to what
-    the sample grabber requests) are dropped entirely rather than merely left
-    with an unverified fps -- declaring a mode "supported" here only for the
-    GUI to offer it and preview/recording to then fail opening it the exact
-    same way would be worse than not offering it at all."""
-    unique_combos: dict[tuple[str, int, int], float] = {}
-    for fmt in formats:
-        key = (str(fmt["media_type_str"]).upper(), int(fmt["width"]), int(fmt["height"]))
-        unique_combos[key] = max(unique_combos.get(key, 0.0), float(fmt["max_framerate"]))
-
-    corrections: dict[tuple[str, int, int], float] = {}
-    unsupported: set[tuple[str, int, int]] = set()
-    total = len(unique_combos)
-    for i, ((pf, w, h), declared_max) in enumerate(unique_combos.items(), start=1):
-        if progress_cb:
-            try:
-                progress_cb(
-                    int(100 * i / max(1, total)),
-                    f"Testing device FPS capabilities ({i}/{total}): {pf} {w}x{h}",
-                )
-            except Exception:
-                pass
-        measured, could_open = _measure_achievable_fps(device_index, w, h, pf, declared_max)
-        if not could_open:
-            logger.warning(
-                f"FPS verify: {pf} {w}x{h} could not be opened on this system after "
-                "all retries (not a transient failure) -- excluding this combination "
-                "from supported capabilities"
-            )
-            unsupported.add((pf, w, h))
-            continue
-        if measured is None:
-            logger.warning(
-                f"FPS verify: {pf} {w}x{h} declared_max={declared_max} "
-                "-> measurement FAILED (opened but delivered no frames), leaving declared value as-is"
-            )
-            continue
-        snapped = _snap_to_common_fps(measured)
-        # Only correct on a real gap, not measurement noise around the
-        # declared value -- but tight enough to still catch a partial (not
-        # just total) shortfall, e.g. a declared 60fps that only reaches ~50.
-        will_correct = snapped < declared_max * 0.85
-        logger.debug(
-            f"FPS verify: {pf} {w}x{h} declared_max={declared_max} "
-            f"measured={measured:.2f} snapped={snapped} "
-            f"-> {'CORRECTING to ' + str(snapped) if will_correct else 'keeping declared value (within tolerance)'}"
-        )
-        if will_correct:
-            corrections[(pf, w, h)] = float(snapped)
-
-    filtered_formats = [
-        fmt for fmt in formats
-        if (str(fmt["media_type_str"]).upper(), int(fmt["width"]), int(fmt["height"])) not in unsupported
-    ]
-    if unsupported:
-        logger.info(f"FPS verify: excluded {len(unsupported)} unopenable combination(s): {sorted(unsupported)}")
-
-    if not corrections:
-        if not unsupported:
-            logger.info("FPS verify: no corrections applied to any (format, resolution) combination")
-        return filtered_formats
-
-    logger.info(f"FPS verify: applying corrections to {len(corrections)} combination(s): {corrections}")
-    corrected_formats = []
-    for fmt in filtered_formats:
-        key = (str(fmt["media_type_str"]).upper(), int(fmt["width"]), int(fmt["height"]))
-        if key in corrections:
-            fmt = dict(fmt)
-            fmt["max_framerate"] = min(float(fmt["max_framerate"]), corrections[key])
-        corrected_formats.append(fmt)
-    return corrected_formats
+    return None, could_open, None, None
 
 
 def get_windows_camera_capabilities(
     device_index: int,
     progress_cb: Optional[Callable[[int, str], None]] = None,
 ) -> Dict[str, Any]:
+    """Retrieve camera device's declared capabilities."""
     with _com_session():
         from pygrabber.dshow_graph import FilterGraph
 
@@ -304,7 +205,6 @@ def get_windows_camera_capabilities(
         formats = _normalize_formats(graph.get_input_device().get_formats())
         del graph  # release COM references before CoUninitialize runs
 
-    formats = _verify_max_framerates(device_index, formats, progress_cb=progress_cb)
     caps = _build_capabilities_from_formats(formats)
     if progress_cb:
         try:

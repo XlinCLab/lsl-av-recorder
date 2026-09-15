@@ -18,9 +18,11 @@ from recorder.video.camera_settings import (
     _capabilities_cache_key, _empty_capabilities, _linux_camera_capabilities,
     _load_cached_capabilities, _mac_camera_capabilities, _parse_v4l2_menu,
     _pick_v4l2_menu_value, _store_cached_capabilities,
-    _validate_against_windows_capabilities, format_control_value,
-    get_control_settings_string, set_camera_controls, set_frame_rate,
-    summarize_control_application)
+    _validate_against_windows_capabilities, combination_key,
+    format_control_value, get_control_settings_string,
+    load_validated_combinations, set_camera_controls, set_frame_rate,
+    store_validated_combinations, summarize_control_application,
+    validate_combination)
 
 # ---------------------------------------------------------------------------
 # _capabilities_cache_key / _empty_capabilities
@@ -282,6 +284,167 @@ def test_cache_store_keeps_other_devices(cache_file):
     )
     data = json.loads(cache_file.read_text())
     assert set(data.keys()) == {f"{os_name}|hash1|CamA", f"{os_name}|hash2|CamB"}
+
+
+# ---------------------------------------------------------------------------
+# combination_key / validated-combinations cache
+# ---------------------------------------------------------------------------
+
+def test_combination_key_is_stable_and_uppercases_pixel_format():
+    assert combination_key("mjpg", 1920, 1080, 50) == "MJPG|1920x1080|50"
+    assert combination_key("MJPG", 1920, 1080, 50.0) == "MJPG|1920x1080|50"
+
+
+def test_validated_combinations_round_trip(cache_file):
+    results = {
+        "MJPG|1920x1080|50": {
+            "passed": False,
+            "measured_fps": 58.3,
+            "validated_at": "2026-09-14T10:40:00",
+        },
+    }
+    store_validated_combinations(
+        os_name="win32",
+        device_name="Cam2",
+        results=results,
+    )
+    assert load_validated_combinations("win32", "Cam2") == results
+
+
+def test_validated_combinations_empty_when_never_stored(cache_file):
+    assert load_validated_combinations("win32", "Unknown Cam") == {}
+
+
+def test_validated_combinations_merges_rather_than_overwrites(cache_file):
+    """Validating a new combination doesn't discard results from an earlier
+    validation run for the same device."""
+    store_validated_combinations(
+        os_name="win32",
+        device_name="Cam2",
+        results={
+            "MJPG|1920x1080|50": {
+                "passed": False,
+                "measured_fps": 58.3,
+                "validated_at": "t1",
+            }
+        },
+    )
+    store_validated_combinations(
+        os_name="win32",
+        device_name="Cam2",
+        results={
+            "MJPG|1920x1080|30": {
+                "passed": True,
+                "measured_fps": 29.9,
+                "validated_at": "t2",
+            }
+        },
+    )
+    result = load_validated_combinations("win32", "Cam2")
+    assert set(result.keys()) == {"MJPG|1920x1080|50", "MJPG|1920x1080|30"}
+
+
+def test_validated_combinations_preserved_across_same_commit_recapture(monkeypatch, cache_file):
+    """Storing a fresh declarative capabilities entry for the same device at
+    the same commit hash (e.g. clicking "Refresh device capabilities" again
+    without anything else changing) must not discard previously recorded
+    validated-combination results."""
+    monkeypatch.setattr(cs, "get_commit_hash", lambda root: "hash1")
+    store_validated_combinations(
+        os_name="win32",
+        device_name="Cam2",
+        results={
+            "MJPG|1920x1080|50": {
+                "passed": False,
+                "measured_fps": 58.3,
+                "validated_at": "t1",
+            }
+        },
+    )
+    _store_cached_capabilities(
+        cache_key="win32|hash1|Cam2",
+        caps={"fps": [50]},
+        os_name="win32",
+        device_name="Cam2",
+    )
+    assert load_validated_combinations("win32", "Cam2") == {
+        "MJPG|1920x1080|50": {
+            "passed": False,
+            "measured_fps": 58.3,
+            "validated_at": "t1"
+        },
+    }
+    # declarative caps entry itself still round-trips normally.
+    assert _load_cached_capabilities(cache_key="win32|hash1|Cam2") == {"fps": [50]}
+
+
+def test_validated_combinations_scoped_per_device(cache_file):
+    store_validated_combinations(
+        os_name="win32",
+        device_name="Cam2",
+        results={
+            "MJPG|1920x1080|50": {
+                "passed": False,
+                "measured_fps": 58.3,
+                "validated_at": "t1",
+            }
+        },
+    )
+    assert load_validated_combinations("win32", "Cam1") == {}
+
+
+# ---------------------------------------------------------------------------
+# validate_combination
+# ---------------------------------------------------------------------------
+
+def test_validate_combination_passes_when_fps_and_resolution_match(as_platform, monkeypatch):
+    as_platform(cs, "linux")
+    monkeypatch.setattr(cs, "_linux_measure_achievable_fps", lambda **kwargs: (49.8, True, 1920, 1080))
+    result = validate_combination(
+        devnode="/dev/video0",
+        device_index=0,
+        pixel_format="MJPG",
+        width=1920,
+        height=1080,
+        fps=50,
+    )
+    assert result["passed"] is True
+
+
+def test_validate_combination_fails_when_resolution_mismatched_despite_fps_ok(as_platform, monkeypatch):
+    as_platform(cs, "linux")
+    monkeypatch.setattr(cs, "_linux_measure_achievable_fps", lambda **kwargs: (50.2, True, 1280, 720))
+    result = validate_combination(
+        devnode="/dev/video0",
+        device_index=0,
+        pixel_format="MJPG",
+        width=1920,
+        height=1080,
+        fps=50,
+    )
+    assert result["passed"] is False
+    assert result["measured_width"] == 1280
+    assert result["measured_height"] == 720
+
+
+def test_validate_combination_could_not_open_is_never_passed(as_platform, monkeypatch):
+    as_platform(cs, "linux")
+    monkeypatch.setattr(cs, "_linux_measure_achievable_fps", lambda **kwargs: (None, False, None, None))
+    result = validate_combination(
+        devnode="/dev/video0",
+        device_index=0,
+        pixel_format="MJPG",
+        width=1920,
+        height=1080,
+        fps=50,
+    )
+    assert result == {
+        "passed": False,
+        "measured_fps": None,
+        "could_open": False,
+        "measured_width": None,
+        "measured_height": None,
+    }
 
 
 # ---------------------------------------------------------------------------
