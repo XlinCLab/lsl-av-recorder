@@ -66,6 +66,7 @@ class LslInletRecorder:
         stream_info: StreamInfo,
         chunk_size: int = 128,
         pull_timeout: float = 0.1,
+        max_buflen: int = 360,  # LSL's default
         clock_offset_interval_s: float = 5.0,
         time_correction_timeout: float = 5.0,
         stream_id: Optional[int] = None,
@@ -75,8 +76,9 @@ class LslInletRecorder:
         self.stream_info = stream_info
         self.stream_id = stream_id
         self.xdf_writer = xdf_writer
-        self.chunk_size = chunk_size
-        self.pull_timeout = pull_timeout
+        self.chunk_size = int(chunk_size)
+        self.pull_timeout = float(pull_timeout)
+        self.max_buflen = int(max_buflen)
         self.clock_offset_interval_s = float(clock_offset_interval_s)
         self.time_correction_timeout = float(time_correction_timeout)
         self.status_cb = status_cb
@@ -84,7 +86,11 @@ class LslInletRecorder:
         self._offset_thread: Optional[threading.Thread] = None
         self._running = False
 
-        self.inlet = StreamInlet(stream_info, max_chunklen=chunk_size)
+        self.inlet = StreamInlet(
+            info=stream_info,
+            max_chunklen=self.chunk_size,
+            max_buflen=self.max_buflen,
+        )
         fmt, dtype = lsl_format_to_xdf(stream_info.channel_format())
         self.xdf_format = fmt
         self.dtype = dtype
