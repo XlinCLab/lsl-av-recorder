@@ -10,7 +10,10 @@ from .audio.constants import (DEFAULT_BIT_DEPTH, DEFAULT_N_CHANNELS,
 from .video.constants import (DEFAULT_CAMERA_FPS, DEFAULT_HEIGHT,
                               DEFAULT_PIXEL_FORMAT, DEFAULT_PREVIEW_FPS,
                               DEFAULT_WIDTH, DEVNODE_PATTERN)
-from .xdf.xdf_writer import FULL_BUFFER_DEFAULT_POLICY, FULL_BUFFER_POLICIES
+from .xdf.xdf_writer import (DEFAULT_AUDIO_BUFFER_SECONDS,
+                             DEFAULT_VIDEO_BUFFER_FRAMES,
+                             DEFAULT_WRITER_QUEUE_SIZE,
+                             FULL_BUFFER_DEFAULT_POLICY, FULL_BUFFER_POLICIES)
 
 logger = logging.getLogger(__name__)
 
@@ -76,9 +79,9 @@ class VideoConfig:
 
 @dataclass
 class BufferingConfig:
-    AudioBufferSeconds: float = 0.0
-    VideoBufferFrames: int = 0
-    WriterQueueSize: int = 256
+    AudioBufferSeconds: float = DEFAULT_AUDIO_BUFFER_SECONDS
+    VideoBufferFrames: int = DEFAULT_VIDEO_BUFFER_FRAMES
+    WriterQueueSize: int = DEFAULT_WRITER_QUEUE_SIZE
     WriterDropPolicy: str = FULL_BUFFER_DEFAULT_POLICY  # drop_oldest | drop_newest | block
 
 @dataclass

@@ -32,7 +32,10 @@ from ..utils.utils import get_environment_info
 from ..video.camera_settings import apply_camera_controls
 from ..video.devices import list_video_devices
 from ..xdf.xdf_validation import ValidationReport, validate_test_recording
-from ..xdf.xdf_writer import (FULL_BUFFER_BLOCK_THREAD_POLICY,
+from ..xdf.xdf_writer import (DEFAULT_AUDIO_BUFFER_SECONDS,
+                              DEFAULT_VIDEO_BUFFER_FRAMES,
+                              DEFAULT_WRITER_QUEUE_SIZE,
+                              FULL_BUFFER_BLOCK_THREAD_POLICY,
                               FULL_BUFFER_DEFAULT_POLICY,
                               FULL_BUFFER_DROP_NEWEST_POLICY,
                               FULL_BUFFER_DROP_OLDEST_POLICY)
@@ -285,13 +288,13 @@ class MainWindow(QMainWindow):
         self.audio_buffer_seconds.setRange(0.0, 10.0)
         self.audio_buffer_seconds.setSingleStep(0.05)
         self.audio_buffer_seconds.setDecimals(3)
-        self.audio_buffer_seconds.setValue(float(getattr(self.cfg.Buffering, "AudioBufferSeconds", 0.0)))
+        self.audio_buffer_seconds.setValue(float(getattr(self.cfg.Buffering, "AudioBufferSeconds", DEFAULT_AUDIO_BUFFER_SECONDS)))
         self.video_buffer_frames = QSpinBox()
         self.video_buffer_frames.setRange(0, 10000)
-        self.video_buffer_frames.setValue(int(getattr(self.cfg.Buffering, "VideoBufferFrames", 0)))
+        self.video_buffer_frames.setValue(int(getattr(self.cfg.Buffering, "VideoBufferFrames", DEFAULT_VIDEO_BUFFER_FRAMES)))
         self.writer_queue_size = QSpinBox()
         self.writer_queue_size.setRange(1, 100000)
-        self.writer_queue_size.setValue(int(getattr(self.cfg.Buffering, "WriterQueueSize", 256)))
+        self.writer_queue_size.setValue(int(getattr(self.cfg.Buffering, "WriterQueueSize", DEFAULT_WRITER_QUEUE_SIZE)))
         self.writer_drop_policy = QComboBox()
         self.writer_drop_policy.addItem("Drop oldest (recommended)", FULL_BUFFER_DROP_OLDEST_POLICY)
         self.writer_drop_policy.addItem("Drop newest (incoming)", FULL_BUFFER_DROP_NEWEST_POLICY)
@@ -1690,9 +1693,9 @@ class MainWindow(QMainWindow):
         self.labrec_port.setValue(int(self.cfg.LabRecorder.Port))
         self._update_labrecorder_controls()
 
-        self.audio_buffer_seconds.setValue(float(getattr(self.cfg.Buffering, "AudioBufferSeconds", 0.0)))
-        self.video_buffer_frames.setValue(int(getattr(self.cfg.Buffering, "VideoBufferFrames", 0)))
-        self.writer_queue_size.setValue(int(getattr(self.cfg.Buffering, "WriterQueueSize", 256)))
+        self.audio_buffer_seconds.setValue(float(getattr(self.cfg.Buffering, "AudioBufferSeconds", DEFAULT_AUDIO_BUFFER_SECONDS)))
+        self.video_buffer_frames.setValue(int(getattr(self.cfg.Buffering, "VideoBufferFrames", DEFAULT_VIDEO_BUFFER_FRAMES)))
+        self.writer_queue_size.setValue(int(getattr(self.cfg.Buffering, "WriterQueueSize", DEFAULT_WRITER_QUEUE_SIZE)))
         policy = getattr(self.cfg.Buffering, "WriterDropPolicy", FULL_BUFFER_DEFAULT_POLICY)
         idx = self.writer_drop_policy.findData(policy)
         if idx >= 0:

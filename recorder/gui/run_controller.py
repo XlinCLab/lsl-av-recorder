@@ -23,7 +23,8 @@ from ..naming import build_paths
 from ..utils.constants import _project_root
 from ..utils.utils import get_environment_info
 from ..video.video_recorder import VideoRecorder
-from ..xdf.xdf_writer import (FULL_BUFFER_BLOCK_THREAD_POLICY,
+from ..xdf.xdf_writer import (DEFAULT_WRITER_QUEUE_SIZE,
+                              FULL_BUFFER_BLOCK_THREAD_POLICY,
                               FULL_BUFFER_DEFAULT_POLICY,
                               FULL_BUFFER_DROP_NEWEST_POLICY,
                               FULL_BUFFER_POLICIES, XDFWriter)
@@ -97,7 +98,7 @@ class RunController:
             )
             self._writer_drop_policy = FULL_BUFFER_DEFAULT_POLICY
         # Max number of queued write tasks to keep memory bounded
-        self._writer_queue_size = max(1, int(getattr(self.cfg.Buffering, "WriterQueueSize", 256)))
+        self._writer_queue_size = max(1, int(getattr(self.cfg.Buffering, "WriterQueueSize", DEFAULT_WRITER_QUEUE_SIZE)))
         self._writer_queue: queue.Queue[tuple] = queue.Queue(maxsize=self._writer_queue_size)
         # Thread that drains the queue and performs XDF writes
         self._writer_thread: Optional[threading.Thread] = None
