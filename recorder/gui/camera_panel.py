@@ -792,6 +792,9 @@ class CameraPanel(QWidget):
             device_index=idx,
             device_name=device_name,
             parent=self,
+            selected_pixel_format=self._selected_pixel_format(),
+            selected_resolution=self._selected_resolution(),
+            selected_fps=self._selected_fps(),
         )
         # Stop/restart this camera's live preview
         dialog.validationStarted.connect(self.validateStarted.emit)

@@ -217,6 +217,9 @@ class ValidateCapabilitiesDialog(QDialog):
         device_index: Optional[int],
         device_name: Optional[str],
         parent: Optional[QWidget] = None,
+        selected_pixel_format: Optional[str] = None,
+        selected_resolution: Optional[Tuple[int, int]] = None,
+        selected_fps: Optional[int] = None,
     ):
         super().__init__(parent)
         self.setWindowTitle("Validate camera capabilities")
@@ -241,6 +244,15 @@ class ValidateCapabilitiesDialog(QDialog):
         self._all_checkboxes: List[QCheckBox] = [
             *self._fps_checkboxes.values(), *self._res_checkboxes.values(), *self._format_checkboxes.values(),
         ]
+
+        # Pre-check whatever this camera is currently configured to use in the GUI
+        if selected_pixel_format is not None and selected_pixel_format in self._format_checkboxes:
+            self._format_checkboxes[selected_pixel_format].setChecked(True)
+        if selected_resolution is not None and selected_resolution in self._res_checkboxes:
+            self._res_checkboxes[selected_resolution].setChecked(True)
+        if selected_fps is not None and selected_fps in self._fps_checkboxes:
+            self._fps_checkboxes[selected_fps].setChecked(True)
+
         for cb in self._all_checkboxes:
             cb.stateChanged.connect(self._refresh_results_table)
 
