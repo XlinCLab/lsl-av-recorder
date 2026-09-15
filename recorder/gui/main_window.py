@@ -30,7 +30,6 @@ from ..lsl.labrecorder_rcs import LabRecorderRCS
 from ..utils.constants import _logs_path, _project_root
 from ..utils.utils import get_environment_info
 from ..video.camera_settings import apply_camera_controls
-from ..video.devices import list_video_devices
 from ..xdf.xdf_validation import ValidationReport, validate_test_recording
 from ..xdf.xdf_writer import (DEFAULT_AUDIO_BUFFER_SECONDS,
                               DEFAULT_VIDEO_BUFFER_FRAMES,
@@ -201,7 +200,7 @@ class MainWindow(QMainWindow):
             f"platform={env['platform']} hostname={env['hostname']} "
             f"python={env['python_version']}"
         )
-        self.cfg: AppConfig = load_cfg(cfg_path) if cfg_path else load_cfg("example.cfg")
+        self.cfg: AppConfig = load_cfg(cfg_path) if cfg_path else AppConfig()
         self.log(build_config_log_payload("config_loaded_at_startup", self.cfg))
         self.controller: RunController = None
 
@@ -889,15 +888,6 @@ class MainWindow(QMainWindow):
         cfg_count = len(self.cfg.Video.Cams)
         if cfg_count > 0:
             return min(cfg_count, self.max_cams)
-
-        detected = 0
-        try:
-            detected = len(list_video_devices())
-        except Exception:
-            detected = 0
-
-        if detected > 1:
-            return min(detected, self.max_cams)
         return 1
 
     def _update_add_camera_button(self):

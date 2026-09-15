@@ -73,9 +73,9 @@ python main.py
 ```
 
 Startup behavior:
-Unless `main.py` is run with a path to a config `.cfg` file, the default `example.cfg` config is loaded into the GUI upon startup.
+The GUI starts with blank/default settings (audio and video recording both unchecked). `example.cfg` in the project root is a sample config demonstrating a filled-out setup.
 
-To load a different config in normal GUI use:
+To load a config:
 - Click **Load config** in the main window.
 
 ## Camera Controls and Capability Detection
