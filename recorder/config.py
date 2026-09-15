@@ -17,15 +17,22 @@ from .xdf.xdf_writer import (DEFAULT_AUDIO_BUFFER_SECONDS,
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_EXPERIMENT_NAME = "MyStudy"
+DEFAULT_SUBJECT = "01"
+DEFAULT_SESSION = "01"
+DEFAULT_BLOCK = "Main"
+DEFAULT_ACQUISITION = "default"
+DEFAULT_RUN = "01"
+
 
 @dataclass
 class AppPrompts:
-    ExperimentName: str = ""
-    Subject: str = ""
-    Session: str = ""
-    Block: str = ""
-    Acquisition: str = ""
-    Run: str = ""
+    ExperimentName: str = DEFAULT_EXPERIMENT_NAME
+    Subject: str = DEFAULT_SUBJECT
+    Session: str = DEFAULT_SESSION
+    Block: str = DEFAULT_BLOCK
+    Acquisition: str = DEFAULT_ACQUISITION
+    Run: str = DEFAULT_RUN
 
 @dataclass
 class OutputConfig:

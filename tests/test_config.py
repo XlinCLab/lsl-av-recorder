@@ -5,9 +5,10 @@ from __future__ import annotations
 import configparser
 
 from recorder.audio.constants import DEFAULT_SAMPLING_RATE
-from recorder.config import (AppConfig, AppPrompts, AudioConfig,
-                             LabRecorderConfig, OutputConfig, VideoCamConfig,
-                             VideoConfig, _get_bool, load_cfg, save_cfg)
+from recorder.config import (DEFAULT_SUBJECT, AppConfig, AppPrompts,
+                             AudioConfig, LabRecorderConfig, OutputConfig,
+                             VideoCamConfig, VideoConfig, _get_bool, load_cfg,
+                             save_cfg)
 from recorder.xdf.xdf_writer import (FULL_BUFFER_BLOCK_THREAD_POLICY,
                                      FULL_BUFFER_DEFAULT_POLICY,
                                      FULL_BUFFER_POLICIES)
@@ -40,7 +41,7 @@ def test_load_cfg_missing_file_returns_defaults(tmp_path):
     assert cfg.Audio.SampleRate == DEFAULT_SAMPLING_RATE
     assert cfg.Audio.Enabled is False
     assert cfg.Video.Cams == []
-    assert cfg.Prompts.Subject == ""
+    assert cfg.Prompts.Subject == DEFAULT_SUBJECT
     assert cfg.Output.StudyRoot == "./recordings"
 
 
@@ -50,7 +51,7 @@ def test_load_cfg_empty_file_returns_defaults(write_cfg):
     assert cfg.Audio.SampleRate == DEFAULT_SAMPLING_RATE
     assert cfg.Audio.Enabled is False
     assert cfg.Video.Cams == []
-    assert cfg.Prompts.Subject == ""
+    assert cfg.Prompts.Subject == DEFAULT_SUBJECT
     assert cfg.Output.StudyRoot == "./recordings"
 
 
