@@ -530,10 +530,6 @@ class MainWindow(QMainWindow):
         # Don't reconfigure preview workers while a run is active/recording.
         if not self.btn_start.isEnabled():
             return
-        if not self.cfg.Video.Enabled:
-            self.preview_mgr.stop_all_previews()
-            return
-
         self.preview_mgr.stop_all_previews()
         for panel in self.cam_panels:
             # Skip a panel whose own capability probe is still running
@@ -1018,6 +1014,7 @@ class MainWindow(QMainWindow):
         for panel in self.cam_panels:
             self.cfg.Video.Cams.append(panel.to_config())
         self.cfg.Video.MaxCams = max(self.cfg.Video.MaxCams, len(self.cfg.Video.Cams))
+        self.cfg.Video.Enabled = any(cam.Enabled for cam in self.cfg.Video.Cams)
         self.cfg.Buffering.AudioBufferSeconds = float(self.audio_buffer_seconds.value())
         self.cfg.Buffering.VideoBufferFrames = int(self.video_buffer_frames.value())
         self.cfg.Buffering.WriterQueueSize = int(self.writer_queue_size.value())
