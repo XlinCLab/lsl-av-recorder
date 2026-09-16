@@ -114,6 +114,11 @@ Note: Starting a real recording with a camera whose current selection has never 
   - **Discover streams** (LabRecorder tab) resolves currently broadcasting LSL outlets via `pylsl.resolve_streams()`.
   - Streams checked in the resulting table each get their own `StreamInlet`, pulling samples into the XDF file for the duration of the run.
 - **LabRecorder RCS**: the LabRecorder tab's host/port fields and Connect/Disconnect buttons open a socket to a separately running LabRecorder instance's Remote Control Server, independent of this app's own Start/Stop and XDF writing.
+- **Ref/GND Monitor** (LabRecorder tab): a live diagnostic for EEG reference/ground contact quality on any LSL stream. It does NOT measure impedance, but rather it measures how well the amplifier's front-end rejects mains hum as a common-mode signal, which degrades when Ref/GND contact is poor:
+  - **A50**: mains-hum amplitude (median across channels).
+  - **CMI** (Common-Mode Index, 0-1): how consistent the hum's amplitude and phase are across channels. Hum shared identically by every channel (CMI -> 1) is the signature of unrejected common-mode interference, i.e. Ref/GND; a single bad electrode instead raises A50 while leaving CMI low.
+  - **RAIL**: fraction of samples near front-end saturation, and packet-gap detection if a counter channel is present.
+  - Channel roles (which channels are EEG vs. non-EEG, and which is the packet counter) are auto-detected from channel names and overridable in the dialog. Thresholds are device/room-specific: record a baseline against a setup already known to be good.
 
 ## Configuration Files (.cfg)
 Configuration files are INI-style and expected to be saved as `.cfg` files.

@@ -13,13 +13,13 @@ from datetime import datetime
 from typing import List, Optional
 
 from pylsl import StreamInfo
-from PyQt6.QtCore import QSize, Qt, QThread, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
                              QComboBox, QDoubleSpinBox, QFileDialog,
                              QFormLayout, QHBoxLayout, QLabel, QLineEdit,
                              QMainWindow, QMessageBox, QProgressDialog,
                              QPushButton, QScrollArea, QSizePolicy, QSpinBox,
-                             QSplitter, QStyle, QTableWidget, QTableWidgetItem,
+                             QSplitter, QTableWidget, QTableWidgetItem,
                              QTabWidget, QTextEdit, QVBoxLayout, QWidget)
 
 from ..audio.devices import (default_input_device_index,
@@ -42,7 +42,9 @@ from .camera_panel import CameraPanel
 from .camera_worker import CAMERA_PREVIEW_STREAM_TYPE
 from .preview_manager import PreviewManager, preview_key
 from .preview_panel import PreviewPanel
+from .refgnd_monitor_dialog import REF_GND_MONITOR_EXT_DESCR, RefGndMonitorDialog
 from .run_controller import RunController
+from .widgets import with_help_icon
 
 
 def build_config_log_payload(label: str, cfg: AppConfig) -> str:
@@ -411,6 +413,23 @@ class MainWindow(QMainWindow):
         self.labrec_port.valueChanged.connect(lambda v: self._log_gui_change("LabRecorder.Port", v))
         self.lsl_streams_table.itemChanged.connect(self._on_lsl_stream_item_changed)
 
+        self.btn_refgnd_monitor = QPushButton("EEG Reference/Ground Monitor")
+        self.btn_refgnd_monitor.setEnabled(False)
+        self.btn_refgnd_monitor.clicked.connect(self._on_open_refgnd_monitor)
+        ref_gnd_monitor_button_descr_prefix = (
+            "Open a live monitor for EEG reference/ground contact quality on "
+            "an LSL stream. Requires LabRecorder RCS to be enabled and connected."
+        )
+        ref_gnd_monitor_button_descr = "\n\n".join([
+            ref_gnd_monitor_button_descr_prefix,
+            REF_GND_MONITOR_EXT_DESCR
+        ])
+        lf.addRow(self._with_help_icon(
+            widget=self.btn_refgnd_monitor,
+            title="EEG Reference/Ground Monitor",
+            text=ref_gnd_monitor_button_descr,
+        ))
+
         # Recording status indicator: hidden until a real recording starts,
         # shown above the preview wall for the run's duration
         self.recording_status_label = QLabel()
@@ -584,16 +603,7 @@ class MainWindow(QMainWindow):
 
     def _with_help_icon(self, widget: QWidget, title: str, text: str) -> QHBoxLayout:
         """Wrap `widget` with a trailing "?" icon button containing help/additional information."""
-        btn_help = QPushButton()
-        btn_help.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TitleBarContextHelpButton))
-        btn_help.setIconSize(QSize(12, 12))
-        btn_help.setFixedSize(24, 24)
-        #btn_help.setToolTip(text)
-        btn_help.clicked.connect(lambda: QMessageBox.information(self, title, text))
-        row = QHBoxLayout()
-        row.addWidget(widget)
-        row.addWidget(btn_help)
-        return row
+        return with_help_icon(self, widget, title, text)
 
     def _open_app_session_log(self):
         """Open the app-level session log file for the lifetime of this
@@ -1613,6 +1623,12 @@ class MainWindow(QMainWindow):
             self.lsl_streams_table.blockSignals(False)
         self.log(f"Discovered {self.lsl_streams_table.rowCount()} LSL stream(s)")
 
+    def _on_open_refgnd_monitor(self):
+        self.log("Opening Ref/GND Monitor")
+        dialog = RefGndMonitorDialog(parent=self)
+        dialog.exec()
+        self.log("Closed Ref/GND Monitor")
+
     def _on_lsl_stream_item_changed(self, item: QTableWidgetItem):
         if item.column() != 0:
             return
@@ -1642,6 +1658,7 @@ class MainWindow(QMainWindow):
         connected = bool(self.labrec_rcs and self.labrec_rcs.sock)
         self.lsl_discover_btn.setEnabled(connected)
         self.lsl_streams_table.setEnabled(connected)
+        self.btn_refgnd_monitor.setEnabled(connected)
 
     def _set_labrecorder_status(self, connected: bool, host: str = "", port: int = 0):
         if connected:
@@ -1650,6 +1667,7 @@ class MainWindow(QMainWindow):
             self.labrec_disconnect_btn.setEnabled(True)
             self.lsl_discover_btn.setEnabled(True)
             self.lsl_streams_table.setEnabled(True)
+            self.btn_refgnd_monitor.setEnabled(True)
         else:
             self.labrec_status.setText("Disconnected")
             self.labrec_status.setStyleSheet("color: #b00020;")
@@ -1657,6 +1675,7 @@ class MainWindow(QMainWindow):
             self.lsl_discover_btn.setEnabled(False)
             self.lsl_streams_table.setEnabled(False)
             self.lsl_streams_table.setRowCount(0)
+            self.btn_refgnd_monitor.setEnabled(False)
 
     def _apply_cfg_to_gui(self):
         self.experiment.setText(self.cfg.Prompts.ExperimentName)
