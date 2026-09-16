@@ -9,8 +9,8 @@ from pylsl import StreamInfo, StreamInlet, resolve_streams
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDoubleSpinBox,
                              QFileDialog, QFormLayout, QGroupBox, QHBoxLayout,
-                             QLabel, QMessageBox, QProgressBar, QPushButton,
-                             QSpinBox, QVBoxLayout, QWidget)
+                             QInputDialog, QLabel, QMessageBox, QProgressBar,
+                             QPushButton, QSpinBox, QVBoxLayout, QWidget)
 
 from ..lsl.constants import COUNTER_PATTERNS as DEFAULT_COUNTER_PATTERNS
 from ..lsl.constants import (DEFAULT_A50_FACTOR, DEFAULT_A50_WARN,
@@ -422,11 +422,7 @@ class RefGndMonitorDialog(QDialog):
 
         baseline = load_baseline(self._device_name)
         if baseline:
-            self.baseline_status_label.setText(
-                f"Baseline recorded {baseline.get('timestamp', '?')} "
-                f"({baseline.get('n_windows', 0)} windows): "
-                f"A50 p95={baseline['a50_p95']:.2f}, CMI p95={baseline['cmi_p95']:.3f}"
-            )
+            self.baseline_status_label.setText(self._format_baseline_status(baseline))
         else:
             self.baseline_status_label.setText("No baseline recorded for this device yet.")
 
@@ -486,9 +482,27 @@ class RefGndMonitorDialog(QDialog):
         if len(a50_values) < 2:
             QMessageBox.warning(self, "Baseline failed", "Not enough windows were collected to save a baseline.")
             return
-        baseline = save_baseline(self._device_name, a50_values, cmi_values, line_freq=self.line_freq_spin.value())
-        self.baseline_status_label.setText(
-            f"Baseline recorded {baseline['timestamp']} ({baseline['n_windows']} windows): "
+        label, _ok = QInputDialog.getText(
+            self,
+            "Label this baseline (optional)",
+            "Nickname to help recall this baseline later (e.g. device, room, "
+            "date), or leave blank to skip:",
+        )
+        baseline = save_baseline(
+            device_name=self._device_name,
+            a50_values=a50_values,
+            cmi_values=cmi_values,
+            line_freq=self.line_freq_spin.value(),
+            label=label,
+        )
+        self.baseline_status_label.setText(self._format_baseline_status(baseline))
+
+    def _format_baseline_status(self, baseline: Dict[str, Any]) -> str:
+        label = baseline.get("label") or ""
+        label_part = f"'{label}' " if label else ""
+        return (
+            f"Baseline {label_part}recorded {baseline.get('timestamp', '?')} "
+            f"({baseline.get('n_windows', 0)} windows): "
             f"A50 p95={baseline['a50_p95']:.2f}, CMI p95={baseline['cmi_p95']:.3f}"
         )
 

@@ -188,9 +188,12 @@ def save_baseline(
         a50_values: Sequence[float],
         cmi_values: Sequence[float],
         line_freq: float,
+        label: Optional[str] = None,
     ) -> Dict[str, Any]:
     """Summarize a baseline recording's per-window A50/CMI values and save
-    them for this device, keyed by device name."""
+    them for this device, keyed by device name.
+    `label` is an optional free-text nickname (e.g. "Room 3, fresh gel")
+    to help recall what/where/when a given baseline was recorded."""
     a50 = np.asarray(a50_values, dtype=np.float64)
     cmi = np.asarray(cmi_values, dtype=np.float64)
     summary = {
@@ -201,6 +204,7 @@ def save_baseline(
         "cmi_p95": float(np.percentile(cmi, 95)),
         "line_freq": float(line_freq),
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "label": (label or "").strip(),
     }
     data = _load_baseline_cache()
     data[_baseline_cache_key(device_name)] = summary

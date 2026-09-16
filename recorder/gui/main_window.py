@@ -42,7 +42,8 @@ from .camera_panel import CameraPanel
 from .camera_worker import CAMERA_PREVIEW_STREAM_TYPE
 from .preview_manager import PreviewManager, preview_key
 from .preview_panel import PreviewPanel
-from .refgnd_monitor_dialog import REF_GND_MONITOR_EXT_DESCR, RefGndMonitorDialog
+from .refgnd_monitor_dialog import (REF_GND_MONITOR_EXT_DESCR,
+                                    RefGndMonitorDialog)
 from .run_controller import RunController
 from .widgets import with_help_icon
 
