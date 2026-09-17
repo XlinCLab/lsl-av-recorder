@@ -21,9 +21,9 @@ from ..lsl.constants import (DEFAULT_A50_FACTOR, DEFAULT_A50_WARN,
 from ..lsl.constants import NONEEG_PATTERNS as DEFAULT_NONEEG_PATTERNS
 from ..lsl.constants import STATUS_COLORS
 from ..lsl.lsl_inlet_recorder import extract_channel_info
-from ..lsl.refgnd_monitor import (analyze_window, detect_counter_index,
-                                  detect_eeg_indices, load_baseline,
-                                  save_baseline, smoothed,
+from ..lsl.refgnd_monitor import (analyze_window, counter_gaps_delta,
+                                  detect_counter_index, detect_eeg_indices,
+                                  load_baseline, save_baseline, smoothed,
                                   thresholds_for_baseline, verdict)
 from .widgets import make_checkbox_grid, with_help_icon
 
@@ -99,6 +99,10 @@ class _RefGndMonitorThread(QThread):
         since_hop = 0
         a50_values: List[float] = []
         cmi_values: List[float] = []
+        # Packet gaps are tracked from each newly arrived chunk as it comes
+        # in, independent of the (overlapping) analysis window below
+        last_counter_value: Optional[int] = None
+        gaps_since_last_window = 0
         start = time.monotonic()
         try:
             while self._running:
@@ -111,6 +115,13 @@ class _RefGndMonitorThread(QThread):
                             break
                     continue
 
+                if self._counter_idx is not None:
+                    new_counter_values = np.asarray(
+                        [sample[self._counter_idx] for sample in chunk], dtype=np.float64,
+                    )
+                    new_gaps, last_counter_value = counter_gaps_delta(last_counter_value, new_counter_values)
+                    gaps_since_last_window += new_gaps
+
                 for sample in chunk:
                     buf.append(sample)
                 since_hop += len(chunk)
@@ -119,11 +130,12 @@ class _RefGndMonitorThread(QThread):
                 since_hop = 0
 
                 A = np.asarray(buf, dtype=np.float64).T
-                counter = A[self._counter_idx] if self._counter_idx is not None else None
                 m = analyze_window(
-                    A[self._eeg_idx], self._fs, counter, None,
+                    A[self._eeg_idx], self._fs, None, None,
                     f0=self._line_freq, sat=self._sat_level,
                 )
+                m["gaps"] = gaps_since_last_window
+                gaps_since_last_window = 0
 
                 if self._baseline_seconds is not None:
                     a50_values.append(m["a50_med"])

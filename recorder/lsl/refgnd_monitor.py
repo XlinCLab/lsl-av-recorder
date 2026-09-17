@@ -67,7 +67,10 @@ def common_mode_index(coeffs: np.ndarray) -> float:
 
 def counter_gaps(counter: np.ndarray, wrap: Optional[int]) -> int:
     """Number of missing packets within the window, from a packet counter
-    channel that may wrap around (e.g. at 256 or 65536)."""
+    channel that may wrap around (e.g. at 256 or 65536).
+
+    NB: callers analyzing a sliding window must not call this
+    directly on that window every hop; use counter_gaps_delta() instead."""
     if counter.size < 2:
         return 0
     d = np.diff(counter.astype(np.int64))
@@ -76,6 +79,25 @@ def counter_gaps(counter: np.ndarray, wrap: Optional[int]) -> int:
         wrap = 256 if span < 256 else 65536
     d = np.mod(d, wrap)
     return int(np.sum(d[d > 1] - 1))
+
+
+def counter_gaps_delta(
+    prev_last_value: Optional[int],
+    new_values: np.ndarray,
+    wrap: Optional[int] = None,
+) -> tuple[int, Optional[int]]:
+    """Gaps between `prev_last_value` (the last counter value already
+    accounted for; None on the first call) and `new_values` (counter
+    values from a newly arrived chunk only, not a sliding window), plus the
+    new last-seen value to pass into the next call. 
+    Unlike calling counter_gaps() directly on a sliding analysis window,
+    this counts each real gap exactly once.
+    """
+    if new_values.size == 0:
+        return 0, prev_last_value
+    seq = new_values if prev_last_value is None else np.concatenate(([prev_last_value], new_values))
+    gaps = counter_gaps(seq, wrap)
+    return gaps, int(new_values[-1])
 
 
 def analyze_window(
