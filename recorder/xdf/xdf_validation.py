@@ -209,9 +209,14 @@ def _validate_lsl_streams(
                 DEFAULT_COUNT_TOLERANCE,
             ))
         else:
+            # Irregular-rate (event-driven) streams, e.g. markers/triggers,
+            # only emit a sample when a real event occurs.
+            # Zero samples is a normal outcome if nothing happened to trigger
+            # a marker during the test window, not a sign that the stream is broken.
             checks.append(_check(
-                f"LSL <{name}> sample count", n_samples > 0,
-                f"{n_samples} samples (irregular-rate stream)",
+                f"LSL <{name}> sample count",
+                passed=n_samples is not None,
+                detail=f"{n_samples} samples (irregular-rate stream)",
             ))
 
         clock_values = stream.get("clock_values") or []
