@@ -78,6 +78,14 @@ def build_device_discovery_log_payload() -> str:
     return json.dumps(payload, indent=2, default=str, ensure_ascii=False)
 
 
+def _format_audio_device_label(d: dict) -> str:
+    """[index] Name (Host API) for the Audio tab's device dropdown."""
+    label = f"[{d['index']}] {d['name']}"
+    if d.get("hostapi_name"):
+        label += f" ({d['hostapi_name']})"
+    return label
+
+
 def _exclude_camera_preview_streams(streams: List[StreamInfo]) -> List[StreamInfo]:
     """Drop this app's own camera-preview outlets from a list of resolved LSL streams.
     Selecting one to be recorded (via this app's own LSL stream table) will yield
@@ -814,7 +822,7 @@ class MainWindow(QMainWindow):
         default_idx = default_input_device_index()
         self.audio_device.addItem("(default)", None)
         for d in devs:
-            self.audio_device.addItem(f"[{d['index']}] {d['name']}", d["index"])
+            self.audio_device.addItem(_format_audio_device_label(d), d["index"])
         if self.cfg.Audio.Device:
             try:
                 di = int(self.cfg.Audio.Device)

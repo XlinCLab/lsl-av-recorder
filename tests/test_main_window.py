@@ -8,6 +8,7 @@ from recorder.gui import main_window
 from recorder.gui.camera_worker import CAMERA_PREVIEW_STREAM_TYPE
 from recorder.gui.main_window import (_default_camera_label,
                                       _exclude_camera_preview_streams,
+                                      _format_audio_device_label,
                                       _recording_stream_rows,
                                       build_config_log_payload,
                                       build_device_discovery_log_payload)
@@ -100,6 +101,38 @@ def test_build_config_log_payload_serializes_full_nested_config(monkeypatch):
     parsed = json.loads(build_config_log_payload("config_loaded", cfg))
     assert parsed["config"]["Video"]["Cams"][0]["Label"] == "Face"
     assert parsed["config"]["Video"]["Cams"][0]["FPS"] == 30
+
+
+# ---------------------------------------------------------------------------
+# _format_audio_device_label
+# ---------------------------------------------------------------------------
+
+def test_format_audio_device_label_appends_hostapi_when_known():
+    """The dropdown shows the host API alongside the device name so a user
+    can deliberately pick among available host APIs for the same physical interface."""
+    label = _format_audio_device_label(
+        {
+            "index": 1,
+            "name": "Focusrite USB Audio",
+            "hostapi_name": "Windows WASAPI",
+        }
+    )
+    assert label == "[1] Focusrite USB Audio (Windows WASAPI)"
+
+
+def test_format_audio_device_label_omits_parens_when_hostapi_unknown():
+    """No hostapi_name (None, missing, or empty) falls back to the plain
+    "[index] Name" label rather than showing an empty "()" suffix."""
+    assert _format_audio_device_label(
+        {
+            "index": 0,
+            "name": "MacBook Pro Microphone",
+            "hostapi_name": None,
+        }
+    ) == "[0] MacBook Pro Microphone"
+    assert _format_audio_device_label(
+        {"index": 2, "name": "Some Mic"}
+    ) == "[2] Some Mic"
 
 
 # ---------------------------------------------------------------------------
