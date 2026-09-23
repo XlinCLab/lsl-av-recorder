@@ -30,6 +30,7 @@ from ..lsl.labrecorder_rcs import LabRecorderRCS
 from ..utils.constants import _logs_path, _project_root
 from ..utils.utils import get_environment_info
 from ..video.camera_settings import apply_camera_controls
+from ..video.devices import list_video_devices
 from ..xdf.xdf_validation import ValidationReport, validate_test_recording
 from ..xdf.xdf_writer import (DEFAULT_AUDIO_BUFFER_SECONDS,
                               DEFAULT_VIDEO_BUFFER_FRAMES,
@@ -57,6 +58,35 @@ def build_config_log_payload(label: str, cfg: AppConfig) -> str:
         "config": asdict(cfg),
     }
     return json.dumps(payload, indent=2, default=str, ensure_ascii=False)
+
+
+def build_device_discovery_log_payload() -> str:
+    """Single JSON log line listing every audio input / video device the OS
+    reports at startup, so a config's numeric Device/DeviceIndex can later be
+    matched back to the physical device (and, for audio, the host API) it
+    referred to on that machine."""
+    try:
+        audio_devices = list_input_devices()
+    except Exception as exc:
+        audio_devices = [{"error": str(exc)}]
+    try:
+        video_devices = list_video_devices()
+    except Exception as exc:
+        video_devices = [{"error": str(exc)}]
+    payload = {
+        "event": "devices_discovered",
+        "audio_input_devices": audio_devices,
+        "video_devices": video_devices,
+    }
+    return json.dumps(payload, indent=2, default=str, ensure_ascii=False)
+
+
+def _format_audio_device_label(d: dict) -> str:
+    """[index] Name (Host API) for the Audio tab's device dropdown."""
+    label = f"[{d['index']}] {d['name']}"
+    if d.get("hostapi_name"):
+        label += f" ({d['hostapi_name']})"
+    return label
 
 
 def _exclude_camera_preview_streams(streams: List[StreamInfo]) -> List[StreamInfo]:
@@ -205,6 +235,7 @@ class MainWindow(QMainWindow):
         )
         self.cfg: AppConfig = load_cfg(cfg_path) if cfg_path else AppConfig()
         self.log(build_config_log_payload("config_loaded_at_startup", self.cfg))
+        self.log(build_device_discovery_log_payload())
         self.controller: RunController = None
 
         form = QFormLayout()
@@ -802,7 +833,7 @@ class MainWindow(QMainWindow):
         default_idx = default_input_device_index()
         self.audio_device.addItem("(default)", None)
         for d in devs:
-            self.audio_device.addItem(f"[{d['index']}] {d['name']}", d["index"])
+            self.audio_device.addItem(_format_audio_device_label(d), d["index"])
         if self.cfg.Audio.Device:
             try:
                 di = int(self.cfg.Audio.Device)

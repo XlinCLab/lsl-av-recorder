@@ -692,6 +692,39 @@ def test_lsl_irregular_rate_stream_checks_only_presence(xdf_path):
     assert count_check.passed
 
 
+def test_lsl_irregular_rate_stream_zero_samples_pass(xdf_path):
+    """An event-driven Markers stream that emits no events during the test
+    window (e.g. no stimuli/triggers happened to fire) is a normal outcome,
+    not a validation failure."""
+    stream_info = make_eeg_stream_info(name=MARKER_STREAM_NAME, channels=1, srate=0.0)
+
+    w = XDFWriter(xdf_path)
+    w.start()
+    sid = w.add_lsl_stream(
+        name=MARKER_STREAM_NAME,
+        stype="Markers",
+        channel_count=1,
+        srate=0.0,
+        fmt="float32",
+        source_id="src",
+        key="lsl:Markers",
+    )
+    # No write_lsl_samples() call: zero events occurred during the test
+    w.record_clock_offset(stream_id=sid, offset=0.0, now=110.0)
+    w.stop()
+
+    report = validate_test_recording(
+        xdf_path=xdf_path,
+        cfg=base_cfg(),
+        lsl_streams=[stream_info],
+        expected_duration_s=10.0,
+    )
+    assert report.passed, report.detailed_text()
+    count_check = next(c for c in report.checks if MARKER_STREAM_NAME in c.name and "sample count" in c.name)
+    assert count_check.passed
+    assert "0 samples" in count_check.detail
+
+
 def test_lsl_string_format_marker_stream_pass(xdf_path):
     """Test that a real  Markers-shaped stream (channel_format="string", irregular rate) validates cleanly."""
     stream_info = StreamInfo(

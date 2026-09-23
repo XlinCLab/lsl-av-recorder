@@ -20,14 +20,51 @@ from recorder.audio.devices import (default_input_device_index,
 def test_list_input_devices_returns_only_input_capable(fake_sd):
     """Only devices with input channels are listed, and each keeps its position
     in the full device table as its index (not the filtered position)."""
+    fake_sd.add_hostapi("Core Audio")
     fake_sd.add_device("Speaker", max_input_channels=0, hostapi=0)
-    fake_sd.add_device("Mic", max_input_channels=2, hostapi=1)
-    fake_sd.add_device("Webcam", max_input_channels=1, hostapi=1)
+    fake_sd.add_device("Mic", max_input_channels=2, hostapi=0, default_samplerate=48000.0)
+    fake_sd.add_device("Webcam", max_input_channels=1, hostapi=0)
 
     devices = list_input_devices()
     assert [d["name"] for d in devices] == ["Mic", "Webcam"]
-    assert devices[0] == {"index": 1, "name": "Mic", "hostapi": 1}
-    assert devices[1] == {"index": 2, "name": "Webcam", "hostapi": 1}
+    assert devices[0] == {
+        "index": 1,
+        "name": "Mic",
+        "hostapi": 0,
+        "hostapi_name": "Core Audio",
+        "max_input_channels": 2,
+        "default_samplerate": 48000.0,
+    }
+    assert devices[1] == {
+        "index": 2,
+        "name": "Webcam",
+        "hostapi": 0,
+        "hostapi_name": "Core Audio",
+        "max_input_channels": 1,
+        "default_samplerate": None,
+    }
+
+
+def test_list_input_devices_resolves_hostapi_name_per_device(fake_sd):
+    """On Windows in particular, the same physical device is commonly
+    enumerated once per host API (MME, WASAPI, ...); hostapi_name lets a log
+    line distinguish which entry a numeric Device index actually refers to."""
+    fake_sd.add_hostapi("MME")
+    fake_sd.add_hostapi("Windows WASAPI")
+    fake_sd.add_device("Focusrite (MME)", max_input_channels=1, hostapi=0)
+    fake_sd.add_device("Focusrite (WASAPI)", max_input_channels=1, hostapi=1)
+
+    devices = list_input_devices()
+    assert devices[0]["hostapi_name"] == "MME"
+    assert devices[1]["hostapi_name"] == "Windows WASAPI"
+
+
+def test_list_input_devices_hostapi_name_none_when_unresolvable(fake_sd):
+    """No registered host APIs (or an out-of-range index) degrades to None
+    rather than raising."""
+    fake_sd.add_device("Mic", max_input_channels=1, hostapi=0)
+    devices = list_input_devices()
+    assert devices[0]["hostapi_name"] is None
 
 
 def test_list_input_devices_empty_when_none_have_input(fake_sd):

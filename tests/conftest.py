@@ -41,8 +41,14 @@ class FakeSoundDevice:
 
     def __init__(self):
         self.devices: list[dict] = []
+        self.hostapis: list[dict] = []
         # Mirrors sd.default.device == [input_index, output_index].
         self.default = SimpleNamespace(device=[None, None])
+
+    def add_hostapi(self, name: str) -> int:
+        """Register a host API and return its index, for devices' `hostapi` field."""
+        self.hostapis.append({"name": name})
+        return len(self.hostapis) - 1
 
     def add_device(
         self,
@@ -83,6 +89,9 @@ class FakeSoundDevice:
             raise ValueError(f"no device named {device!r}")
         return self.devices[device]  # may raise IndexError for a bad index
 
+    def query_hostapis(self):
+        return list(self.hostapis)
+
     def check_input_settings(self, device=None, samplerate=None, channels=None, dtype=None):
         resolved = device if device is not None else self.default.device[0]
         d = self.query_devices(resolved)
@@ -118,6 +127,7 @@ def fake_sd(monkeypatch) -> FakeSoundDevice:
 
     fake = FakeSoundDevice()
     monkeypatch.setattr(sd, "query_devices", fake.query_devices)
+    monkeypatch.setattr(sd, "query_hostapis", fake.query_hostapis)
     monkeypatch.setattr(sd, "check_input_settings", fake.check_input_settings)
     monkeypatch.setattr(sd, "default", fake.default)
     return fake

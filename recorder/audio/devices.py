@@ -9,11 +9,27 @@ from ..audio.constants import (BITDEPTH_DTYPES, CANDIDATE_SAMPLE_RATES,
 
 
 def list_input_devices() -> List[Dict[str, Any]]:
+    """List every input-capable audio device PortAudio can see."""
     devs = sd.query_devices()
+    try:
+        hostapis = sd.query_hostapis()
+    except Exception:
+        hostapis = []
     out = []
     for i, d in enumerate(devs):
         if d.get("max_input_channels", 0) > 0:
-            out.append({"index": i, "name": d.get("name"), "hostapi": d.get("hostapi")})
+            hostapi_idx = d.get("hostapi")
+            hostapi_name = None
+            if hostapi_idx is not None and 0 <= hostapi_idx < len(hostapis):
+                hostapi_name = hostapis[hostapi_idx].get("name")
+            out.append({
+                "index": i,
+                "name": d.get("name"),
+                "hostapi": hostapi_idx,
+                "hostapi_name": hostapi_name,
+                "max_input_channels": d.get("max_input_channels"),
+                "default_samplerate": d.get("default_samplerate"),
+            })
     return out
 
 

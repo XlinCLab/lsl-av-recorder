@@ -8,8 +8,10 @@ from recorder.gui import main_window
 from recorder.gui.camera_worker import CAMERA_PREVIEW_STREAM_TYPE
 from recorder.gui.main_window import (_default_camera_label,
                                       _exclude_camera_preview_streams,
+                                      _format_audio_device_label,
                                       _recording_stream_rows,
-                                      build_config_log_payload)
+                                      build_config_log_payload,
+                                      build_device_discovery_log_payload)
 from tests.shared import MARKER_STREAM_NAME
 
 
@@ -99,6 +101,87 @@ def test_build_config_log_payload_serializes_full_nested_config(monkeypatch):
     parsed = json.loads(build_config_log_payload("config_loaded", cfg))
     assert parsed["config"]["Video"]["Cams"][0]["Label"] == "Face"
     assert parsed["config"]["Video"]["Cams"][0]["FPS"] == 30
+
+
+# ---------------------------------------------------------------------------
+# _format_audio_device_label
+# ---------------------------------------------------------------------------
+
+def test_format_audio_device_label_appends_hostapi_when_known():
+    """The dropdown shows the host API alongside the device name so a user
+    can deliberately pick among available host APIs for the same physical interface."""
+    label = _format_audio_device_label(
+        {
+            "index": 1,
+            "name": "Focusrite USB Audio",
+            "hostapi_name": "Windows WASAPI",
+        }
+    )
+    assert label == "[1] Focusrite USB Audio (Windows WASAPI)"
+
+
+def test_format_audio_device_label_omits_parens_when_hostapi_unknown():
+    """No hostapi_name (None, missing, or empty) falls back to the plain
+    "[index] Name" label rather than showing an empty "()" suffix."""
+    assert _format_audio_device_label(
+        {
+            "index": 0,
+            "name": "MacBook Pro Microphone",
+            "hostapi_name": None,
+        }
+    ) == "[0] MacBook Pro Microphone"
+    assert _format_audio_device_label(
+        {"index": 2, "name": "Some Mic"}
+    ) == "[2] Some Mic"
+
+
+# ---------------------------------------------------------------------------
+# build_device_discovery_log_payload
+# ---------------------------------------------------------------------------
+
+def test_build_device_discovery_log_payload_lists_audio_and_video_devices(monkeypatch):
+    """A single log line carries both device lists, so a config's numeric
+    Device/DeviceIndex can later be matched back to a physical device name
+    (and, for audio, host API) on that machine."""
+    fake_audio = [
+        {
+            "index": 1,
+            "name": "Focusrite USB Audio",
+            "hostapi": 2,
+            "hostapi_name": "Windows WASAPI",
+            "max_input_channels": 2,
+            "default_samplerate": 44100.0,
+        },
+    ]
+    fake_video = [
+        {
+            "index": 0,
+            "name": "BRIO 4K Stream Edition",
+            "devnode": "0",
+        }
+    ]
+    monkeypatch.setattr(main_window, "list_input_devices", lambda: fake_audio)
+    monkeypatch.setattr(main_window, "list_video_devices", lambda: fake_video)
+
+    parsed = json.loads(build_device_discovery_log_payload())
+
+    assert parsed["event"] == "devices_discovered"
+    assert parsed["audio_input_devices"] == fake_audio
+    assert parsed["video_devices"] == fake_video
+
+
+def test_build_device_discovery_log_payload_survives_enumeration_failure(monkeypatch):
+    """A device-probe error (missing driver, permissions, ...) is captured in
+    the payload rather than raised, so a startup log call can't crash the app."""
+    def boom():
+        raise RuntimeError("PortAudio not available")
+
+    monkeypatch.setattr(main_window, "list_input_devices", boom)
+    monkeypatch.setattr(main_window, "list_video_devices", lambda: [])
+
+    parsed = json.loads(build_device_discovery_log_payload())
+    assert "PortAudio not available" in parsed["audio_input_devices"][0]["error"]
+    assert parsed["video_devices"] == []
 
 
 # ---------------------------------------------------------------------------
