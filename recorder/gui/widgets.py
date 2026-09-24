@@ -3,9 +3,10 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Tuple
 
-from PyQt6.QtCore import QSize
-from PyQt6.QtWidgets import (QCheckBox, QGridLayout, QGroupBox, QHBoxLayout,
-                             QMessageBox, QPushButton, QStyle, QWidget)
+from PyQt6.QtCore import QSize, Qt
+from PyQt6.QtWidgets import (QCheckBox, QFormLayout, QGridLayout, QGroupBox,
+                             QHBoxLayout, QMessageBox, QPushButton, QStyle,
+                             QToolButton, QWidget)
 
 
 def with_help_icon(
@@ -42,3 +43,35 @@ def make_checkbox_grid(
     box = QGroupBox()
     box.setLayout(grid)
     return box, checkboxes
+
+
+def add_collapsible_form_rows(
+    form: QFormLayout,
+    title: str,
+    rows: list[tuple[str, QWidget | QHBoxLayout]],
+    collapsed: bool = True,
+) -> QToolButton:
+    """Append a clickable `title` header to `form`, followed by `rows` (label, field)
+    that it shows/hides. The rows live in the same form as the rest of the tab,
+    so their labels and fields stay aligned with the other controls."""
+    toggle = QToolButton()
+    toggle.setText(title)
+    toggle.setCheckable(True)
+    toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+    toggle.setStyleSheet("QToolButton { border: none; font-weight: bold; }")
+    form.addRow(toggle)
+
+    first_row = form.rowCount()
+    for label, field in rows:
+        form.addRow(label, field)
+    row_indices = range(first_row, first_row + len(rows))
+
+    def _set_expanded(expanded: bool):
+        toggle.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
+        for row in row_indices:
+            form.setRowVisible(row, expanded)
+
+    toggle.toggled.connect(_set_expanded)
+    toggle.setChecked(not collapsed)
+    _set_expanded(not collapsed)
+    return toggle

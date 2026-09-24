@@ -196,12 +196,14 @@ class _FakeAudioSettings:
         samplerate=48000,
         channels=1,
         bitdepth=32,
+        sample_format="float32",
     ):
         self.stream_name = stream_name
         self.device_name = device_name
         self.samplerate = samplerate
         self.channels = channels
         self.bitdepth = bitdepth
+        self.sample_format = sample_format
 
 
 class _FakeLslStreamInfo:
@@ -256,7 +258,7 @@ def test_recording_stream_rows_audio_only():
         ),
     )
     assert _recording_stream_rows(controller) == [
-        ("Audio", "Audio", "USB Microphone", "44100 Hz, 2 ch, 16-bit"),
+        ("Audio", "Audio", "USB Microphone", "44100 Hz, 2 ch, 16-bit, stored as float32"),
     ]
 
 

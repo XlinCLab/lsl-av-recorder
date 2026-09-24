@@ -67,7 +67,7 @@ def _check_close(name: str, expected: float, actual: float, rel_tol: float) -> C
         passed = abs(actual) < 1e-9
     else:
         passed = abs(actual - expected) <= rel_tol * abs(expected)
-    return _check(name, passed, f"expected={expected}, actual={actual}")
+    return _check(name=name, passed=passed, detail=f"expected={expected}, actual={actual}")
 
 
 def _check_count_in_range(name: str, actual_n: int, expected_n: float, rel_tol: float) -> CheckResult:
@@ -75,8 +75,9 @@ def _check_count_in_range(name: str, actual_n: int, expected_n: float, rel_tol: 
     hi = expected_n * (1 + rel_tol)
     passed = lo <= actual_n <= hi
     return _check(
-        name, passed,
-        f"expected~={expected_n:.0f} (+/-{rel_tol:.0%}), actual={actual_n}",
+        name=name,
+        passed=passed,
+        detail=f"expected~={expected_n:.0f} (+/-{rel_tol:.0%}), actual={actual_n}",
     )
 
 
@@ -85,23 +86,40 @@ def _validate_audio(cfg: AppConfig, by_name: dict, expected_duration_s: float) -
     name = cfg.Audio.StreamName or "Audio"
     stream = by_name.get(name)
     if stream is None:
-        checks.append(_check(f"Audio stream <{name}> present", False, "not found in XDF"))
+        checks.append(_check(
+            name=f"Audio stream <{name}> present",
+            passed=False,
+            detail="not found in XDF"
+        ))
         return checks
-    checks.append(_check(f"Audio stream <{name}> present", True, "found"))
+    checks.append(_check(name=f"Audio stream <{name}> present", passed=True, detail="found"))
 
     info = stream["info"]
     n_samples = stream["time_series"].shape[0]
     actual_channels = int(info["channel_count"][0])
     checks.append(_check(
-        "Audio channel count", actual_channels == cfg.Audio.Channels,
-        f"expected={cfg.Audio.Channels}, actual={actual_channels}",
+        name="Audio channel count",
+        passed=actual_channels == cfg.Audio.Channels,
+        detail=f"expected={cfg.Audio.Channels}, actual={actual_channels}",
+    ))
+    actual_format = str((info.get("channel_format") or [None])[0])
+    checks.append(_check(
+        name="Audio sample format",
+        passed=actual_format == cfg.Audio.SampleFormat,
+        detail=f"expected={cfg.Audio.SampleFormat}, actual={actual_format}",
     ))
     effective_srate = float(info["effective_srate"] or 0.0)
     checks.append(_check_close(
-        "Audio effective sample rate", cfg.Audio.SampleRate, effective_srate, DEFAULT_RATE_TOLERANCE,
+        name="Audio effective sample rate",
+        expected=cfg.Audio.SampleRate,
+        actual=effective_srate,
+        rel_tol=DEFAULT_RATE_TOLERANCE,
     ))
     checks.append(_check_count_in_range(
-        "Audio sample count", n_samples, expected_duration_s * cfg.Audio.SampleRate, DEFAULT_COUNT_TOLERANCE,
+        name="Audio sample count",
+        actual_n=n_samples,
+        expected_n=expected_duration_s * cfg.Audio.SampleRate,
+        rel_tol=DEFAULT_COUNT_TOLERANCE,
     ))
     return checks
 

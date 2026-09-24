@@ -5,34 +5,80 @@ logic.
 """
 from __future__ import annotations
 
+import numpy as np
 import pytest
+import sounddevice as sd
 
-from recorder.audio.lsl_audio import (_dtype_format, _lsl_format,
-                                      _resolve_input_device, _try_device)
+from recorder.audio.constants import (BITDEPTH_CONVERSION_FLOAT,
+                                      BITDEPTH_CONVERSION_INT)
+from recorder.audio.lsl_audio import (AudioLSLStreamer, AudioStreamSettings,
+                                      _capture_dtype, _resolve_input_device,
+                                      _try_device, convert_samples)
+
+
+def test_bitdepth_conversion_val():
+    assert BITDEPTH_CONVERSION_FLOAT == 32768.0
+    assert BITDEPTH_CONVERSION_INT == 32768
+    assert BITDEPTH_CONVERSION_INT == int(BITDEPTH_CONVERSION_FLOAT)
+    assert BITDEPTH_CONVERSION_FLOAT == float(BITDEPTH_CONVERSION_INT)
+
 
 # ---------------------------------------------------------------------------
-# _lsl_format / _dtype_format
+# _capture_dtype
 # ---------------------------------------------------------------------------
 
-def test_lsl_format_maps_supported_bitdepths():
-    """Each supported bitdepth maps to its LSL channel-format string."""
-    assert _lsl_format(bitdepth=16) == "int16"
-    assert _lsl_format(bitdepth=32) == "float32"
-    assert _lsl_format(bitdepth=64) == "double64"
+def test_capture_dtype_maps_supported_bitdepths():
+    """16 captures as int16, 32 as float32."""
+    assert _capture_dtype(16) == "int16"
+    assert _capture_dtype(32) == "float32"
 
 
-def test_lsl_format_rejects_unsupported_bitdepth():
-    """An unsupported bitdepth (e.g. 24) raises an error rather than guessing a format."""
+@pytest.mark.parametrize("bad", [8, 24, 64])
+def test_capture_dtype_rejects_unsupported_bitdepth(bad):
+    """Unsupported depths raise rather than guessing a dtype."""
     with pytest.raises(ValueError):
-        _lsl_format(bitdepth=24)
+        _capture_dtype(bad)
 
 
-def test_dtype_format_collapses_to_capture_dtype():
-    """The capture dtype is int16 for 16-bit and float32 otherwise; 64-bit is
-    captured as float32 and upcast in software later."""
-    assert _dtype_format(bitdepth=16) == "int16"
-    assert _dtype_format(bitdepth=32) == "float32"
-    assert _dtype_format(bitdepth=64) == "float32"
+# ---------------------------------------------------------------------------
+# convert_samples
+# ---------------------------------------------------------------------------
+
+def test_convert_samples_same_dtype_is_noop():
+    x = np.array([[0.1], [-0.2]], dtype=np.float32)
+    assert convert_samples(x, "float32") is x
+    y = np.array([[1], [-2]], dtype=np.int16)
+    assert convert_samples(y, "int16") is y
+
+
+def test_convert_samples_int16_to_float32_uses_full_scale_convention():
+    """int16 full scale maps to [-1, 1] (divided by 32768) and yields float32."""
+    x = np.array([[-32768], [0], [16384], [32767]], dtype=np.int16)
+    out = convert_samples(x, "float32")
+    assert out.dtype == np.float32
+    assert out[:, 0].tolist() == [-1.0, 0.0, 0.5, 32767 / 32768]
+
+
+def test_convert_samples_float32_to_int16_rounds_and_clips():
+    x = np.array([[-1.0], [0.0], [0.5], [1.0], [1.5], [-2.0]], dtype=np.float32)
+    out = convert_samples(x, "int16")
+    assert out.dtype == np.int16
+    assert out[:, 0].tolist() == [-32768, 0, 16384, 32767, 32767, -32768]
+
+
+def test_convert_samples_int16_float32_round_trip_is_lossless():
+    x = np.arange(-32768, 32768, dtype=np.int16)[:, None]
+    assert np.array_equal(convert_samples(convert_samples(x, "float32"), "int16"), x)
+
+
+def test_convert_samples_preserves_shape():
+    x = np.zeros((5, 3), dtype=np.int16)
+    assert convert_samples(x, "float32").shape == (5, 3)
+
+
+def test_convert_samples_rejects_unknown_format():
+    with pytest.raises(ValueError):
+        convert_samples(np.zeros((2, 1), dtype=np.float32), "float64")
 
 
 # ---------------------------------------------------------------------------
@@ -172,3 +218,58 @@ def test_resolve_auto_raises_when_no_device_usable(fake_sd):
             channels=1,
             dtype="float32",
         )
+
+
+# ---------------------------------------------------------------------------
+# AudioLSLStreamer.start: capture-format fallback
+# ---------------------------------------------------------------------------
+
+class _StubInputStream:
+    instances = []
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        _StubInputStream.instances.append(self)
+
+    def start(self):
+        pass
+
+
+def test_start_falls_back_to_int16_capture_when_float32_is_rejected(fake_sd, monkeypatch):
+    """A device that only accepts int16 still records: capture drops to int16
+    (bitdepth updated to match), the warning names the format that was refused,
+    and the configured sample_format is unchanged."""
+    idx = fake_sd.add_device(
+        "Mic", max_input_channels=1, default_samplerate=48000,
+        supported_rates=[48000], supported_dtypes=["int16"],
+    )
+    _StubInputStream.instances = []
+    monkeypatch.setattr(sd, "InputStream", _StubInputStream, raising=False)
+    messages = []
+    settings = AudioStreamSettings(device=idx, samplerate=48000, bitdepth=32, sample_format="float32")
+
+    AudioLSLStreamer(settings, sample_cb=None, status_cb=lambda m, lvl: messages.append((lvl, m))).start()
+
+    assert _StubInputStream.instances[0].kwargs["dtype"] == "int16"
+    assert settings.bitdepth == 16
+    assert settings.sample_format == "float32"
+    warning = next(m for lvl, m in messages if lvl == "WARNING")
+    assert "float32 capture" in warning and "falling back to int16" in warning
+
+
+def test_start_uses_requested_capture_dtype_when_supported(fake_sd, monkeypatch):
+    idx = fake_sd.add_device(
+        name="Mic",
+        max_input_channels=1,
+        default_samplerate=48000,
+        supported_rates=[48000],
+        supported_dtypes=["int16", "float32"],
+    )
+    _StubInputStream.instances = []
+    monkeypatch.setattr(sd, "InputStream", _StubInputStream, raising=False)
+    settings = AudioStreamSettings(device=idx, samplerate=48000, bitdepth=32)
+
+    AudioLSLStreamer(settings, sample_cb=None).start()
+
+    assert _StubInputStream.instances[0].kwargs["dtype"] == "float32"
+    assert settings.bitdepth == 32

@@ -50,7 +50,9 @@ def is_input_config_supported(
     channels: int,
     bitdepth: int,
 ) -> bool:
-    dtype = BITDEPTH_DTYPES.get(int(bitdepth), "float32")
+    dtype = BITDEPTH_DTYPES.get(int(bitdepth))
+    if dtype is None:
+        return False
     try:
         sd.check_input_settings(device=device, samplerate=samplerate, channels=channels, dtype=dtype)
         return True
@@ -98,18 +100,16 @@ def get_audio_device_capabilities(
         {
             sr
             for sr in candidate_rates
-            if is_input_config_supported(device, sr, test_channels, 32)
+            if any(is_input_config_supported(device, sr, test_channels, b) for b in BITDEPTH_DTYPES)
         }
     )
     caps["samplerates"] = supported_rates
 
     probe_rate = supported_rates[0] if supported_rates else (default_samplerate or DEFAULT_SAMPLING_RATE)
     bitdepths = []
-    for bitdepth in (16, 32):
+    for bitdepth in sorted(BITDEPTH_DTYPES):
         if is_input_config_supported(device, probe_rate, test_channels, bitdepth):
             bitdepths.append(bitdepth)
-            if bitdepth == 32:
-                bitdepths.append(64)
-    caps["bitdepths"] = sorted(set(bitdepths))
+    caps["bitdepths"] = bitdepths
 
     return caps

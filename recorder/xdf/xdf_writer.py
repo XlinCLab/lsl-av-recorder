@@ -408,9 +408,12 @@ class XDFWriter:
         channels: int,
         fmt: str = "float32",
         source_id: str = "audio",
+        extra: Optional[Dict[str, str]] = None,
     ) -> int:
         """
         Register an audio stream. Samples must be written via write_audio().
+        `fmt` is the dtype of the written samples; `extra` adds fields (e.g. the
+        capture bit depth, which `fmt` alone cannot convey) to the stream's <desc>.
         """
         sid = self._get_next_stream_id()
         xml = self._make_stream_header_xml(
@@ -420,6 +423,7 @@ class XDFWriter:
             srate=samplerate,
             fmt=fmt,
             source_id=source_id,
+            extra=extra,
         )
 
         with self._lock:

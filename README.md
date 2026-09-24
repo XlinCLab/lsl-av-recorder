@@ -120,6 +120,13 @@ Note: Starting a real recording with a camera whose current selection has never 
   - **RAIL**: fraction of samples near front-end saturation, and packet-gap detection if a counter channel is present.
   - Channel roles (which channels are EEG vs. non-EEG, and which is the packet counter) are auto-detected from channel names and overridable in the dialog. Thresholds are device/room-specific: record a baseline against a setup already known to be good.
 
+## Audio Format and Extracting Audio
+Two separate `[Audio]` settings control the sample format:
+- `BitDepth` (`16` or `32`): the resolution requested from the audio device. `32` means 32-bit float and keeps the device's full resolution; `16` captures 16-bit integers. Only options the selected device supports are offered in the GUI.
+- `SampleFormat` (`float32` (default) or `int16`): the data type of the samples stored in the XDF. Settable under "Advanced" in the Audio tab. Captured samples are converted to this format when the two differ.
+
+By default audio is stored as `float32` in the range [-1, 1], which most audio tools expect, so it can be written to a WAV directly. If `SampleFormat = int16`, values are whole numbers in [-32768, 32767]. Divide samples by 32768 to convert to the range [-1, 1] before passing them to tools that assume float audio, otherwise they will clip. The XDF stream's `channel_format` states the stored type, and its `<desc>` records `capture_bit_depth`.
+
 ## Configuration Files (.cfg)
 Configuration files are INI-style and expected to be saved as `.cfg` files.
 
@@ -142,6 +149,7 @@ Configuration files are INI-style and expected to be saved as `.cfg` files.
 - `Device`
 - `SampleRate`
 - `BitDepth`
+- `SampleFormat`
 - `Channels`
 - `StreamName`
 

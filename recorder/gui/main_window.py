@@ -22,6 +22,8 @@ from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
                              QSplitter, QTableWidget, QTableWidgetItem,
                              QTabWidget, QTextEdit, QVBoxLayout, QWidget)
 
+from ..audio.constants import (BITDEPTH_CONVERSION_INT, DEFAULT_SAMPLE_FORMAT,
+                               SAMPLE_FORMATS)
 from ..audio.devices import (default_input_device_index,
                              get_audio_device_capabilities,
                              is_input_config_supported, list_input_devices)
@@ -46,7 +48,7 @@ from .preview_panel import PreviewPanel
 from .refgnd_monitor_dialog import (REF_GND_MONITOR_EXT_DESCR,
                                     RefGndMonitorDialog)
 from .run_controller import RunController
-from .widgets import with_help_icon
+from .widgets import add_collapsible_form_rows, with_help_icon
 
 
 def build_config_log_payload(label: str, cfg: AppConfig) -> str:
@@ -127,7 +129,7 @@ def _recording_stream_rows(controller) -> list[tuple[str, str, str, str]]:
         a = controller.audio_settings
         rows.append((
             a.stream_name, "Audio", a.device_name or "(default)",
-            f"{a.samplerate:g} Hz, {a.channels} ch, {a.bitdepth}-bit",
+            f"{a.samplerate:g} Hz, {a.channels} ch, {int(a.bitdepth)}-bit, stored as {a.sample_format}",
         ))
     if controller.video_enabled:
         for cam in controller.cams:
@@ -289,6 +291,13 @@ class MainWindow(QMainWindow):
         self.audio_device = QComboBox()
         self.audio_sr = QComboBox()
         self.audio_bit = QComboBox()
+        self.audio_sample_format = QComboBox()
+        self.audio_sample_format.addItem(f"{DEFAULT_SAMPLE_FORMAT} (recommended)", DEFAULT_SAMPLE_FORMAT)
+        for fmt in SAMPLE_FORMATS:
+            if fmt != DEFAULT_SAMPLE_FORMAT:
+                self.audio_sample_format.addItem(fmt, fmt)
+        idx = self.audio_sample_format.findData(self.cfg.Audio.SampleFormat)
+        self.audio_sample_format.setCurrentIndex(max(idx, 0))
         self.audio_ch = QSpinBox(); self.audio_ch.setRange(1, 16); self.audio_ch.setValue(self.cfg.Audio.Channels)
         self._audio_caps: dict = {}
         self._populate_audio_devices()
@@ -301,6 +310,9 @@ class MainWindow(QMainWindow):
         self.audio_bit.currentIndexChanged.connect(
             lambda _i: self._log_gui_change("Audio.BitDepth", self.audio_bit.currentData())
         )
+        self.audio_sample_format.currentIndexChanged.connect(
+            lambda _i: self._log_gui_change("Audio.SampleFormat", self.audio_sample_format.currentData())
+        )
         self.audio_ch.valueChanged.connect(lambda v: self._log_gui_change("Audio.Channels", v))
 
         self.audio_stream_name = QLineEdit(getattr(self.cfg.Audio, "StreamName", "Audio") or "Audio")
@@ -309,9 +321,33 @@ class MainWindow(QMainWindow):
         af.addRow("Input device", self.audio_device)
         af.addRow("Stream name", self.audio_stream_name)
         af.addRow("Sample rate", self.audio_sr)
-        af.addRow("Bit depth", self.audio_bit)
+        af.addRow("Bit depth", self._with_help_icon(
+            self.audio_bit,
+            "Bit depth",
+            "The resolution requested from the audio device when capturing.\n\n"
+            "16-bit: 16-bit integers. Smaller, but lower resolution.\n\n"
+            "32-bit: 32-bit float. Keeps the device's full resolution.\n\n"
+            "Only options the selected device accepts are listed.",
+        ))
         af.addRow("Channels", self.audio_ch)
-        audio_widget.setLayout(af)
+
+        add_collapsible_form_rows(af, "Advanced", [("Sample format", self._with_help_icon(
+            self.audio_sample_format,
+            "Sample format",
+            "How audio samples are stored in the XDF file:\n\n"
+            "float32 (recommended): decimal values between -1.0 and +1.0, which is what "
+            "most audio tools expect.\n\n"
+            f"int16: whole numbers from -{BITDEPTH_CONVERSION_INT} to +{BITDEPTH_CONVERSION_INT-1}. Half the size, but tools that "
+            "expect values between -1 and +1 will clip or distort it unless the values are "
+            f"divided by {BITDEPTH_CONVERSION_INT} first.\n\n"
+            "This is separate from 'Bit depth', which controls the resolution captured "
+            "from the device; samples are converted to this format as needed.",
+        ))], collapsed=True)
+
+        audio_layout = QVBoxLayout()
+        audio_layout.addLayout(af)
+        audio_layout.addStretch(1)
+        audio_widget.setLayout(audio_layout)
         self.tabs.addTab(audio_widget, "Audio")
 
         # Buffering tab (writer thread settings)
@@ -1046,6 +1082,7 @@ class MainWindow(QMainWindow):
         self.cfg.Audio.Device = str(dev) if dev is not None else None
         self.cfg.Audio.SampleRate = int(self.audio_sr.currentData())
         self.cfg.Audio.BitDepth = int(self.audio_bit.currentData())
+        self.cfg.Audio.SampleFormat = self.audio_sample_format.currentData()
         self.cfg.Audio.Channels = int(self.audio_ch.value())
         self.cfg.Audio.StreamName = self.audio_stream_name.text().strip() or "Audio"
 
@@ -1181,7 +1218,7 @@ class MainWindow(QMainWindow):
         if is_input_config_supported(device, samplerate, channels, bitdepth):
             return []
         return [
-            f"Audio: samplerate={samplerate}, bitdepth={bitdepth}, channels={channels} "
+            f"Audio: samplerate={samplerate}, bit depth={bitdepth}-bit, channels={channels} "
             "is not supported by the selected input device."
         ]
 
@@ -1724,6 +1761,8 @@ class MainWindow(QMainWindow):
             preferred_samplerate=int(self.cfg.Audio.SampleRate),
             preferred_bitdepth=int(self.cfg.Audio.BitDepth),
         )
+        idx = self.audio_sample_format.findData(self.cfg.Audio.SampleFormat)
+        self.audio_sample_format.setCurrentIndex(max(idx, 0))
         self.audio_stream_name.setText(getattr(self.cfg.Audio, "StreamName", "Audio") or "Audio")
 
         self.labrec_enabled.setChecked(bool(self.cfg.LabRecorder.Enabled))
