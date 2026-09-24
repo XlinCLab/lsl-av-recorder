@@ -16,6 +16,8 @@ LabStreamingLayer / LabRecorder:
 """
 from __future__ import annotations
 
+import socket
+
 import numpy as np
 import pytest
 from pylsl import cf_float32, local_clock
@@ -344,7 +346,7 @@ def test_pyxdf_reads_back_channel_labels_and_values(xdf_path):
         srate=250.0,
         fmt="float32",
         source_id="eeg",
-        extra={"hostname": "host1"},
+        hostname="host1",
         channels=[
             {"label": "FPz", "unit": "microvolts", "type": "EEG"},
             {"label": "Cz", "unit": "microvolts", "type": "EEG"},
@@ -363,5 +365,42 @@ def test_pyxdf_reads_back_channel_labels_and_values(xdf_path):
     channels = eeg["info"]["desc"][0]["channels"][0]["channel"]
     assert [c["label"][0] for c in channels] == ["FPz", "Cz"]
     assert channels[0]["unit"][0] == "microvolts"
-    assert eeg["info"]["desc"][0]["hostname"][0] == "host1"
+    assert eeg["info"]["hostname"][0] == "host1"
     np.testing.assert_allclose(eeg["time_series"], samples)
+
+
+def test_stream_headers_carry_top_level_hostname(xdf_path):
+    """Every stream (LSL, audio, video) has <hostname> at the top level of its
+    header, where standard XDF loaders (e.g. MATLAB load_xdf) expect it."""
+    w = XDFWriter(xdf_path)
+    w.start()
+    w.add_audio_stream(
+        name="Audio",
+        samplerate=48000,
+        channels=1,
+    )
+    w.add_lsl_stream(
+        name="EEG",
+        stype="EEG",
+        channel_count=1,
+        srate=250.0,
+        fmt="float32",
+        source_id="eeg",
+        hostname="lab-pc",
+        key="lsl:eeg",
+    )
+    w.add_lsl_stream(
+        name="Other",
+        stype="EEG",
+        channel_count=1,
+        srate=250.0,
+        fmt="float32",
+        source_id="o",
+        key="lsl:o",
+    )
+    w.stop()
+
+    streams = load_by_name(xdf_path)
+    assert streams["EEG"]["info"]["hostname"][0] == "lab-pc"
+    assert streams["Audio"]["info"]["hostname"][0] == socket.gethostname()
+    assert streams["Other"]["info"]["hostname"][0] == socket.gethostname()

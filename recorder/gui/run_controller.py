@@ -311,8 +311,9 @@ class RunController:
                     srate=stream.nominal_srate(),
                     fmt=fmt,
                     source_id=stream.source_id() or stream.uid(),
-                    extra={"hostname": stream.hostname(), "uid": stream.uid()},
+                    hostname=stream.hostname(),
                     channels=channels,
+                    extra={"uid": stream.uid()},
                     key=f"lsl:{stream.uid()}",
                 )
                 self.info(f"Initialized LSL stream <{stream.name()}> in XDF")
