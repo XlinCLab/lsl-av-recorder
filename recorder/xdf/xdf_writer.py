@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+import socket
 import struct
 import threading
 import uuid
@@ -179,6 +180,7 @@ class XDFWriter:
         source_id: str,
         channels: Optional[List[Dict[str, str]]] = None,
         extra: Optional[Dict[str, str]] = None,
+        hostname: Optional[str] = None,
     ) -> bytes:
         root = ET.Element("info")
         ET.SubElement(root, "name").text = name
@@ -188,6 +190,7 @@ class XDFWriter:
         ET.SubElement(root, "channel_format").text = fmt
         ET.SubElement(root, "source_id").text = source_id
         ET.SubElement(root, "uid").text = str(uuid.uuid4())
+        ET.SubElement(root, "hostname").text = hostname or socket.gethostname()
 
         if extra or channels:
             desc = ET.SubElement(root, "desc")
@@ -486,8 +489,9 @@ class XDFWriter:
         srate: float,
         fmt: str,
         source_id: str,
-        extra: Optional[Dict[str, str]] = None,
+        hostname: Optional[str] = None,
         channels: Optional[List[Dict[str, str]]] = None,
+        extra: Optional[Dict[str, str]] = None,
         key: Optional[str] = None,
     ) -> int:
         """
@@ -505,8 +509,9 @@ class XDFWriter:
             srate=srate,
             fmt=fmt,
             source_id=source_id,
-            extra=extra,
+            hostname=hostname,
             channels=channels,
+            extra=extra,
         )
 
         with self._lock:
