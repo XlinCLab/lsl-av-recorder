@@ -171,6 +171,26 @@ def test_audio_pass(xdf_path):
     assert report.passed, report.detailed_text()
 
 
+def test_audio_sample_format_mismatch_fails(xdf_path):
+    """A stream stored in a different dtype than configured is flagged."""
+    cfg = base_cfg()
+    cfg.Audio.Enabled = True
+    cfg.Audio.StreamName = "Audio"
+    cfg.Audio.SampleRate = 1000
+    cfg.Audio.Channels = 1
+    cfg.Audio.SampleFormat = "int16"
+
+    w = XDFWriter(xdf_path)
+    w.start()
+    write_audio_stream(w, name="Audio", samplerate=1000, channels=1, n_samples=10000)  # float32
+    w.stop()
+
+    report = validate_test_recording(xdf_path, cfg, [], 10.0)
+    fmt_check = next(c for c in report.checks if "sample format" in c.name)
+    assert not fmt_check.passed
+    assert "expected=int16, actual=float32" in fmt_check.detail
+
+
 def test_audio_missing_stream_fails(xdf_path):
     cfg = base_cfg()
     cfg.Audio.Enabled = True

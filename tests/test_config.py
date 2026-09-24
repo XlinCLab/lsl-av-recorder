@@ -101,6 +101,38 @@ def test_load_cfg_audio_enabled_and_types(write_cfg):
     assert cfg.Audio.StreamName == "Mic"
 
 
+def test_load_cfg_audio_sample_format_defaults_to_float32(write_cfg):
+    """No SampleFormat key: audio is stored as float32 regardless of BitDepth."""
+    path = write_cfg("""
+        [Audio]
+        Enabled = 1
+        BitDepth = 16
+    """)
+    cfg = load_cfg(path)
+    assert cfg.Audio.BitDepth == 16
+    assert cfg.Audio.SampleFormat == "float32"
+
+
+def test_load_cfg_audio_sample_format_is_case_insensitive(write_cfg):
+    path = write_cfg("""
+        [Audio]
+        SampleFormat = INT16
+    """)
+    assert load_cfg(path).Audio.SampleFormat == "int16"
+
+
+def test_load_cfg_audio_unsupported_bitdepth_and_format_fall_back_to_defaults(write_cfg):
+    """64-bit or other unsupported values fall back to defaults instead of failing later at record time."""
+    path = write_cfg("""
+        [Audio]
+        BitDepth = 64
+        SampleFormat = float64
+    """)
+    cfg = load_cfg(path)
+    assert cfg.Audio.BitDepth == 32
+    assert cfg.Audio.SampleFormat == "float32"
+
+
 def test_load_cfg_audio_empty_device_becomes_none(write_cfg):
     """A blank Device value normalizes to None (meaning 'auto-select')."""
     cfg = load_cfg(
@@ -341,7 +373,8 @@ def test_save_cfg_round_trips_session_output_audio_labrecorder(tmp_path):
     cfg.Audio.Enabled = True
     cfg.Audio.Device = "USB Mic"
     cfg.Audio.SampleRate = 44100
-    cfg.Audio.BitDepth = 24
+    cfg.Audio.BitDepth = 16
+    cfg.Audio.SampleFormat = "int16"
     cfg.Audio.Channels = 2
     cfg.Audio.StreamName = "Mic"
     cfg.LabRecorder.Enabled = True

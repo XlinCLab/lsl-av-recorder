@@ -7,6 +7,10 @@ import numpy as np
 import sounddevice as sd
 from pylsl import local_clock
 
+from .constants import (BITDEPTH_CONVERSION_FLOAT, BITDEPTH_DTYPES,
+                        DEFAULT_BIT_DEPTH, DEFAULT_SAMPLE_FORMAT,
+                        SAMPLE_FORMATS)
+
 
 @dataclass
 class AudioStreamSettings:
@@ -14,23 +18,35 @@ class AudioStreamSettings:
     device_name: Optional[str] = None
     samplerate: int = 48000
     channels: int = 1
-    bitdepth: int = 32  # 16/32/64
+    bitdepth: int = DEFAULT_BIT_DEPTH  # capture resolution requested from the device: 16 or 32
+    sample_format: str = DEFAULT_SAMPLE_FORMAT  # dtype written to the XDF: float32 or int16
     stream_name: str = "Audio"
     stream_type: str = "Audio"
     source_id: str = "audio"
 
-def _lsl_format(bitdepth: int) -> str:
-    if bitdepth == 16:
-        return "int16"
-    if bitdepth == 32:
-        return "float32"
-    if bitdepth == 64:
-        return "double64"
-    raise ValueError("bitdepth must be 16, 32, or 64")
+def _capture_dtype(bitdepth: int) -> str:
+    """PortAudio dtype to request for a capture bit depth."""
+    try:
+        return BITDEPTH_DTYPES[int(bitdepth)]
+    except (KeyError, ValueError, TypeError):
+        raise ValueError(f"bitdepth must be one of {sorted(BITDEPTH_DTYPES)}, got {bitdepth!r}") from None
 
 
-def _dtype_format(bitdepth: int) -> str:
-    return "int16" if bitdepth == 16 else "float32"
+def convert_samples(samples: np.ndarray, sample_format: str) -> np.ndarray:
+    """Convert captured samples to the dtype that will be written to the XDF.
+
+    int16 <-> float32 use the standard full-scale convention (int16 / 32768 = float in [-1, 1]).
+    """
+    if sample_format not in SAMPLE_FORMATS:
+        raise ValueError(f"sample_format must be one of {SAMPLE_FORMATS}, got {sample_format!r}")
+    target = np.dtype(sample_format)
+    if samples.dtype == target:
+        return samples
+    if samples.dtype == np.int16 and target == np.float32:
+        return samples.astype(np.float32) / np.float32(BITDEPTH_CONVERSION_FLOAT)
+    if samples.dtype == np.float32 and target == np.int16:
+        return np.clip(np.rint(samples * BITDEPTH_CONVERSION_FLOAT), -BITDEPTH_CONVERSION_FLOAT, BITDEPTH_CONVERSION_FLOAT-1).astype(np.int16)
+    raise ValueError(f"Cannot convert {samples.dtype} samples to {sample_format}")
 
 
 def _device_default_samplerate(device) -> Optional[int]:
@@ -134,9 +150,8 @@ class AudioLSLStreamer:
         self.log(msg, loglevel="ERROR")
 
     def start(self):
-        chfmt = _lsl_format(self.s.bitdepth)
-
-        dtype = _dtype_format(self.s.bitdepth)
+        sample_format = self.s.sample_format
+        dtype = _capture_dtype(self.s.bitdepth)
 
         def callback(indata, frames, time_info, status):
             if status:
@@ -148,19 +163,37 @@ class AudioLSLStreamer:
             # Compute timestamps for each sample
             timestamps = ts0 + np.arange(frames) / self.s.samplerate
 
-            x = indata.copy()
-            if self.s.bitdepth == 64:
-                x = x.astype(np.float64, copy=False)
-            elif self.s.bitdepth == 32:
-                x = x.astype(np.float32, copy=False)
+            x = convert_samples(indata.copy(), sample_format)
 
             # Custom callback function to write to XDF files 
             if self.sample_cb:
                 self.sample_cb(timestamps, x)
 
-        device, resolved_samplerate = _resolve_input_device(
-            self.s.device, self.s.samplerate, self.s.channels, dtype
-        )
+        try:
+            device, resolved_samplerate = _resolve_input_device(
+                requested=self.s.device,
+                samplerate=self.s.samplerate,
+                channels=self.s.channels,
+                dtype=dtype,
+            )
+        except RuntimeError:
+            # Some host APIs/modes (e.g. exclusive WASAPI, ASIO) refuse format conversion;
+            # int16 is the most widely accepted capture format, and convert_samples()
+            # still delivers the configured sample_format.
+            if dtype == "int16":
+                raise
+            device, resolved_samplerate = _resolve_input_device(
+                requested=self.s.device,
+                samplerate=self.s.samplerate,
+                channels=self.s.channels,
+                dtype="int16",
+            )
+            self.warning(
+                f"Audio device does not support {dtype} capture; "
+                f"falling back to int16 capture (stored as {sample_format})."
+            )
+            dtype = "int16"
+            self.s.bitdepth = 16
         if resolved_samplerate != self.s.samplerate:
             self.warning(
                 f"Requested sample rate {self.s.samplerate} Hz is not supported by the "
@@ -178,7 +211,7 @@ class AudioLSLStreamer:
             blocksize=0,
         )
         self.stream.start()
-        self.info(f"AudioLSL: streaming '{self.s.stream_name}' sr={self.s.samplerate} ch={self.s.channels} fmt={chfmt}")
+        self.info(f"AudioLSL: streaming '{self.s.stream_name}' sr={self.s.samplerate} ch={self.s.channels} capture={dtype} stored_as={sample_format}")
 
     def stop(self):
         if self.stream:

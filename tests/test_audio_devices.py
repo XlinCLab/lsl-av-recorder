@@ -153,7 +153,7 @@ def test_capabilities_empty_when_query_fails(fake_sd):
 def test_capabilities_reports_supported_rates_and_bitdepths(fake_sd):
     """The probe reports the device's max channels, default rate, supported
     sample rates, and bit depths; int16 and float32 both working yields
-    [16, 32, 64] (64 rides along with 32)."""
+    [16, 32]."""
     idx = fake_sd.add_device(
         name="Mic",
         max_input_channels=2,
@@ -165,11 +165,11 @@ def test_capabilities_reports_supported_rates_and_bitdepths(fake_sd):
     assert caps["max_channels"] == 2
     assert caps["default_samplerate"] == 48000
     assert caps["samplerates"] == [16000, 44100, 48000]
-    assert caps["bitdepths"] == [16, 32, 64]
+    assert caps["bitdepths"] == [16, 32]
 
 
-def test_capabilities_float32_only_yields_32_and_64(fake_sd):
-    """A device supporting only float32 capture yields bit depths [32, 64]
+def test_capabilities_float32_only_yields_32(fake_sd):
+    """A device supporting only float32 capture yields bit depths [32]
     (no 16, since int16 isn't supported)."""
     idx = fake_sd.add_device(
         name="Mic",
@@ -179,7 +179,7 @@ def test_capabilities_float32_only_yields_32_and_64(fake_sd):
         supported_dtypes=["float32"],
     )
     caps = get_audio_device_capabilities(device=idx)
-    assert caps["bitdepths"] == [32, 64]
+    assert caps["bitdepths"] == [32]
 
 
 def test_capabilities_appends_native_rate_outside_candidate_list(fake_sd):
@@ -211,3 +211,24 @@ def test_capabilities_resolves_none_device_via_default(fake_sd):
     caps = get_audio_device_capabilities(device=None)
     assert caps["default_samplerate"] == 48000
     assert caps["samplerates"] == [48000]
+
+
+def test_capabilities_int16_only_device_still_reports_sample_rates(fake_sd):
+    """Sample rates are probed against every capture format, so a device that
+    only accepts int16 does not come back with an empty rate list."""
+    idx = fake_sd.add_device(
+        name="Mic",
+        max_input_channels=1,
+        default_samplerate=44100,
+        supported_rates=[44100],
+        supported_dtypes=["int16"],
+    )
+    caps = get_audio_device_capabilities(device=idx)
+    assert caps["samplerates"] == [44100]
+    assert caps["bitdepths"] == [16]
+
+
+def test_is_input_config_supported_rejects_unknown_bitdepth(fake_sd):
+    """64 (and any other depth with no capture dtype) is never supported."""
+    idx = fake_sd.add_device(name="Mic", max_input_channels=1, supported_rates=[48000])
+    assert is_input_config_supported(device=idx, samplerate=48000, channels=1, bitdepth=64) is False

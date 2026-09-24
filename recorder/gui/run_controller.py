@@ -14,8 +14,7 @@ import numpy as np
 from pylsl import StreamInfo, StreamInlet
 
 from ..audio.devices import list_input_devices
-from ..audio.lsl_audio import (AudioLSLStreamer, AudioStreamSettings,
-                               _dtype_format)
+from ..audio.lsl_audio import AudioLSLStreamer, AudioStreamSettings
 from ..config import AppConfig, VideoCamConfig
 from ..lsl.lsl_inlet_recorder import (LslInletRecorder, extract_channel_info,
                                       lsl_format_to_xdf)
@@ -295,8 +294,9 @@ class RunController:
                 name=self.audio_settings.stream_name,
                 samplerate=self.audio_settings.samplerate,
                 channels=self.audio_settings.channels,
-                fmt=_dtype_format(self.audio_settings.bitdepth),
+                fmt=self.audio_settings.sample_format,
                 source_id=self.audio_settings.source_id,
+                extra={"capture_bit_depth": self.audio_settings.bitdepth},
             )
             self.info(f"Initialized audio stream <{self.audio_settings.stream_name}> in XDF")
 
@@ -379,6 +379,7 @@ class RunController:
             samplerate=self.cfg.Audio.SampleRate,
             channels=self.cfg.Audio.Channels,
             bitdepth=self.cfg.Audio.BitDepth,
+            sample_format=self.cfg.Audio.SampleFormat,
             stream_name=self.cfg.Audio.StreamName or "Audio",
             stream_type="Audio",
             source_id=f"audio:{self.cfg.Audio.Device or 'default'}",

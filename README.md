@@ -115,6 +115,13 @@ Note: Starting a real recording with a camera whose current selection has never 
   - Streams checked in the resulting table each get their own `StreamInlet`, pulling samples into the XDF file for the duration of the run.
 - **LabRecorder RCS**: the LabRecorder tab's host/port fields and Connect/Disconnect buttons open a socket to a separately running LabRecorder instance's Remote Control Server, independent of this app's own Start/Stop and XDF writing.
 
+## Audio Format and Extracting Audio
+Two separate `[Audio]` settings control the sample format:
+- `BitDepth` (`16` or `32`): the resolution requested from the audio device. `32` means 32-bit float and keeps the device's full resolution; `16` captures 16-bit integers. Only options the selected device supports are offered in the GUI.
+- `SampleFormat` (`float32` (default) or `int16`): the data type of the samples stored in the XDF. Settable under "Advanced" in the Audio tab. Captured samples are converted to this format when the two differ.
+
+By default audio is stored as `float32` in the range [-1, 1], which most audio tools expect, so it can be written to a WAV directly. If `SampleFormat = int16`, values are whole numbers in [-32768, 32767]. Divide samples by 32768 to convert to the range [-1, 1] before passing them to tools that assume float audio, otherwise they will clip. The XDF stream's `channel_format` states the stored type, and its `<desc>` records `capture_bit_depth`.
+
 ## Configuration Files (.cfg)
 Configuration files are INI-style and expected to be saved as `.cfg` files.
 
@@ -137,6 +144,7 @@ Configuration files are INI-style and expected to be saved as `.cfg` files.
 - `Device`
 - `SampleRate`
 - `BitDepth`
+- `SampleFormat`
 - `Channels`
 - `StreamName`
 

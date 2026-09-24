@@ -5,8 +5,9 @@ import logging
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-from .audio.constants import (DEFAULT_BIT_DEPTH, DEFAULT_N_CHANNELS,
-                              DEFAULT_SAMPLING_RATE)
+from .audio.constants import (BITDEPTH_DTYPES, DEFAULT_BIT_DEPTH,
+                              DEFAULT_N_CHANNELS, DEFAULT_SAMPLE_FORMAT,
+                              DEFAULT_SAMPLING_RATE, SAMPLE_FORMATS)
 from .video.constants import (DEFAULT_CAMERA_FPS, DEFAULT_HEIGHT,
                               DEFAULT_PIXEL_FORMAT, DEFAULT_PREVIEW_FPS,
                               DEFAULT_WIDTH, DEVNODE_PATTERN)
@@ -45,6 +46,7 @@ class AudioConfig:
     Device: Optional[str] = None
     SampleRate: int = DEFAULT_SAMPLING_RATE
     BitDepth: int = DEFAULT_BIT_DEPTH
+    SampleFormat: str = DEFAULT_SAMPLE_FORMAT
     Channels: int = DEFAULT_N_CHANNELS
     StreamName: str = "Audio"
 
@@ -136,6 +138,19 @@ def load_cfg(path: str) -> AppConfig:
         cfg.Audio.Device = dev if dev else None
         cfg.Audio.SampleRate = cp.getint(s, "SampleRate", fallback=cfg.Audio.SampleRate)
         cfg.Audio.BitDepth = cp.getint(s, "BitDepth", fallback=cfg.Audio.BitDepth)
+        if cfg.Audio.BitDepth not in BITDEPTH_DTYPES:
+            logger.warning(
+                f"Audio.BitDepth={cfg.Audio.BitDepth} is not supported "
+                f"(choose from {sorted(BITDEPTH_DTYPES)}); using {DEFAULT_BIT_DEPTH}."
+            )
+            cfg.Audio.BitDepth = DEFAULT_BIT_DEPTH
+        cfg.Audio.SampleFormat = cp.get(s, "SampleFormat", fallback=cfg.Audio.SampleFormat).strip().lower()
+        if cfg.Audio.SampleFormat not in SAMPLE_FORMATS:
+            logger.warning(
+                f"Audio.SampleFormat={cfg.Audio.SampleFormat!r} is not supported "
+                f"(choose from {list(SAMPLE_FORMATS)}); using {DEFAULT_SAMPLE_FORMAT}."
+            )
+            cfg.Audio.SampleFormat = DEFAULT_SAMPLE_FORMAT
         cfg.Audio.Channels = cp.getint(s, "Channels", fallback=cfg.Audio.Channels)
         cfg.Audio.StreamName = cp.get(s, "StreamName", fallback=cfg.Audio.StreamName)
         if cp.has_option(s, "BufferSeconds"):
@@ -228,6 +243,7 @@ def save_cfg(cfg: AppConfig, path: str) -> None:
         "Device": cfg.Audio.Device or "",
         "SampleRate": str(cfg.Audio.SampleRate),
         "BitDepth": str(cfg.Audio.BitDepth),
+        "SampleFormat": cfg.Audio.SampleFormat,
         "Channels": str(cfg.Audio.Channels),
         "StreamName": cfg.Audio.StreamName,
     }
