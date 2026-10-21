@@ -193,6 +193,19 @@ class _DivergenceRequest:
         self.accepted = False
 
 
+class _FpsDivergenceRequest:
+    """A pending live "capture rate diverges from expected" decision.
+    Unlike _DivergenceRequest, nobody waits on it: the capture thread that raised it
+    keeps recording, and `on_decision(accepted)` is called once the dialog is answered."""
+
+    __slots__ = ("title", "message", "on_decision")
+
+    def __init__(self, title: str, message: str, on_decision):
+        self.title = title
+        self.message = message
+        self.on_decision = on_decision
+
+
 class _ApplyAllThread(QThread):
     finished_apply = pyqtSignal(list)
     failed = pyqtSignal(str)
@@ -229,6 +242,7 @@ class MainWindow(QMainWindow):
     log_signal = pyqtSignal(str)
     preview_frame_signal = pyqtSignal(object, object)
     divergence_signal = pyqtSignal(object)
+    fps_divergence_signal = pyqtSignal(object)
     abort_active_run_signal = pyqtSignal(str)
 
     def __init__(self, cfg_path: Optional[str] = None):
@@ -246,6 +260,7 @@ class MainWindow(QMainWindow):
         self.debug_logs.stateChanged.connect(self._on_debug_logs_changed)
         self.log_signal.connect(self._append_log)
         self.divergence_signal.connect(self._on_divergence_request)
+        self.fps_divergence_signal.connect(self._on_fps_divergence_request)
         self.abort_active_run_signal.connect(self._abort_active_run)
         self._run_log_file = None
         self._log_lock = threading.Lock()
@@ -1306,6 +1321,7 @@ class MainWindow(QMainWindow):
                 preview_release_cb=self._stop_preview_for_cam,
                 preview_frame_cb=self.preview_frame_signal.emit,
                 divergence_cb=self.request_setting_divergence_decision,
+                fps_divergence_cb=self.request_fps_divergence_decision,
             )
             self.preview_mgr.set_recording_preview_labels(
                 {preview_key(cam): cam.Label for cam in self.controller.cams}
@@ -1356,22 +1372,49 @@ class MainWindow(QMainWindow):
             self.abort_active_run_signal.emit(f"{title}\n\n{message}")
         return req.accepted
 
+    def request_fps_divergence_decision(self, title: str, message: str, on_decision) -> None:
+        """Request user decision about whether to proceed with or to abort running recording,
+        given that a divergence between configured and live-measured frame rate has been detected.
+        Avoids blocking the video capture thread: returns immediately so the calling
+        capture thread keeps reading frames while the dialog is open.
+        `on_decision(accepted)` is called on the GUI thread once answered.
+        Thread-safe."""
+        self.fps_divergence_signal.emit(_FpsDivergenceRequest(title, message, on_decision))
+
+    def _ask_accept_or_abort(self, title: str, message: str, note: str = "") -> bool:
+        """Modal Accept/Abort dialog (GUI thread). True = accept."""
+        box = QMessageBox(self)
+        box.setWindowTitle(title)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setText(message)
+        if note:
+            box.setInformativeText(note)
+        accept_btn = box.addButton("Accept and continue", QMessageBox.ButtonRole.AcceptRole)
+        abort_btn = box.addButton("Abort recording", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(abort_btn)
+        box.exec()
+        # Closing the dialog any other way (e.g. the window's own close button)
+        # leaves clickedButton() as None; treat as an implicit abort
+        # rather than silently continuing on an unacknowledged mismatch
+        return box.clickedButton() is accept_btn
+
     def _on_divergence_request(self, req: _DivergenceRequest):
         try:
-            box = QMessageBox(self)
-            box.setWindowTitle(req.title)
-            box.setIcon(QMessageBox.Icon.Warning)
-            box.setText(req.message)
-            accept_btn = box.addButton("Accept and continue", QMessageBox.ButtonRole.AcceptRole)
-            abort_btn = box.addButton("Abort recording", QMessageBox.ButtonRole.RejectRole)
-            box.setDefaultButton(abort_btn)
-            box.exec()
-            # Closing the dialog any other way (e.g. the window's own close button)
-            # leaves clickedButton() as None; treat as an implicit abort
-            # rather than silently continuing on an unacknowledged mismatch
-            req.accepted = box.clickedButton() is accept_btn
+            req.accepted = self._ask_accept_or_abort(req.title, req.message)
         finally:
             req.event.set()
+
+    def _on_fps_divergence_request(self, req: _FpsDivergenceRequest):
+        accepted = False
+        try:
+            accepted = self._ask_accept_or_abort(
+                req.title, req.message,
+                note="Recording continues while this window is open.",
+            )
+        finally:
+            req.on_decision(accepted)
+            if not accepted:
+                self.abort_active_run_signal.emit(f"{req.title}\n\n{req.message}")
 
     def _abort_active_run(self, reason: str):
         # Only real recordings are wired to request_setting_divergence_decision

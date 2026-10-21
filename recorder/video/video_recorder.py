@@ -38,6 +38,7 @@ class VideoRecorder:
         preview_cb: Optional[Callable] = None,
         preview_fps: Optional[float] = None,
         divergence_cb: Optional[Callable[[str, str], bool]] = None,
+        fps_divergence_cb: Optional[Callable[[str, str, Callable[[bool], None]], None]] = None,
     ):
         self.cam = cam_cfg
         self.output_path = output_path
@@ -47,6 +48,14 @@ class VideoRecorder:
         # Called (title, message) -> bool when a measured setting diverges
         # from what was configured; True = accept and keep recording, False = abort
         self.divergence_cb = divergence_cb
+        # Called (title, message, on_decision) when the live capture rate
+        # diverges from what was expected. Must return immediately: it runs
+        # on the capture thread, which must keep reading frames while the
+        # operator decides. The answer arrives later as on_decision(accepted)
+        # (True = accept the observed rate, False = abort), possibly from
+        # another thread.
+        self.fps_divergence_cb = fps_divergence_cb
+        self._fps_prompt_pending = False
         # Set once the operator accepts an observed fps as the new baseline,
         # so _expected_fps() stops comparing against the original configured value
         self._accepted_fps_override: Optional[float] = None
@@ -172,25 +181,41 @@ class VideoRecorder:
             self._prompt_fps_divergence(expected, inst_fps)
 
     def _prompt_fps_divergence(self, expected: float, observed: float):
-        if not self.divergence_cb or self._abort_requested:
+        if not self.fps_divergence_cb or self._abort_requested or self._fps_prompt_pending:
             return
-        accepted = self.divergence_cb(
-            f"Camera FPS deviation: {self.cam.Label}",
-            f"Camera {self.cam.Label} is configured to record at {expected:.2f} fps, "
-            f"but {observed:.2f} fps is actually being captured.\n\n"
-            "Accept the observed frame rate as the new expected frame rate "
-            "and continue recording, or abort the recording and adjust settings?",
-        )
+        self._fps_prompt_pending = True
+        try:
+            self.fps_divergence_cb(
+                f"Camera FPS deviation: {self.cam.Label}",
+                f"Camera {self.cam.Label} is configured to record at {expected:.2f} fps, "
+                f"but {observed:.2f} fps is actually being captured.\n\n"
+                "Accept the observed frame rate as the new expected frame rate "
+                "and continue recording, or abort the recording and adjust settings?",
+                lambda accepted: self._on_fps_decision(accepted, observed),
+            )
+        except Exception as exc:
+            # A failing prompt must never take down the capture thread
+            self._fps_prompt_pending = False
+            self.warning(f"Could not show FPS deviation prompt ({self.cam.Label}): {exc}")
+
+    def _on_fps_decision(self, accepted: bool, observed: float):
+        """The operator's answer to an FPS deviation prompt (any thread)."""
+        self._fps_prompt_pending = False
         if accepted:
             # Set current observed rate as the new accepted baseline;
             # further deviation from THIS value will still warn again
             self._accepted_fps_override = observed
         else:
-            # divergence_cb has already triggered the abort itself; suppress
-            # any further divergence prompt for the rest of this recorder's
+            # The abort itself has already been triggered; suppress any
+            # further divergence prompt for the rest of this recorder's
             # teardown, since e.g. the capture rate dropping toward zero as
             # the camera is released is expected, not a new decision to make
             self._abort_requested = True
+
+    def _reset_fps_window(self):
+        """Start a fresh deviation-check window now."""
+        self._last_log_ts = time.perf_counter()
+        self._last_log_frame_idx = self.frame_idx
 
     def _prompt_size_divergence(self, actual_w: int, actual_h: int):
         if not self.divergence_cb or self._size_divergence_prompted or self._abort_requested:
@@ -503,8 +528,7 @@ class VideoRecorder:
                                     f"Capture FPS ({self.cam.Label}, last {dt:.1f}s): {inst_fps:.2f}"
                                 )
                                 self._maybe_warn_fps(inst_fps, now)
-                            self._last_log_ts = now
-                            self._last_log_frame_idx = self.frame_idx
+                            self._reset_fps_window()
                         continue
 
                     actual_h, actual_w = frame.shape[:2]
@@ -568,8 +592,7 @@ class VideoRecorder:
                         inst_fps = frames / dt
                         self.debug(f"Capture FPS ({self.cam.Label}, last {dt:.1f}s): {inst_fps:.2f}")
                         self._maybe_warn_fps(inst_fps, now)
-                    self._last_log_ts = now
-                    self._last_log_frame_idx = self.frame_idx
+                    self._reset_fps_window()
         except Exception:
             self.error("VideoRecorder crashed:")
             self.error(traceback.format_exc())
