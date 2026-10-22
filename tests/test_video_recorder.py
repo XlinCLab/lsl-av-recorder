@@ -7,13 +7,16 @@ warning (including its throttle). No hardware is touched.
 """
 from __future__ import annotations
 
+import math
 import time
 
 import cv2
 import numpy as np
 
 from recorder.config import VideoCamConfig
-from recorder.video.video_recorder import VideoRecorder, _decode_v4l2_fourcc
+from recorder.video.video_recorder import (FPS_ACTION_ABORT, FPS_ACTION_ACCEPT,
+                                           FPS_ACTION_IGNORE, VideoRecorder,
+                                           _decode_v4l2_fourcc)
 
 
 def _recorder(*,
@@ -248,7 +251,7 @@ def test_fps_decision_accept_updates_expected_fps_baseline():
         fps_divergence_cb=lambda title, msg, on_decision: calls.append(on_decision),
     )
     rec._maybe_warn_fps(inst_fps=20.0, now=100.0)
-    calls[0](True)
+    calls[0](FPS_ACTION_ACCEPT)
     assert rec._accepted_fps_override == 20.0
     assert rec._expected_fps() == 20.0
     assert rec._fps_prompt_pending is False
@@ -272,7 +275,7 @@ def test_fps_decision_reject_does_not_update_baseline_and_suppresses_prompts():
         fps_divergence_cb=lambda title, msg, on_decision: calls.append(on_decision),
     )
     rec._maybe_warn_fps(inst_fps=20.0, now=100.0)
-    calls[0](False)
+    calls[0](FPS_ACTION_ABORT)
     assert rec._accepted_fps_override is None
     assert rec._expected_fps() == 30.0
     assert rec._abort_requested is True
@@ -281,6 +284,82 @@ def test_fps_decision_reject_does_not_update_baseline_and_suppresses_prompts():
     # camera is released during abort teardown) must not prompt again.
     rec._maybe_warn_fps(inst_fps=0.2, now=110.0)
     assert len(calls) == 1
+
+
+def _rec_with_pending_prompt(**kw):
+    calls = []
+    logs = []
+    rec = _recorder(
+        fps=30,
+        status_cb=lambda msg, level: logs.append((level, msg)),
+        fps_divergence_cb=lambda title, msg, on_decision: calls.append(on_decision),
+        **kw,
+    )
+    rec._clock = lambda: 100.0
+    rec._maybe_warn_fps(inst_fps=20.0, now=100.0)
+    assert len(calls) == 1
+    return rec, calls, logs
+
+
+def test_ignore_until_stopped_silences_prompts_but_keeps_baseline_and_logging():
+    """Ignore (until stopped) leaves the expected rate alone, stops further
+    prompts however long it runs, and still logs the deviation (marked as ignored)."""
+    rec, calls, logs = _rec_with_pending_prompt()
+    calls[0](FPS_ACTION_IGNORE, None)
+    assert rec._accepted_fps_override is None
+    assert rec._expected_fps() == 30.0
+    assert rec._fps_muted_until == math.inf
+    assert rec._fps_prompt_pending is False
+
+    for now in (110.0, 400.0, 100000.0):
+        rec._maybe_warn_fps(inst_fps=5.0, now=now)
+    assert len(calls) == 1
+    ignored = [m for lvl, m in logs if lvl == "WARNING" and "[prompt ignored]" in m]
+    assert len(ignored) >= 2
+
+
+def test_ignore_for_minutes_silences_then_prompts_again_when_it_expires():
+    rec, calls, logs = _rec_with_pending_prompt()
+    calls[0](FPS_ACTION_IGNORE, 5 * 60.0)  # 5 minutes from clock=100
+    rec._maybe_warn_fps(inst_fps=20.0, now=200.0)
+    rec._maybe_warn_fps(inst_fps=20.0, now=399.0)
+    assert len(calls) == 1  # still muted
+    rec._maybe_warn_fps(inst_fps=20.0, now=410.0)  # past 100 + 300 (and the 5 s log throttle)
+    assert len(calls) == 2
+    assert rec._fps_muted_until is None
+    assert any("prompts resumed" in m for _, m in logs)
+
+
+def test_muted_deviations_are_logged_at_a_slower_interval():
+    """Hours of ignored deviation must not flood the log every 5 s."""
+    rec, calls, logs = _rec_with_pending_prompt()
+    calls[0](FPS_ACTION_IGNORE, None)
+    before = len([1 for lvl, _ in logs if lvl == "WARNING"])
+    for now in range(105, 160, 5):  # 55 s of readings
+        rec._maybe_warn_fps(inst_fps=20.0, now=float(now))
+    assert len([1 for lvl, _ in logs if lvl == "WARNING"]) == before  # within 60 s of the last warning
+    rec._maybe_warn_fps(inst_fps=20.0, now=161.0)
+    assert len([1 for lvl, _ in logs if lvl == "WARNING"]) == before + 1
+
+
+def test_ignore_is_per_camera():
+    """One camera ignoring its warnings doesn't mute another's."""
+    rec_a, calls_a, _ = _rec_with_pending_prompt()
+    rec_b, calls_b, _ = _rec_with_pending_prompt()
+    calls_a[0](FPS_ACTION_IGNORE, None)
+    rec_a._maybe_warn_fps(inst_fps=5.0, now=500.0)
+    rec_b._maybe_warn_fps(inst_fps=5.0, now=500.0)
+    assert len(calls_a) == 1   # camera A stays silent
+    assert len(calls_b) == 1   # camera B still has its original prompt pending, not muted
+    calls_b[0](FPS_ACTION_ACCEPT)
+    rec_b._maybe_warn_fps(inst_fps=5.0, now=600.0)
+    assert len(calls_b) == 2   # and prompts again for a new deviation
+
+
+def test_abort_after_ignore_window_still_suppresses_prompts():
+    rec, calls, _ = _rec_with_pending_prompt()
+    calls[0](FPS_ACTION_ABORT)
+    assert rec._abort_requested is True
 
 
 def test_fps_prompt_callback_failure_does_not_crash_or_wedge_the_recorder():

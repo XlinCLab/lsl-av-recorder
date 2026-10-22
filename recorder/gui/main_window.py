@@ -34,6 +34,7 @@ from ..utils.constants import _logs_path, _project_root
 from ..utils.utils import get_environment_info
 from ..video.camera_settings import apply_camera_controls
 from ..video.devices import list_video_devices
+from ..video.video_recorder import FPS_ACTION_ABORT
 from ..xdf.xdf_validation import ValidationReport, validate_test_recording
 from ..xdf.xdf_writer import (DEFAULT_AUDIO_BUFFER_SECONDS,
                               DEFAULT_VIDEO_BUFFER_FRAMES,
@@ -44,6 +45,7 @@ from ..xdf.xdf_writer import (DEFAULT_AUDIO_BUFFER_SECONDS,
                               FULL_BUFFER_DROP_OLDEST_POLICY)
 from .camera_panel import CameraPanel
 from .camera_worker import CAMERA_PREVIEW_STREAM_TYPE
+from .fps_divergence_dialog import FpsDivergenceDialog
 from .preview_manager import PreviewManager, preview_key
 from .preview_panel import PreviewPanel
 from .run_controller import RunController
@@ -196,7 +198,7 @@ class _DivergenceRequest:
 class _FpsDivergenceRequest:
     """A pending live "capture rate diverges from expected" decision.
     Unlike _DivergenceRequest, nobody waits on it: the capture thread that raised it
-    keeps recording, and `on_decision(accepted)` is called once the dialog is answered."""
+    keeps recording, and `on_decision(action, ignore_seconds)` is called once the dialog is answered."""
 
     __slots__ = ("title", "message", "on_decision")
 
@@ -1377,7 +1379,7 @@ class MainWindow(QMainWindow):
         given that a divergence between configured and live-measured frame rate has been detected.
         Avoids blocking the video capture thread: returns immediately so the calling
         capture thread keeps reading frames while the dialog is open.
-        `on_decision(accepted)` is called on the GUI thread once answered.
+        `on_decision(action, ignore_seconds)` is called on the GUI thread once answered.
         Thread-safe."""
         self.fps_divergence_signal.emit(_FpsDivergenceRequest(title, message, on_decision))
 
@@ -1405,15 +1407,17 @@ class MainWindow(QMainWindow):
             req.event.set()
 
     def _on_fps_divergence_request(self, req: _FpsDivergenceRequest):
-        accepted = False
+        dialog = FpsDivergenceDialog(
+            title=req.title,
+            message=req.message,
+            note="Recording continues while this window is open.",
+            parent=self,
+        )
         try:
-            accepted = self._ask_accept_or_abort(
-                req.title, req.message,
-                note="Recording continues while this window is open.",
-            )
+            dialog.exec()
         finally:
-            req.on_decision(accepted)
-            if not accepted:
+            req.on_decision(dialog.action, dialog.ignore_seconds)
+            if dialog.action == FPS_ACTION_ABORT:
                 self.abort_active_run_signal.emit(f"{req.title}\n\n{req.message}")
 
     def _abort_active_run(self, reason: str):
