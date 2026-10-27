@@ -7,13 +7,16 @@ warning (including its throttle). No hardware is touched.
 """
 from __future__ import annotations
 
+import math
 import time
 
 import cv2
 import numpy as np
 
 from recorder.config import VideoCamConfig
-from recorder.video.video_recorder import VideoRecorder, _decode_v4l2_fourcc
+from recorder.video.video_recorder import (FPS_ACTION_ABORT, FPS_ACTION_ACCEPT,
+                                           FPS_ACTION_IGNORE, VideoRecorder,
+                                           _decode_v4l2_fourcc)
 
 
 def _recorder(*,
@@ -21,7 +24,8 @@ def _recorder(*,
               preview_cb=None,
               preview_fps=None,
               status_cb=None,
-              divergence_cb=None
+              divergence_cb=None,
+              fps_divergence_cb=None,
               ):
     """Build a VideoRecorder for a single camera without opening hardware."""
     return VideoRecorder(
@@ -31,6 +35,7 @@ def _recorder(*,
         preview_cb=preview_cb,
         preview_fps=preview_fps,
         divergence_cb=divergence_cb,
+        fps_divergence_cb=fps_divergence_cb,
     )
 
 
@@ -155,96 +160,233 @@ def test_maybe_warn_fps_noop_when_expected_unknown():
     assert logs == []
 
 
-def test_maybe_warn_fps_does_not_call_divergence_cb_without_one():
-    """No divergence_cb configured: warning still logs, but nothing
+def test_maybe_warn_fps_does_not_call_fps_divergence_cb_without_one():
+    """No fps_divergence_cb configured: warning still logs, but nothing
     crashes trying to invoke a callback that isn't there."""
     rec = _recorder(fps=30, status_cb=lambda msg, level: None)
     rec._maybe_warn_fps(inst_fps=20.0, now=100.0)  # must not raise error
 
 
-def test_maybe_warn_fps_prompts_divergence_cb_on_warn():
-    """A genuine fps deviation that invokes divergence_cb
-    with a human-readable title/message naming the camera
-    and both expected and observed frame rates."""
+def test_maybe_warn_fps_prompts_fps_divergence_cb_on_warn():
+    """A genuine fps deviation invokes fps_divergence_cb with a
+    human-readable title/message naming the camera and both expected and
+    observed frame rates."""
     calls = []
     rec = _recorder(
         fps=30,
         status_cb=lambda msg, level: None,
-        divergence_cb=lambda title, msg: calls.append((title, msg)) or True,
+        fps_divergence_cb=lambda title, msg, on_decision: calls.append((title, msg, on_decision)),
     )
     rec._maybe_warn_fps(inst_fps=20.0, now=100.0)
     assert len(calls) == 1
-    title, message = calls[0]
+    title, message, _ = calls[0]
     assert "Cam" in title
     assert "30.00" in message and "20.00" in message
 
 
-def test_maybe_warn_fps_skips_divergence_cb_within_threshold():
-    """No deviation -> no log warning -> divergence_cb is never consulted."""
+def test_maybe_warn_fps_does_not_use_blocking_divergence_cb():
+    """The live fps check must never go through the blocking divergence_cb:
+    that would stall the capture thread until the dialog is answered."""
     calls = []
     rec = _recorder(
         fps=30,
         status_cb=lambda msg, level: None,
         divergence_cb=lambda title, msg: calls.append(1) or True,
     )
-    rec._maybe_warn_fps(inst_fps=29.9, now=100.0)
+    rec._maybe_warn_fps(inst_fps=20.0, now=100.0)
     assert calls == []
 
 
-def test_maybe_warn_fps_accept_updates_expected_fps_baseline():
-    """Accepting the divergence (divergence_cb returns True) makes the
-    observed rate the new expected baseline going forward."""
+def test_maybe_warn_fps_returns_without_waiting_for_the_decision():
+    """Ensure the capture thread keeps going after raising the prompt.
+    The callback returns without answering, and the recorder neither blocks
+    nor changes its expectations until on_decision is called."""
+    pending = []
     rec = _recorder(
         fps=30,
         status_cb=lambda msg, level: None,
-        divergence_cb=lambda title, msg: True,
+        fps_divergence_cb=lambda title, msg, on_decision: pending.append(on_decision),
     )
+    start = time.monotonic()
     rec._maybe_warn_fps(inst_fps=20.0, now=100.0)
-    assert rec._accepted_fps_override == 20.0
-    assert rec._expected_fps() == 20.0
-    # A further reading matching the newly-accepted baseline no longer warns.
-    calls = []
-    rec.divergence_cb = lambda title, msg: calls.append(1) or True
-    rec._maybe_warn_fps(inst_fps=20.1, now=106.0)
-    assert calls == []
-
-
-def test_maybe_warn_fps_reject_does_not_update_baseline():
-    """Rejecting (divergence_cb returns False; the caller has already
-    triggered an abort itself) leaves _expected_fps() unchanged, so the
-    original configured value is still what's being compared against for
-    whatever brief remainder of the loop runs before it stops."""
-    rec = _recorder(
-        fps=30,
-        status_cb=lambda msg, level: None,
-        divergence_cb=lambda title, msg: False,
-    )
-    rec._maybe_warn_fps(inst_fps=20.0, now=100.0)
+    assert time.monotonic() - start < 1.0
+    assert len(pending) == 1
     assert rec._accepted_fps_override is None
     assert rec._expected_fps() == 30.0
 
 
-def test_maybe_warn_fps_reject_sets_abort_flag_and_suppresses_further_prompts():
-    """Once the operator has rejected (aborted) via the divergence prompt,
-    no further prompt is shown for this recorder -- e.g. the capture rate
-    dropping toward zero as the camera is released during teardown must not
-    pop up a second, redundant abort dialog. The warning log line itself
-    still fires each time (useful for diagnosing the teardown), only the
-    popup is suppressed."""
+def test_maybe_warn_fps_skips_fps_divergence_cb_within_threshold():
+    """No deviation -> no log warning -> fps_divergence_cb is never consulted."""
     calls = []
     rec = _recorder(
         fps=30,
         status_cb=lambda msg, level: None,
-        divergence_cb=lambda title, msg: calls.append(1) or False,
+        fps_divergence_cb=lambda title, msg, on_decision: calls.append(1),
+    )
+    rec._maybe_warn_fps(inst_fps=29.9, now=100.0)
+    assert calls == []
+
+
+def test_only_one_fps_prompt_is_pending_at_a_time():
+    """While a prompt is unanswered, later deviation readings (even past the
+    5 s warn throttle) log but don't stack up more dialogs."""
+    calls = []
+    rec = _recorder(
+        fps=30,
+        status_cb=lambda msg, level: None,
+        fps_divergence_cb=lambda title, msg, on_decision: calls.append(on_decision),
     )
     rec._maybe_warn_fps(inst_fps=20.0, now=100.0)
+    rec._maybe_warn_fps(inst_fps=20.0, now=120.0)
+    rec._maybe_warn_fps(inst_fps=0.1, now=140.0)
     assert len(calls) == 1
+
+
+def test_fps_decision_accept_updates_expected_fps_baseline():
+    """Accepting makes the observed rate the new expected baseline, and clears the pending state."""
+    calls = []
+    rec = _recorder(
+        fps=30,
+        status_cb=lambda msg, level: None,
+        fps_divergence_cb=lambda title, msg, on_decision: calls.append(on_decision),
+    )
+    rec._maybe_warn_fps(inst_fps=20.0, now=100.0)
+    calls[0](FPS_ACTION_ACCEPT)
+    assert rec._accepted_fps_override == 20.0
+    assert rec._expected_fps() == 20.0
+    assert rec._fps_prompt_pending is False
+    # A further reading matching the newly-accepted baseline no longer warns.
+    rec._maybe_warn_fps(inst_fps=20.1, now=106.0)
+    assert len(calls) == 1
+    # ...but a new real deviation from the accepted baseline prompts again.
+    rec._maybe_warn_fps(inst_fps=10.0, now=112.0)
+    assert len(calls) == 2
+
+
+def test_fps_decision_reject_does_not_update_baseline_and_suppresses_prompts():
+    """Rejecting (abort) leaves the expected baseline unchanged and
+    suppresses any further prompt: e.g. the capture rate dropping toward
+    zero as the camera is released during teardown must not pop up a
+    redundant dialog. The warning log line itself still fires."""
+    calls = []
+    rec = _recorder(
+        fps=30,
+        status_cb=lambda msg, level: None,
+        fps_divergence_cb=lambda title, msg, on_decision: calls.append(on_decision),
+    )
+    rec._maybe_warn_fps(inst_fps=20.0, now=100.0)
+    calls[0](FPS_ACTION_ABORT)
+    assert rec._accepted_fps_override is None
+    assert rec._expected_fps() == 30.0
     assert rec._abort_requested is True
 
     # A later deviation reading (e.g. fps collapsing toward zero as the
     # camera is released during abort teardown) must not prompt again.
     rec._maybe_warn_fps(inst_fps=0.2, now=110.0)
     assert len(calls) == 1
+
+
+def _rec_with_pending_prompt(**kw):
+    calls = []
+    logs = []
+    rec = _recorder(
+        fps=30,
+        status_cb=lambda msg, level: logs.append((level, msg)),
+        fps_divergence_cb=lambda title, msg, on_decision: calls.append(on_decision),
+        **kw,
+    )
+    rec._clock = lambda: 100.0
+    rec._maybe_warn_fps(inst_fps=20.0, now=100.0)
+    assert len(calls) == 1
+    return rec, calls, logs
+
+
+def test_ignore_until_stopped_silences_prompts_but_keeps_baseline_and_logging():
+    """Ignore (until stopped) leaves the expected rate alone, stops further
+    prompts however long it runs, and still logs the deviation (marked as ignored)."""
+    rec, calls, logs = _rec_with_pending_prompt()
+    calls[0](FPS_ACTION_IGNORE, None)
+    assert rec._accepted_fps_override is None
+    assert rec._expected_fps() == 30.0
+    assert rec._fps_muted_until == math.inf
+    assert rec._fps_prompt_pending is False
+
+    for now in (110.0, 400.0, 100000.0):
+        rec._maybe_warn_fps(inst_fps=5.0, now=now)
+    assert len(calls) == 1
+    ignored = [m for lvl, m in logs if lvl == "WARNING" and "[prompt ignored]" in m]
+    assert len(ignored) >= 2
+
+
+def test_ignore_for_minutes_silences_then_prompts_again_when_it_expires():
+    rec, calls, logs = _rec_with_pending_prompt()
+    calls[0](FPS_ACTION_IGNORE, 5 * 60.0)  # 5 minutes from clock=100
+    rec._maybe_warn_fps(inst_fps=20.0, now=200.0)
+    rec._maybe_warn_fps(inst_fps=20.0, now=399.0)
+    assert len(calls) == 1  # still muted
+    rec._maybe_warn_fps(inst_fps=20.0, now=410.0)  # past 100 + 300 (and the 5 s log throttle)
+    assert len(calls) == 2
+    assert rec._fps_muted_until is None
+    assert any("prompts resumed" in m for _, m in logs)
+
+
+def test_muted_deviations_are_logged_at_a_slower_interval():
+    """Hours of ignored deviation must not flood the log every 5 s."""
+    rec, calls, logs = _rec_with_pending_prompt()
+    calls[0](FPS_ACTION_IGNORE, None)
+    before = len([1 for lvl, _ in logs if lvl == "WARNING"])
+    for now in range(105, 160, 5):  # 55 s of readings
+        rec._maybe_warn_fps(inst_fps=20.0, now=float(now))
+    assert len([1 for lvl, _ in logs if lvl == "WARNING"]) == before  # within 60 s of the last warning
+    rec._maybe_warn_fps(inst_fps=20.0, now=161.0)
+    assert len([1 for lvl, _ in logs if lvl == "WARNING"]) == before + 1
+
+
+def test_ignore_is_per_camera():
+    """One camera ignoring its warnings doesn't mute another's."""
+    rec_a, calls_a, _ = _rec_with_pending_prompt()
+    rec_b, calls_b, _ = _rec_with_pending_prompt()
+    calls_a[0](FPS_ACTION_IGNORE, None)
+    rec_a._maybe_warn_fps(inst_fps=5.0, now=500.0)
+    rec_b._maybe_warn_fps(inst_fps=5.0, now=500.0)
+    assert len(calls_a) == 1   # camera A stays silent
+    assert len(calls_b) == 1   # camera B still has its original prompt pending, not muted
+    calls_b[0](FPS_ACTION_ACCEPT)
+    rec_b._maybe_warn_fps(inst_fps=5.0, now=600.0)
+    assert len(calls_b) == 2   # and prompts again for a new deviation
+
+
+def test_abort_after_ignore_window_still_suppresses_prompts():
+    rec, calls, _ = _rec_with_pending_prompt()
+    calls[0](FPS_ACTION_ABORT)
+    assert rec._abort_requested is True
+
+
+def test_fps_prompt_callback_failure_does_not_crash_or_wedge_the_recorder():
+    """A raising GUI callback must not propagate into the capture thread,
+    and must not leave the prompt stuck as pending forever."""
+    logs = []
+
+    def boom(title, msg, on_decision):
+        raise RuntimeError("no GUI")
+
+    rec = _recorder(fps=30, status_cb=lambda msg, level: logs.append((level, msg)), fps_divergence_cb=boom)
+    rec._maybe_warn_fps(inst_fps=20.0, now=100.0)  # must not raise
+    assert rec._fps_prompt_pending is False
+    assert any("Could not show FPS deviation prompt" in m for _, m in logs)
+
+
+def test_reset_fps_window_starts_a_fresh_window_now():
+    """After any warning the deviation window restarts from the current time
+    and frame count, so a stale start time can never produce an absurd near-zero reading."""
+    rec = _recorder(fps=30)
+    rec._last_log_ts = 1.0
+    rec._last_log_frame_idx = 5
+    rec.frame_idx = 200
+    before = time.perf_counter()
+    rec._reset_fps_window()
+    assert rec._last_log_ts >= before
+    assert rec._last_log_frame_idx == 200
 
 
 # ---------------------------------------------------------------------------

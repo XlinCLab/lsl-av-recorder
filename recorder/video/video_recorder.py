@@ -1,3 +1,4 @@
+import math
 import sys
 import threading
 import time
@@ -13,6 +14,11 @@ from .avfoundation_capture import (force_active_format, get_active_format_dims,
 from .color_adjust import apply_color_adjustments
 from .constants import DEFAULT_BRIGHTNESS, DEFAULT_HUE, DEFAULT_SATURATION
 from .devices import resolve_cv2_device_index
+
+# Operator's answer to a live frame-rate deviation prompt
+FPS_ACTION_ACCEPT = "accept"  # adopt the observed rate as the new expected rate
+FPS_ACTION_IGNORE = "ignore"  # keep expecting the configured rate, but stop prompting for a while
+FPS_ACTION_ABORT = "abort"
 
 
 def _decode_v4l2_fourcc(fourcc_int: int) -> Optional[str]:
@@ -38,6 +44,7 @@ class VideoRecorder:
         preview_cb: Optional[Callable] = None,
         preview_fps: Optional[float] = None,
         divergence_cb: Optional[Callable[[str, str], bool]] = None,
+        fps_divergence_cb: Optional[Callable[[str, str, Callable[[bool], None]], None]] = None,
     ):
         self.cam = cam_cfg
         self.output_path = output_path
@@ -47,6 +54,23 @@ class VideoRecorder:
         # Called (title, message) -> bool when a measured setting diverges
         # from what was configured; True = accept and keep recording, False = abort
         self.divergence_cb = divergence_cb
+        # Called (title, message, on_decision) when the live capture rate
+        # diverges from what was expected. Must return immediately: it runs
+        # on the capture thread, which must keep reading frames while the
+        # operator decides. The answer arrives later as
+        # on_decision(action, ignore_seconds=None) with action one of the
+        # FPS_ACTION_* values (ignore_seconds: how long to silence further
+        # prompts for this camera, None = until this recorder stops),
+        # possibly from another thread.
+        self.fps_divergence_cb = fps_divergence_cb
+        self._fps_prompt_pending = False
+        # Per-camera silencing of the prompt after the operator chose "ignore":
+        # None = not muted, math.inf = until this recorder stops, else the
+        # time (self._clock()) at which prompts resume.
+        # Deviations are still logged while muted.
+        self._fps_muted_until: Optional[float] = None
+        self._fps_muted_warn_interval = 60.0
+        self._clock = time.perf_counter
         # Set once the operator accepts an observed fps as the new baseline,
         # so _expected_fps() stops comparing against the original configured value
         self._accepted_fps_override: Optional[float] = None
@@ -147,6 +171,17 @@ class VideoRecorder:
             return float(self.writer_fps)
         return 0.0
 
+    def _fps_prompt_muted(self, now: float) -> bool:
+        """Whether the operator has chosen to ignore FPS prompts for this
+        camera (and the mute hasn't expired yet)."""
+        if self._fps_muted_until is None:
+            return False
+        if now >= self._fps_muted_until:
+            self._fps_muted_until = None
+            self.info(f"FPS deviation prompts resumed ({self.cam.Label}): ignore period ended")
+            return False
+        return True
+
     def _maybe_warn_fps(self, inst_fps: float, now: float):
         if (
             self._writer_opened_at is not None
@@ -160,37 +195,73 @@ class VideoRecorder:
         threshold = max(self._fps_warn_abs, expected * self._fps_warn_rel)
         if delta < threshold:
             return
-        if (
-            self._last_fps_warn_ts is None
-            or (now - self._last_fps_warn_ts) >= self._fps_warn_interval
-        ):
+        muted = self._fps_prompt_muted(now)
+        interval = self._fps_muted_warn_interval if muted else self._fps_warn_interval
+        if self._last_fps_warn_ts is None or (now - self._last_fps_warn_ts) >= interval:
             self.warning(
                 f"Capture FPS deviation ({self.cam.Label}): "
                 f"expected≈{expected:.2f}, observed={inst_fps:.2f}"
+                + (" [prompt ignored]" if muted else "")
             )
             self._last_fps_warn_ts = now
-            self._prompt_fps_divergence(expected, inst_fps)
+            if not muted:
+                self._prompt_fps_divergence(expected, inst_fps)
 
     def _prompt_fps_divergence(self, expected: float, observed: float):
-        if not self.divergence_cb or self._abort_requested:
+        if not self.fps_divergence_cb or self._abort_requested or self._fps_prompt_pending:
             return
-        accepted = self.divergence_cb(
-            f"Camera FPS deviation: {self.cam.Label}",
-            f"Camera {self.cam.Label} is configured to record at {expected:.2f} fps, "
-            f"but {observed:.2f} fps is actually being captured.\n\n"
-            "Accept the observed frame rate as the new expected frame rate "
-            "and continue recording, or abort the recording and adjust settings?",
-        )
-        if accepted:
+        self._fps_prompt_pending = True
+        try:
+            self.fps_divergence_cb(
+                f"Camera FPS deviation: {self.cam.Label}",
+                f"Camera {self.cam.Label} is configured to record at {expected:.2f} fps, "
+                f"but {observed:.2f} fps is actually being captured.\n\n"
+                "Accept the observed frame rate as the new expected frame rate, "
+                "ignore this warning for this camera, or abort the recording "
+                "and adjust settings?",
+                lambda action, ignore_seconds=None: self._on_fps_decision(
+                    action, observed, ignore_seconds
+                ),
+            )
+        except Exception as exc:
+            # A failing prompt must never take down the capture thread
+            self._fps_prompt_pending = False
+            self.warning(f"Could not show FPS deviation prompt ({self.cam.Label}): {exc}")
+
+    def _on_fps_decision(
+            self,
+            action: str,
+            observed: float,
+            ignore_seconds: Optional[float] = None,
+        ):
+        """The operator's answer to an FPS deviation prompt (any thread)."""
+        self._fps_prompt_pending = False
+        if action == FPS_ACTION_ACCEPT:
             # Set current observed rate as the new accepted baseline;
             # further deviation from THIS value will still warn again
             self._accepted_fps_override = observed
+        elif action == FPS_ACTION_IGNORE:
+            # Expected rate remains unchanged; only the prompt is silenced
+            if ignore_seconds is None or ignore_seconds == math.inf:
+                self._fps_muted_until = math.inf
+                self.info(f"FPS deviation prompts ignored for {self.cam.Label} until recording stops")
+            else:
+                self._fps_muted_until = self._clock() + float(ignore_seconds)
+                self.info(
+                    f"FPS deviation prompts ignored for {self.cam.Label} "
+                    f"for {float(ignore_seconds) / 60:g} minute(s)"
+                )
         else:
-            # divergence_cb has already triggered the abort itself; suppress
-            # any further divergence prompt for the rest of this recorder's
+            # The abort itself has already been triggered; suppress any
+            # further divergence prompt for the rest of this recorder's
             # teardown, since e.g. the capture rate dropping toward zero as
             # the camera is released is expected, not a new decision to make
             self._abort_requested = True
+
+    def _reset_fps_window(self):
+        """Start a fresh deviation-check window now."""
+        self._last_log_ts = time.perf_counter()
+        self._last_log_frame_idx = self.frame_idx
 
     def _prompt_size_divergence(self, actual_w: int, actual_h: int):
         if not self.divergence_cb or self._size_divergence_prompted or self._abort_requested:
@@ -503,8 +574,7 @@ class VideoRecorder:
                                     f"Capture FPS ({self.cam.Label}, last {dt:.1f}s): {inst_fps:.2f}"
                                 )
                                 self._maybe_warn_fps(inst_fps, now)
-                            self._last_log_ts = now
-                            self._last_log_frame_idx = self.frame_idx
+                            self._reset_fps_window()
                         continue
 
                     actual_h, actual_w = frame.shape[:2]
@@ -568,8 +638,7 @@ class VideoRecorder:
                         inst_fps = frames / dt
                         self.debug(f"Capture FPS ({self.cam.Label}, last {dt:.1f}s): {inst_fps:.2f}")
                         self._maybe_warn_fps(inst_fps, now)
-                    self._last_log_ts = now
-                    self._last_log_frame_idx = self.frame_idx
+                    self._reset_fps_window()
         except Exception:
             self.error("VideoRecorder crashed:")
             self.error(traceback.format_exc())
