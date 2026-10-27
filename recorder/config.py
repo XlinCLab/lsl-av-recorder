@@ -8,6 +8,7 @@ from typing import List, Optional
 from .audio.constants import (BITDEPTH_DTYPES, DEFAULT_BIT_DEPTH,
                               DEFAULT_N_CHANNELS, DEFAULT_SAMPLE_FORMAT,
                               DEFAULT_SAMPLING_RATE, SAMPLE_FORMATS)
+from .utils.network import default_labrecorder_host
 from .video.constants import (DEFAULT_CAMERA_FPS, DEFAULT_HEIGHT,
                               DEFAULT_PIXEL_FORMAT, DEFAULT_PREVIEW_FPS,
                               DEFAULT_WIDTH, DEVNODE_PATTERN)
@@ -53,7 +54,7 @@ class AudioConfig:
 @dataclass
 class LabRecorderConfig:
     Enabled: bool = False
-    Host: str = "127.0.0.1"
+    Host: str = field(default_factory=lambda: default_labrecorder_host())
     Port: int = 22345
 
 @dataclass

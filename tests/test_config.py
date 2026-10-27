@@ -9,6 +9,7 @@ from recorder.config import (DEFAULT_SUBJECT, AppConfig, AppPrompts,
                              AudioConfig, LabRecorderConfig, OutputConfig,
                              VideoCamConfig, VideoConfig, _get_bool, load_cfg,
                              save_cfg)
+from recorder.utils.network import default_labrecorder_host
 from recorder.xdf.xdf_writer import (FULL_BUFFER_BLOCK_THREAD_POLICY,
                                      FULL_BUFFER_DEFAULT_POLICY,
                                      FULL_BUFFER_POLICIES)
@@ -172,7 +173,7 @@ def test_load_cfg_labrecorder_blank_host_falls_back_to_default(write_cfg):
         )
     )
     assert cfg.LabRecorder.Enabled is True
-    assert cfg.LabRecorder.Host == "127.0.0.1"
+    assert cfg.LabRecorder.Host == default_labrecorder_host()
     assert cfg.LabRecorder.Port == 9999
 
 
@@ -484,3 +485,22 @@ def test_save_cfg_no_cameras_writes_no_camera_sections(tmp_path):
     path = str(tmp_path / "out.cfg")
     save_cfg(cfg, path)
     assert load_cfg(path).Video.Cams == []
+
+
+def test_labrecorder_host_default_is_resolved_per_config(monkeypatch):
+    """The default host comes from default_labrecorder_host() each time a
+    config is created (not frozen at import), so the machine's current
+    address is used."""
+    import recorder.config as config_module
+    monkeypatch.setattr(config_module, "default_labrecorder_host", lambda: "10.1.2.3")
+    assert AppConfig().LabRecorder.Host == "10.1.2.3"
+
+
+def test_labrecorder_host_explicit_value_in_cfg_wins_over_default(write_cfg, monkeypatch):
+    import recorder.config as config_module
+    monkeypatch.setattr(config_module, "default_labrecorder_host", lambda: "10.1.2.3")
+    path = write_cfg("""
+        [LabRecorder]
+        Host = 127.0.0.1
+    """)
+    assert load_cfg(path).LabRecorder.Host == "127.0.0.1"
