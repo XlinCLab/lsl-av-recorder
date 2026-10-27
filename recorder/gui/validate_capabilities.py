@@ -18,8 +18,7 @@ from ..video.constants import (DEFAULT_FPS_TOLERANCE,
                                DEFAULT_VALIDATION_WARMUP, FPS_TOLERANCE_RANGE,
                                VALIDATION_DURATION_RANGE,
                                VALIDATION_WARMUP_RANGE)
-
-_CHECKBOX_COLUMNS = 6
+from .widgets import make_checkbox_grid
 
 
 def _combinations_for_selection(
@@ -193,21 +192,6 @@ def _result_status_rank(result: Optional[Dict[str, Any]]) -> int:
     return 1
 
 
-def _make_checkbox_grid(values: List, formatter=str) -> Tuple[QWidget, Dict[Any, QCheckBox]]:
-    """Just the wrapping grid of checkboxes -- select-all/deselect-all is
-    handled once, collectively, at the dialog level (see
-    ValidateCapabilitiesDialog), not per section."""
-    checkboxes: Dict[Any, QCheckBox] = {}
-    grid = QGridLayout()
-    for i, value in enumerate(values):
-        cb = QCheckBox(formatter(value))
-        checkboxes[value] = cb
-        grid.addWidget(cb, i // _CHECKBOX_COLUMNS, i % _CHECKBOX_COLUMNS)
-    box = QGroupBox()
-    box.setLayout(grid)
-    return box, checkboxes
-
-
 class ValidateCapabilitiesDialog(QDialog):
     """Lets the user pick which declared fps / resolution / pixel-format
     values they actually care about, then empirically opens the device for
@@ -263,9 +247,10 @@ class ValidateCapabilitiesDialog(QDialog):
         )
         all_fps = sorted({fps for modes in modes_by_format.values() for _, _, fps_values in modes for fps in fps_values})
 
-        fps_box, self._fps_checkboxes = _make_checkbox_grid(all_fps)
-        res_box, self._res_checkboxes = _make_checkbox_grid(all_resolutions, formatter=lambda r: f"{r[0]}x{r[1]}")
-        fmt_box, self._format_checkboxes = _make_checkbox_grid(all_formats)
+        n_columns = 6
+        fps_box, self._fps_checkboxes = make_checkbox_grid(all_fps, columns=n_columns)
+        res_box, self._res_checkboxes = make_checkbox_grid(all_resolutions, formatter=lambda r: f"{r[0]}x{r[1]}", columns=n_columns)
+        fmt_box, self._format_checkboxes = make_checkbox_grid(all_formats, columns=n_columns)
         self._all_checkboxes: List[QCheckBox] = [
             *self._fps_checkboxes.values(), *self._res_checkboxes.values(), *self._format_checkboxes.values(),
         ]
