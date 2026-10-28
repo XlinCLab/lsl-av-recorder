@@ -25,6 +25,7 @@ DEFAULT_SESSION = "01"
 DEFAULT_BLOCK = "Main"
 DEFAULT_ACQUISITION = "default"
 DEFAULT_RUN = "01"
+DEFAULT_STUDY_ROOT = "./recordings"
 
 
 @dataclass
@@ -38,7 +39,7 @@ class AppPrompts:
 
 @dataclass
 class OutputConfig:
-    StudyRoot: str = "./recordings"
+    StudyRoot: str = DEFAULT_STUDY_ROOT
     PathTemplate: str = "sub-%p/ses-%s/beh/sub-%p_ses-%s_task-%b_acq-%a_run-%r"
 
 @dataclass

@@ -28,7 +28,8 @@ from ..audio.constants import (BITDEPTH_CONVERSION_INT, DEFAULT_SAMPLE_FORMAT,
 from ..audio.devices import (default_input_device_index,
                              get_audio_device_capabilities,
                              is_input_config_supported, list_input_devices)
-from ..config import AppConfig, VideoCamConfig, load_cfg, save_cfg
+from ..config import (DEFAULT_STUDY_ROOT, AppConfig, VideoCamConfig, load_cfg,
+                      save_cfg)
 from ..lsl.labrecorder_rcs import LabRecorderRCS
 from ..utils.constants import _logs_path, _project_root
 from ..utils.utils import get_environment_info
@@ -295,6 +296,20 @@ class MainWindow(QMainWindow):
         self.acq = QLineEdit(self.cfg.Prompts.Acquisition)
         self.run = QLineEdit(self.cfg.Prompts.Run)
 
+        self.output_root = QLineEdit(self.cfg.Output.StudyRoot)
+        self.output_root.setToolTip(
+            "Root folder for all recordings (Output.StudyRoot)."
+        )
+        self.output_root.editingFinished.connect(
+            lambda: self._log_gui_change("Output.StudyRoot", self.output_root.text().strip())
+        )
+        self.btn_browse_output = QPushButton("Browse...")
+        self.btn_browse_output.clicked.connect(self._on_browse_output_root)
+        output_row = QHBoxLayout()
+        output_row.addWidget(self.output_root, 1)
+        output_row.addWidget(self.btn_browse_output)
+
+        form.addRow("Output directory", output_row)
         form.addRow("ExperimentName", self.experiment)
         form.addRow("Subject (%p)", self.subject)
         form.addRow("Session (%s)", self.session)
@@ -1123,7 +1138,15 @@ class MainWindow(QMainWindow):
         self._update_add_camera_button()
         self._refresh_previews_from_panels()
 
+    def _on_browse_output_root(self):
+        start = self.output_root.text().strip() or self.cfg.Output.StudyRoot
+        chosen = QFileDialog.getExistingDirectory(self, "Select output directory", os.path.abspath(start))
+        if chosen:
+            self.output_root.setText(chosen)
+            self._log_gui_change("Output.StudyRoot", chosen)
+
     def pull_gui_into_cfg(self):
+        self.cfg.Output.StudyRoot = self.output_root.text().strip() or DEFAULT_STUDY_ROOT
         self.cfg.Prompts.ExperimentName = self.experiment.text().strip()
         self.cfg.Prompts.Subject = self.subject.text().strip()
         self.cfg.Prompts.Session = self.session.text().strip()
@@ -1823,6 +1846,7 @@ class MainWindow(QMainWindow):
             self.lsl_streams_table.setRowCount(0)
 
     def _apply_cfg_to_gui(self):
+        self.output_root.setText(self.cfg.Output.StudyRoot)
         self.experiment.setText(self.cfg.Prompts.ExperimentName)
         self.subject.setText(self.cfg.Prompts.Subject)
         self.session.setText(self.cfg.Prompts.Session)

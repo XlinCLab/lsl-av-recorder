@@ -5,10 +5,10 @@ from __future__ import annotations
 import configparser
 
 from recorder.audio.constants import DEFAULT_SAMPLING_RATE
-from recorder.config import (DEFAULT_SUBJECT, AppConfig, AppPrompts,
-                             AudioConfig, LabRecorderConfig, OutputConfig,
-                             VideoCamConfig, VideoConfig, _get_bool, load_cfg,
-                             save_cfg)
+from recorder.config import (DEFAULT_STUDY_ROOT, DEFAULT_SUBJECT, AppConfig,
+                             AppPrompts, AudioConfig, LabRecorderConfig,
+                             OutputConfig, VideoCamConfig, VideoConfig,
+                             _get_bool, load_cfg, save_cfg)
 from recorder.utils.network import default_labrecorder_host
 from recorder.xdf.xdf_writer import (FULL_BUFFER_BLOCK_THREAD_POLICY,
                                      FULL_BUFFER_DEFAULT_POLICY,
@@ -504,3 +504,13 @@ def test_labrecorder_host_explicit_value_in_cfg_wins_over_default(write_cfg, mon
         Host = 127.0.0.1
     """)
     assert load_cfg(path).LabRecorder.Host == "127.0.0.1"
+
+
+def test_output_study_root_default_and_round_trip(tmp_path):
+    """StudyRoot defaults to a shared constant and survives save -> load."""
+    cfg = AppConfig()
+    assert cfg.Output.StudyRoot == DEFAULT_STUDY_ROOT
+    cfg.Output.StudyRoot = "/data/my study"
+    path = str(tmp_path / "o.cfg")
+    save_cfg(cfg, path)
+    assert load_cfg(path).Output.StudyRoot == "/data/my study"
