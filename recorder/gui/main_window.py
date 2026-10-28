@@ -562,6 +562,10 @@ class MainWindow(QMainWindow):
         self.preview_panel = PreviewPanel()
         self.preview_mgr = PreviewManager(self)
         self.preview_frame_signal.connect(self.preview_mgr.on_frame)
+        # Toggle only the on-screen display; recording and LSL streaming continue
+        self.preview_toggle = QCheckBox("Show live preview")
+        self.preview_toggle.setChecked(True)
+        self.preview_toggle.toggled.connect(self._on_preview_toggled)
         self._cap_load_count = 0
         self._cap_load_dialog: Optional[QProgressDialog] = None
         self._cap_dialog_shown_at: Optional[float] = None
@@ -610,7 +614,10 @@ class MainWindow(QMainWindow):
         preview_container_layout.setContentsMargins(0, 0, 0, 0)
         preview_container_layout.addWidget(self.recording_status_label, 0)
         preview_container_layout.addWidget(self.recording_streams_table, 0)
+        preview_container_layout.addWidget(self.preview_toggle, 0)
         preview_container_layout.addWidget(self.preview_panel, 1)
+        # Pins the checkbox to the top when the panel is hidden
+        preview_container_layout.addStretch(0)
         preview_container.setLayout(preview_container_layout)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -694,6 +701,14 @@ class MainWindow(QMainWindow):
             self.log("DEBUG logging enabled")
         else:
             self.log("DEBUG logging disabled")
+
+    def _on_preview_toggled(self, checked: bool):
+        """Show/hide the live preview. While hidden, no preview frames are
+        copied or rendered; camera capture, video recording and LSL streaming
+        keep running regardless."""
+        self.preview_mgr.preview_enabled = checked
+        self.preview_panel.setVisible(checked)
+        self._log_gui_change("LivePreview", checked)
 
     def _log_gui_change(self, field: str, value):
         """Log a GUI setting change."""
@@ -1324,6 +1339,7 @@ class MainWindow(QMainWindow):
                 preview_frame_cb=self.preview_frame_signal.emit,
                 divergence_cb=self.request_setting_divergence_decision,
                 fps_divergence_cb=self.request_fps_divergence_decision,
+                preview_enabled_cb=self.preview_mgr.is_preview_enabled,
             )
             self.preview_mgr.set_recording_preview_labels(
                 {preview_key(cam): cam.Label for cam in self.controller.cams}

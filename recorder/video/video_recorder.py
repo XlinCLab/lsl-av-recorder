@@ -45,12 +45,16 @@ class VideoRecorder:
         preview_fps: Optional[float] = None,
         divergence_cb: Optional[Callable[[str, str], bool]] = None,
         fps_divergence_cb: Optional[Callable[[str, str, Callable[[bool], None]], None]] = None,
+        preview_enabled_cb: Optional[Callable[[], bool]] = None,
     ):
         self.cam = cam_cfg
         self.output_path = output_path
         self.status_cb = status_cb
         self.frame_cb = frame_cb
         self.preview_cb = preview_cb
+        # Check whether video preview is enabled before each preview frame is prepared
+        # When it returns False the frame is not copied or rendered
+        self.preview_enabled_cb = preview_enabled_cb
         # Called (title, message) -> bool when a measured setting diverges
         # from what was configured; True = accept and keep recording, False = abort
         self.divergence_cb = divergence_cb
@@ -311,6 +315,8 @@ class VideoRecorder:
 
     def _maybe_emit_preview(self, frame):
         if not self.preview_cb or self._preview_interval is None:
+            return
+        if self.preview_enabled_cb is not None and not self.preview_enabled_cb():
             return
         now = time.monotonic()
         if self._next_preview_ts is None or now >= self._next_preview_ts:

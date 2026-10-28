@@ -4,7 +4,7 @@ import os
 import sys
 import time
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Callable, Optional, Tuple
 
 import cv2
 from pylsl import StreamInfo, StreamOutlet, local_clock
@@ -51,8 +51,12 @@ class CameraWorker(QObject):
         saturation: Optional[int] = None,
         pixel_format: Optional[str] = None,
         device_name: Optional[str] = None,
+        preview_enabled_cb: Optional[Callable[[], bool]] = None,
     ):
         super().__init__()
+        # Check whether preview is enabled before each preview frame is copied/emitted
+        # False skips the copy entirely (capture, LSL sync and recording are unaffected)
+        self.preview_enabled_cb = preview_enabled_cb
         self.cam_index = int(cam_index)
         self.devnode = devnode
         self.label = label
@@ -219,7 +223,9 @@ class CameraWorker(QObject):
 
             # Throttled preview
             now = time.monotonic()
-            if now >= next_preview:
+            if now >= next_preview and (
+                self.preview_enabled_cb is None or self.preview_enabled_cb()
+            ):
                 self.frameReady.emit(self.preview_key, frame.copy())
                 next_preview = now + preview_interval
 

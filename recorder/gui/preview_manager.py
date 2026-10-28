@@ -44,6 +44,13 @@ class PreviewManager(QObject):
         # frames from an active recording's VideoRecorder.preview_cb,
         # mapped to their configured Label
         self._recording_preview_labels: Dict[str, str] = {}
+        # When False, no preview frames are produced at all and any frames
+        # already in flight are dropped in on_frame.
+        # Capture, recording and LSL streaming are unaffected.
+        self.preview_enabled: bool = True
+
+    def is_preview_enabled(self) -> bool:
+        return self.preview_enabled
 
     def _request_stop(self, key: str):
         # Pop immediately so a new preview can be registered for the same key.
@@ -87,6 +94,7 @@ class PreviewManager(QObject):
             saturation=cam_cfg.Saturation,
             pixel_format=cam_cfg.PixelFormat,
             device_name=cam_cfg.DeviceName,
+            preview_enabled_cb=self.is_preview_enabled,
         )
         thread = QThread()
         worker.moveToThread(thread)
@@ -136,6 +144,8 @@ class PreviewManager(QObject):
         # showing a frozen last frame. Frames from an active recording (see
         # set_recording_preview_labels) have no worker at all and are
         # accepted on that separate basis instead.
+        if not self.preview_enabled:
+            return
         worker = self.workers.get(key)
         recording_label = self._recording_preview_labels.get(key)
         if worker is None and recording_label is None:

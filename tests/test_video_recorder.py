@@ -26,6 +26,7 @@ def _recorder(*,
               status_cb=None,
               divergence_cb=None,
               fps_divergence_cb=None,
+              preview_enabled_cb=None,
               ):
     """Build a VideoRecorder for a single camera without opening hardware."""
     return VideoRecorder(
@@ -36,6 +37,7 @@ def _recorder(*,
         preview_fps=preview_fps,
         divergence_cb=divergence_cb,
         fps_divergence_cb=fps_divergence_cb,
+        preview_enabled_cb=preview_enabled_cb,
     )
 
 
@@ -600,3 +602,51 @@ def test_maybe_emit_preview_noop_without_callback():
     """With no preview callback, _maybe_emit_preview does nothing and doesn't raise."""
     rec = _recorder(preview_cb=None, preview_fps=10.0)
     rec._maybe_emit_preview(_frame())  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# preview_enabled_cb (the "Show live preview" checkbox)
+# ---------------------------------------------------------------------------
+
+class _CopyCountingFrame:
+    """Stand-in for a camera frame that records how often it is copied."""
+    def __init__(self):
+        self.copies = 0
+
+    def copy(self):
+        self.copies += 1
+        return self
+
+
+def test_preview_disabled_does_not_copy_or_emit_frames():
+    """With previews switched off, the capture thread must not even copy the
+    frame (a 1080p copy per camera per preview tick is real memory traffic)."""
+    got = []
+    frame = _CopyCountingFrame()
+    rec = _recorder(preview_cb=got.append, preview_fps=15, preview_enabled_cb=lambda: False)
+    for _ in range(5):
+        rec._maybe_emit_preview(frame)
+    assert frame.copies == 0
+    assert got == []
+
+
+def test_preview_enabled_cb_is_consulted_each_frame_and_resumes_at_once():
+    """Toggling back on emits the very next frame, without waiting out an
+    interval that was running while disabled."""
+    enabled = {"on": False}
+    got = []
+    frame = _CopyCountingFrame()
+    rec = _recorder(preview_cb=got.append, preview_fps=15, preview_enabled_cb=lambda: enabled["on"])
+    rec._maybe_emit_preview(frame)
+    assert got == []
+    enabled["on"] = True
+    rec._maybe_emit_preview(frame)
+    assert len(got) == 1 and frame.copies == 1
+
+
+def test_preview_without_enabled_cb_behaves_as_before():
+    got = []
+    frame = _CopyCountingFrame()
+    rec = _recorder(preview_cb=got.append, preview_fps=15)
+    rec._maybe_emit_preview(frame)
+    assert len(got) == 1
