@@ -42,7 +42,7 @@ Use the appropriate setup script for your platform. In addition to the platform-
 - macOS:
   - checks/installs `ffmpeg` via Homebrew
 
-After initial installation, only the project's virtual environment needs to be activated before running the application:
+After initial installation, you can start the app with `./startup.sh` (see [Running the App](#running-the-app)), or activate the project's virtual environment yourself:
 ```bash
 source .venv/bin/activate
 ```
@@ -60,13 +60,25 @@ If PowerShell blocks script execution, run once as Administrator:
 Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 ```
 
-After initial installation, only the project's virtual environment needs to be activated before running the application:
+After initial installation, you can start the app with `.\startup.ps1` (see [Running the App](#running-the-app)), or activate the project's virtual environment yourself:
 ```powershell
 .\.venv\Scripts\Activate.ps1
 ```
 
 ## Running the App
-Start the GUI:
+Start the GUI with the startup script for your platform. This script activates the project's virtual environment automatically and then launches the app.
+
+macOS / Linux:
+```bash
+./startup.sh
+```
+
+Windows (PowerShell):
+```powershell
+.\startup.ps1
+```
+
+Run `setup.sh` / `setup.ps1` first so the virtual environment exists. Alternatively, with the virtual environment first activated:
 
 ```bash
 python main.py
