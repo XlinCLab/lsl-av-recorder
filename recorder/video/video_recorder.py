@@ -485,6 +485,7 @@ class VideoRecorder:
         try:
             while self.running:
                 ret, frame = self.cap.read()
+                t_read = local_clock()
                 if not ret or frame is None:
                     self._read_fail_count += 1
                     now = time.perf_counter()
@@ -560,7 +561,7 @@ class VideoRecorder:
 
                     if self.writer_fps is None:
                         # Keep buffering until we have a usable FPS estimate.
-                        ts = local_clock()
+                        ts = t_read
                         if self.frame_cb:
                             self.frame_cb(ts, self.frame_idx)
                         self.frame_idx += 1
@@ -628,7 +629,7 @@ class VideoRecorder:
                 else:
                     self.writer.write(frame)
 
-                ts = local_clock()  # LSL clock timestamp (aligns with audio)
+                ts = t_read  # LSL clock timestamp (aligns with audio)
                 if self.frame_cb:
                     self.frame_cb(ts, self.frame_idx)
 

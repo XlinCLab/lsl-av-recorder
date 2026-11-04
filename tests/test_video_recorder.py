@@ -650,3 +650,85 @@ def test_preview_without_enabled_cb_behaves_as_before():
     rec = _recorder(preview_cb=got.append, preview_fps=15)
     rec._maybe_emit_preview(frame)
     assert len(got) == 1
+
+
+# ---------------------------------------------------------------------------
+# Frame timestamps are taken right after cap.read(), not after frame encoding
+# ---------------------------------------------------------------------------
+
+class _FakeClock:
+    """Stand-in for pylsl.local_clock whose time only moves when told to."""
+
+    def __init__(self):
+        self.t = 100.0
+
+    def __call__(self):
+        return self.t
+
+
+class _FakeCap:
+    """Camera whose read() advances the clock by one frame interval, records
+    when each frame was 'read', and stops the recorder after n_frames."""
+
+    def __init__(self, clock, recorder, n_frames, interval=0.033):
+        self.clock = clock
+        self.recorder = recorder
+        self.n_frames = n_frames
+        self.interval = interval
+        self.read_times: list[float] = []
+
+    def read(self):
+        if len(self.read_times) >= self.n_frames:
+            self.recorder.running = False
+            return False, None
+        self.clock.t += self.interval
+        self.read_times.append(self.clock.t)
+        return True, _frame()
+
+
+class _SlowWriter:
+    """VideoWriter stand-in whose write() takes (fake) time, like a real encoder."""
+
+    def __init__(self, clock, write_s):
+        self.clock = clock
+        self.write_s = write_s
+
+    def write(self, frame):
+        self.clock.t += self.write_s
+
+
+def test_frame_timestamps_exclude_encoder_write_time(monkeypatch):
+    """The timestamp handed to frame_cb is the LSL time at which cap.read()
+    returned. A slow VideoWriter.write() (e.g. software mp4 encoding of 4K
+    frames) must not delay or add jitter to the recorded timestamps."""
+    clock = _FakeClock()
+    monkeypatch.setattr("recorder.video.video_recorder.local_clock", clock)
+    stamps: list[tuple[float, int]] = []
+    rec = _recorder()
+    rec.frame_cb = lambda ts, idx: stamps.append((ts, idx))
+    rec.cap = _FakeCap(clock, rec, n_frames=5)
+    rec.writer = _SlowWriter(clock, write_s=0.5)
+    rec.writer_fps = 30.0
+    rec.running = True
+
+    rec._loop()
+
+    assert [ts for ts, _ in stamps] == rec.cap.read_times
+    assert [idx for _, idx in stamps] == [0, 1, 2, 3, 4]
+
+
+def test_frame_timestamps_exclude_preview_time_while_probing_fps(monkeypatch):
+    """Before the VideoWriter exists (fps probing), the timestamp still marks
+    the read, not the time spent on e.g. a slow preview callback."""
+    clock = _FakeClock()
+    monkeypatch.setattr("recorder.video.video_recorder.local_clock", clock)
+    stamps: list[float] = []
+    rec = _recorder(preview_cb=lambda f: setattr(clock, "t", clock.t + 0.5), preview_fps=1000)
+    rec.frame_cb = lambda ts, idx: stamps.append(ts)
+    rec.cap = _FakeCap(clock, rec, n_frames=3)
+    rec.running = True
+
+    rec._loop()
+
+    assert rec.writer is None  # still probing: too few frames/too little real time
+    assert stamps == rec.cap.read_times

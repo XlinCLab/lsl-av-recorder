@@ -183,6 +183,7 @@ class CameraWorker(QObject):
 
         while self._running:
             ok, frame = self.cap.read() if self.cap else (False, None)
+            t_read = local_clock()
             if not ok or frame is None:
                 time.sleep(0.005)
                 continue
@@ -210,7 +211,7 @@ class CameraWorker(QObject):
 
             # LSL frame sync
             t_mono = time.monotonic()
-            self.outlet.push_sample([float(self._frame_idx), float(t_mono)], timestamp=local_clock())
+            self.outlet.push_sample([float(self._frame_idx), float(t_mono)], timestamp=t_read)
             self._frame_idx += 1
 
             # Write to file if recording enabled
