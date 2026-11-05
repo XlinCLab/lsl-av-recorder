@@ -19,7 +19,8 @@ from pylsl import StreamInfo
 
 from ..audio.constants import RATE_VALIDATION_TOLERANCE
 from ..audio.device_identity import normalize_device_name
-from ..audio.levels import as_float_samples, level_problem, signal_levels
+from ..audio.levels import (as_float_samples, level_problem, signal_levels,
+                            silent_channel_message, silent_channels)
 from ..config import AppConfig
 
 # Sample/frame counts are compared to duration * nominal_srate within this
@@ -211,19 +212,28 @@ def _validate_audio_properties(cfg: AppConfig, stream: dict, n_samples: int) -> 
         ))
 
     if n_samples > 0:
-        checks.append(_audio_level_check(stream["time_series"], _first(info.get("channel_format"))))
+        checks.extend(_audio_level_checks(stream["time_series"], _first(info.get("channel_format"))))
     return checks
 
 
-def _audio_level_check(samples, channel_format: Optional[str]) -> CheckResult:
-    """Peak and RMS level in dBFS, flagged when the signal is silent, very quiet or clipping."""
+def _audio_level_checks(samples, channel_format: Optional[str]) -> List[CheckResult]:
+    """Peak and RMS level in dBFS, flagged when the signal is silent, very quiet or clipping.
+    If >1 channel: whether one of them is silent while another carries a signal."""
     levels = signal_levels(as_float_samples(samples, channel_format))
     detail = f"peak {levels.peak_dbfs:.1f} dBFS, RMS {levels.rms_dbfs:.1f} dBFS"
-    name = "Audio signal level"
     problem = level_problem(levels)
-    if problem:
-        return _warn(name, f"{detail}: {problem}")
-    return _check(name, True, detail)
+    checks = [
+        _warn("Audio signal level", f"{detail}: {problem}") if problem
+        else _check("Audio signal level", True, detail)
+    ]
+    if len(levels.channel_peaks) > 1:
+        silent = silent_channels(levels)
+        if silent:
+            checks.extend(_warn("Audio channel levels", silent_channel_message(c)) for c in silent)
+        else:
+            per_channel = ", ".join(f"{db:.1f}" for db in levels.channel_peak_dbfs)
+            checks.append(_check("Audio channel levels", True, f"peak per channel (dBFS): {per_channel}"))
+    return checks
 
 
 def _validate_video(cfg: AppConfig, by_name: dict, expected_duration_s: float) -> List[CheckResult]:

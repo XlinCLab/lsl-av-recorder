@@ -789,13 +789,13 @@ def test_lsl_string_format_marker_stream_pass(xdf_path):
 # Audio properties: declared and measured rate, bit depth, device, level
 # ---------------------------------------------------------------------------
 
-def _audio_cfg(samplerate=1000, bitdepth=32, device_name=None):
+def _audio_cfg(samplerate=1000, bitdepth=32, device_name=None, channels=1):
     cfg = base_cfg()
     cfg.Audio.Enabled = True
     cfg.Audio.StreamName = "Audio"
     cfg.Audio.SampleRate = samplerate
     cfg.Audio.BitDepth = bitdepth
-    cfg.Audio.Channels = 1
+    cfg.Audio.Channels = channels
     cfg.Audio.DeviceName = device_name
     return cfg
 
@@ -809,21 +809,24 @@ def _record_audio(
     footer=None,
     level=0.1,
     fmt="float32",
+    channel_levels=None,
 ):
-    """Write a one-channel audio stream carrying `extra` header fields and `footer` fields."""
+    """Write an audio stream carrying `extra` header fields and `footer` fields.
+    `channel_levels` gives the amplitude of each channel (default: one channel at `level`)."""
+    channel_levels = list(channel_levels) if channel_levels is not None else [level]
     w = XDFWriter(path)
     w.start()
     sid = w.add_audio_stream(
         name="Audio",
         samplerate=samplerate,
-        channels=1,
+        channels=len(channel_levels),
         fmt=fmt,
         extra=extra,
     )
     n = int(duration * samplerate)
     t = np.arange(n) / samplerate
-    signal = level * np.sin(2 * np.pi * 5 * t)
-    samples = (np.rint(signal * 32768).astype(np.int16) if fmt == "int16" else signal.astype(np.float32)).reshape(-1, 1)
+    signal = np.stack([lvl * np.sin(2 * np.pi * 5 * t) for lvl in channel_levels], axis=1)
+    samples = np.rint(signal * 32768).astype(np.int16) if fmt == "int16" else signal.astype(np.float32)
     w.write_audio(sid, 100.0 + t, samples)
     if footer:
         w.set_stream_footer_extra(sid, footer)
@@ -957,3 +960,37 @@ def test_report_summary_and_detail_mention_warnings(xdf_path):
     report = validate_test_recording(xdf_path, _audio_cfg(), [], duration)
     assert "warning(s)" in report.summary()
     assert "[WARN] Audio signal level" in report.detailed_text()
+
+
+# ---------------------------------------------------------------------------
+# Audio channels: per-channel levels, as in the audio test
+# ---------------------------------------------------------------------------
+
+def test_audio_silent_second_channel_is_flagged(xdf_path):
+    """One silent channel next to an active one."""
+    duration = _record_audio(xdf_path, channel_levels=[0.1, 0.0])
+    report = validate_test_recording(xdf_path, _audio_cfg(channels=2), [], duration)
+    flagged = [c for c in report.checks if c.name == "Audio channel levels"]
+    assert len(flagged) == 1 and flagged[0].passed and flagged[0].warning
+    assert "Channel 2 is silent" in flagged[0].detail and "different input" in flagged[0].detail
+    assert report.passed and report.warnings
+
+
+def test_audio_all_channels_active_passes_without_warning(xdf_path):
+    duration = _record_audio(xdf_path, channel_levels=[0.1, 0.1])
+    report = validate_test_recording(xdf_path, _audio_cfg(channels=2), [], duration)
+    check = _check_named(report, "Audio channel levels")
+    assert check.passed and not check.warning
+
+
+def test_audio_silent_recording_is_flagged_once_not_per_channel(xdf_path):
+    duration = _record_audio(xdf_path, channel_levels=[0.0, 0.0])
+    report = validate_test_recording(xdf_path, _audio_cfg(channels=2), [], duration)
+    assert _check_named(report, "Audio signal level").warning
+    assert not [c for c in report.checks if c.name == "Audio channel levels" and c.warning]
+
+
+def test_audio_single_channel_has_no_channel_level_check(xdf_path):
+    duration = _record_audio(xdf_path)
+    report = validate_test_recording(xdf_path, _audio_cfg(), [], duration)
+    assert not [c for c in report.checks if c.name == "Audio channel levels"]

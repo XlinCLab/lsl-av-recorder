@@ -80,3 +80,8 @@ def silent_channels(levels: SignalLevels) -> List[int]:
     return [
         i + 1 for i, db in enumerate(levels.channel_peak_dbfs) if db < SILENCE_PEAK_DBFS
     ]
+
+
+def silent_channel_message(channel: int) -> str:
+    """Warning for a channel (1-based) that is silent while another one carries a signal."""
+    return f"Channel {channel} is silent (although another channel carries a signal)."

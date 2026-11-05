@@ -12,7 +12,7 @@ from .constants import RATE_WARN_TOLERANCE
 from .devices import (audio_stream_closed, audio_stream_opened,
                       default_output_device_index)
 from .levels import (SignalLevels, as_float_samples, dbfs, level_problem,
-                     signal_levels, silent_channels)
+                     signal_levels, silent_channel_message, silent_channels)
 from .lsl_audio import AudioLSLStreamer, AudioStreamSettings
 from .rate_meter import rate_deviation
 
@@ -75,10 +75,7 @@ def summarize_test(
         if problem:
             warnings.append(f"Peak {levels.peak_dbfs:.1f} dBFS: {problem}.")
         for channel in silent_channels(levels):
-            warnings.append(
-                f"Channel {channel} is silent while another channel carries a signal; "
-                "is the microphone connected to a different input?"
-            )
+            warnings.append(silent_channel_message(channel))
     else:
         warnings.append("No samples were recorded.")
     if overflows:
