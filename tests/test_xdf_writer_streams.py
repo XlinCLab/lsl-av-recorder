@@ -125,6 +125,23 @@ def test_add_audio_stream_records_its_format(writer):
     assert writer._stream_formats[sid] == "int16"
 
 
+def test_add_audio_stream_writes_channel_labels_readable_by_pyxdf(xdf_path):
+    w = XDFWriter(xdf_path)
+    w.start()
+    sid = w.add_audio_stream(
+        name="Audio",
+        samplerate=1000.0,
+        channels=2,
+        channel_labels=["Participant A", "Participant B"],
+    )
+    w.write_audio(sid, 100.0 + np.arange(100) / 1000, np.zeros((100, 2), dtype=np.float32))
+    w.stop()
+    streams, _ = load_xdf(xdf_path)
+    channels = streams[0]["info"]["desc"][0]["channels"][0]["channel"]
+    assert [c["label"][0] for c in channels] == ["Participant A", "Participant B"]
+    assert [c["type"][0] for c in channels] == ["Audio", "Audio"]
+
+
 def test_add_video_stream_records_int64_format(writer):
     sid = writer.add_video_stream(
         name="Video", camera_id="0", video_path="v.mp4", width=640, height=480, fps=30.0,

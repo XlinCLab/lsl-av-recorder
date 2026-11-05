@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass, field
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import sounddevice as sd
@@ -54,6 +54,7 @@ def summarize_test(
     opened_rate: int,
     meter_summary: dict,
     device_name: Optional[str] = None,
+    channel_labels: Optional[Sequence[str]] = None,
 ) -> AudioTestResult:
     """Turn a finished test recording into a result with plain-language warnings."""
     levels = signal_levels(samples)
@@ -75,7 +76,7 @@ def summarize_test(
         if problem:
             warnings.append(f"Peak {levels.peak_dbfs:.1f} dBFS: {problem}.")
         for channel in silent_channels(levels):
-            warnings.append(silent_channel_message(channel))
+            warnings.append(silent_channel_message(channel, channel_labels))
     else:
         warnings.append("No samples were recorded.")
     if overflows:
@@ -186,6 +187,7 @@ class AudioTestSession:
             opened_rate=int(self.settings.samplerate),
             meter_summary=meter,
             device_name=self.settings.device_name,
+            channel_labels=self.settings.channel_labels,
         )
 
     def cancel(self) -> None:

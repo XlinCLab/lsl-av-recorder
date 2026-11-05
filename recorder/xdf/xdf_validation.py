@@ -17,6 +17,7 @@ from typing import List, Optional
 import pyxdf
 from pylsl import StreamInfo
 
+from ..audio.channel_labels import label_problems, resolve_channel_labels
 from ..audio.constants import RATE_VALIDATION_TOLERANCE
 from ..audio.device_identity import normalize_device_name
 from ..audio.levels import (as_float_samples, level_problem, signal_levels,
@@ -211,12 +212,48 @@ def _validate_audio_properties(cfg: AppConfig, stream: dict, n_samples: int) -> 
             f"{overflows} overflow(s) reported by the audio driver; samples may have been lost",
         ))
 
+    expected_labels = resolve_channel_labels(cfg.Audio.ChannelLabels, cfg.Audio.Channels)
+    checks.extend(_audio_label_check(info, expected_labels, cfg.Audio.ChannelLabels, cfg.Audio.Channels))
+
     if n_samples > 0:
-        checks.extend(_audio_level_checks(stream["time_series"], _first(info.get("channel_format"))))
+        checks.extend(_audio_level_checks(
+            stream["time_series"], _first(info.get("channel_format")), expected_labels,
+        ))
     return checks
 
 
-def _audio_level_checks(samples, channel_format: Optional[str]) -> List[CheckResult]:
+def _header_channel_labels(info: dict) -> Optional[List[str]]:
+    """Channel labels from a stream header's <desc><channels>, or None if it has none."""
+    desc = _first(info.get("desc"))
+    if not isinstance(desc, dict):
+        return None
+    channels = _first(desc.get("channels"))
+    if not isinstance(channels, dict):
+        return None
+    labels = []
+    for channel in channels.get("channel") or []:
+        label = _first(channel.get("label")) if isinstance(channel, dict) else None
+        labels.append(label or "")
+    return labels or None
+
+
+def _audio_label_check(info: dict, expected: List[str], configured: str, n_channels: int) -> List[CheckResult]:
+    """The labels in the XDF header are the configured ones, one per channel."""
+    checks: List[CheckResult] = []
+    for problem in label_problems(configured, n_channels):
+        checks.append(_warn("Audio channel labels", problem))
+    actual = _header_channel_labels(info)
+    if actual is None:
+        checks.append(_check("Audio channel labels in header", False, "no channel labels in the XDF header"))
+    else:
+        checks.append(_check(
+            "Audio channel labels in header", actual == expected,
+            f"expected={expected}, actual={actual}",
+        ))
+    return checks
+
+
+def _audio_level_checks(samples, channel_format: Optional[str], labels: List[str]) -> List[CheckResult]:
     """Peak and RMS level in dBFS, flagged when the signal is silent, very quiet or clipping.
     If >1 channel: whether one of them is silent while another carries a signal."""
     levels = signal_levels(as_float_samples(samples, channel_format))
@@ -228,10 +265,13 @@ def _audio_level_checks(samples, channel_format: Optional[str]) -> List[CheckRes
     ]
     if len(levels.channel_peaks) > 1:
         silent = silent_channels(levels)
+        per_channel = ", ".join(
+            f"{labels[i] if i < len(labels) else i + 1}: {db:.1f}"
+            for i, db in enumerate(levels.channel_peak_dbfs)
+        )
         if silent:
-            checks.extend(_warn("Audio channel levels", silent_channel_message(c)) for c in silent)
+            checks.extend(_warn("Audio channel levels", silent_channel_message(c, labels)) for c in silent)
         else:
-            per_channel = ", ".join(f"{db:.1f}" for db in levels.channel_peak_dbfs)
             checks.append(_check("Audio channel levels", True, f"peak per channel (dBFS): {per_channel}"))
     return checks
 

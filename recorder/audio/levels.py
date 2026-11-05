@@ -3,10 +3,11 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Sequence
 
 import numpy as np
 
+from .channel_labels import default_channel_label
 from .constants import (BITDEPTH_CONVERSION_FLOAT, CLIPPING_PEAK,
                         QUIET_PEAK_DBFS, SILENCE_PEAK_DBFS)
 
@@ -82,6 +83,14 @@ def silent_channels(levels: SignalLevels) -> List[int]:
     ]
 
 
-def silent_channel_message(channel: int) -> str:
-    """Warning for a channel (1-based) that is silent while another one carries a signal."""
-    return f"Channel {channel} is silent (although another channel carries a signal)."
+def channel_name(channel: int, labels: Optional[Sequence[str]] = None) -> str:
+    """'Channel 2', or 'Channel 2 (Participant B)' when a label is assigned (`channel` is 1-based)."""
+    label = labels[channel - 1] if labels and channel <= len(labels) else ""
+    if label and label != default_channel_label(channel):
+        return f"Channel {channel} ({label})"
+    return f"Channel {channel}"
+
+
+def silent_channel_message(channel: int, labels: Optional[Sequence[str]] = None) -> str:
+    """Warning for a channel that is silent while another one carries a signal."""
+    return f"{channel_name(channel, labels)} is silent (although another channel carries a signal)."

@@ -23,6 +23,8 @@ from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
                              QTabWidget, QTextEdit, QToolButton, QVBoxLayout,
                              QWidget)
 
+from ..audio.channel_labels import (default_channel_label, label_problems,
+                                    trim_channel_labels)
 from ..audio.constants import (BITDEPTH_CONVERSION_INT, DEFAULT_SAMPLE_FORMAT,
                                SAMPLE_FORMATS)
 from ..audio.device_identity import (_MISSING_AUDIO_DEVICE,
@@ -404,6 +406,12 @@ class MainWindow(QMainWindow):
             "Only options the selected device accepts are listed.",
         ))
         af.addRow("Channels", self.audio_ch)
+        # One label field per channel, directly below "Channels"; shown for channels 1..N
+        self._audio_form = af
+        self._audio_label_edits: list[QLineEdit] = []
+        self._audio_label_rows: list = []
+        self._set_audio_label_texts(self.cfg.Audio.ChannelLabels)
+        self.audio_ch.valueChanged.connect(lambda _v: self._sync_audio_label_rows())
 
         _add_collapsible_form_rows(af, "Advanced", [("Sample format", self._with_help_icon(
             self.audio_sample_format,
@@ -1091,6 +1099,44 @@ class MainWindow(QMainWindow):
         """The audio test shares the audio device, so it is off while recording or testing."""
         self.audio_test_panel.set_external_busy(bool(self._recording_active or self._testing_active))
 
+    def _ensure_audio_label_rows(self, count: int):
+        """Create label fields up to `count`, each placed after the previous one, below Channels."""
+        af = self._audio_form
+        while len(self._audio_label_edits) < count:
+            i = len(self._audio_label_edits)
+            edit = QLineEdit()
+            edit.setPlaceholderText(default_channel_label(i + 1))
+            edit.editingFinished.connect(
+                lambda i=i: self._log_gui_change(
+                    f"Audio.ChannelLabel{i + 1}", self._audio_label_edits[i].text().strip()
+                )
+            )
+            channels_row, _role = af.getWidgetPosition(self.audio_ch)
+            af.insertRow(channels_row + 1 + i, f"Channel {i + 1} label", edit)
+            self._audio_label_edits.append(edit)
+            self._audio_label_rows.append(edit)
+
+    def _sync_audio_label_rows(self):
+        """Show one label field per recorded channel."""
+        channels = int(self.audio_ch.value())
+        self._ensure_audio_label_rows(channels)
+        for i, row in enumerate(self._audio_label_rows):
+            self._audio_form.setRowVisible(row, i < channels)
+
+    def _set_audio_label_texts(self, labels):
+        """Fill the label fields from `labels` (one per channel; surplus fields are cleared)."""
+        labels = list(labels or [])
+        self._ensure_audio_label_rows(max(len(labels), int(self.audio_ch.value())))
+        for i, edit in enumerate(self._audio_label_edits):
+            edit.setText(labels[i] if i < len(labels) else "")
+        self._sync_audio_label_rows()
+
+    def _audio_channel_labels(self) -> list[str]:
+        """Labels typed for the channels that are recorded (hidden fields are not used)."""
+        return trim_channel_labels(
+            [edit.text() for edit in self._audio_label_edits], int(self.audio_ch.value())
+        )
+
     def _on_audio_device_changed(self, _index: int):
         if not self._audio_device_missing() and self._missing_audio_identity is not None:
             # A real device was chosen: drop the "not found" placeholder
@@ -1322,6 +1368,7 @@ class MainWindow(QMainWindow):
         self.cfg.Audio.BitDepth = int(self.audio_bit.currentData())
         self.cfg.Audio.SampleFormat = self.audio_sample_format.currentData()
         self.cfg.Audio.Channels = int(self.audio_ch.value())
+        self.cfg.Audio.ChannelLabels = self._audio_channel_labels()
         self.cfg.Audio.StreamName = self.audio_stream_name.text().strip() or "Audio"
 
         self.cfg.LabRecorder.Enabled = self.labrec_enabled.isChecked()
@@ -1463,12 +1510,18 @@ class MainWindow(QMainWindow):
         samplerate = int(self.audio_sr.currentData())
         bitdepth = int(self.audio_bit.currentData())
         channels = int(self.audio_ch.value())
-        if is_input_config_supported(device, samplerate, channels, bitdepth):
-            return []
-        return [
-            f"Audio: samplerate={samplerate}, bit depth={bitdepth}-bit, channels={channels} "
-            "is not supported by the selected input device."
-        ]
+        problems: list[str] = []
+        if not is_input_config_supported(device, samplerate, channels, bitdepth):
+            problems.append(
+                f"Audio: samplerate={samplerate}, bit depth={bitdepth}-bit, channels={channels} "
+                "is not supported by the selected input device."
+            )
+        if not force:
+            problems.extend(
+                f"Audio: {problem}"
+                for problem in label_problems(self._audio_channel_labels(), channels)
+            )
+        return problems
 
     def _validate_unique_camera_labels(self) -> list[str]:
         configs = [panel.to_config() for panel in self.cam_panels]
@@ -2049,6 +2102,7 @@ class MainWindow(QMainWindow):
         idx = self.audio_sample_format.findData(self.cfg.Audio.SampleFormat)
         self.audio_sample_format.setCurrentIndex(max(idx, 0))
         self.audio_stream_name.setText(getattr(self.cfg.Audio, "StreamName", "Audio") or "Audio")
+        self._set_audio_label_texts(self.cfg.Audio.ChannelLabels)
 
         self.labrec_enabled.setChecked(bool(self.cfg.LabRecorder.Enabled))
         self.labrec_host.setText(self.cfg.LabRecorder.Host)

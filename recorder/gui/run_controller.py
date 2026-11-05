@@ -322,6 +322,7 @@ class RunController:
                 fmt=self.audio_settings.sample_format,
                 source_id=self.audio_settings.source_id,
                 extra=self._audio_stream_extra(),
+                channel_labels=self.audio_settings.channel_labels,
             )
             self.info(f"Initialized audio stream <{self.audio_settings.stream_name}> in XDF")
 

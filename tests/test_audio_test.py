@@ -66,7 +66,21 @@ def test_signal_problems_are_reported():
 def test_silent_channel_is_reported_with_a_hint_about_the_input():
     samples = np.column_stack([_tone()[:, 0], np.zeros(1000, np.float32)])
     result = summarize_test(samples, 1000, 1000, _summary(1000.0))
-    assert any("Channel 2 is silent" in w and "different input" in w for w in result.warnings)
+    assert any("Channel 2 is silent" in w and "another channel carries a signal" in w for w in result.warnings)
+
+
+def test_silent_channel_warning_names_the_channel_label():
+    samples = np.column_stack([_tone()[:, 0], np.zeros(1000, np.float32)])
+    result = summarize_test(
+        samples, 1000, 1000, _summary(1000.0), channel_labels=["Participant A", "Participant B"],
+    )
+    assert any("Channel 2 (Participant B) is silent" in w for w in result.warnings)
+
+
+def test_default_channel_labels_are_not_repeated_in_the_warning():
+    samples = np.column_stack([_tone()[:, 0], np.zeros(1000, np.float32)])
+    result = summarize_test(samples, 1000, 1000, _summary(1000.0), channel_labels=["Channel 1", "Channel 2"])
+    assert any("Channel 2 is silent" in w for w in result.warnings)
 
 
 def test_overflows_and_empty_recordings_are_reported():

@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Callable, Optional
 
 from ..config import AudioConfig
+from .channel_labels import resolve_channel_labels
 from .device_identity import identity_from_audio_config, resolve_identity
 from .devices import list_input_devices
 from .lsl_audio import AudioStreamSettings
@@ -45,6 +46,7 @@ def build_audio_stream_settings(
         stream_name=audio_cfg.StreamName or "Audio",
         stream_type="Audio",
         source_id=f"audio:{audio_cfg.Device or 'default'}",
+        channel_labels=resolve_channel_labels(audio_cfg.ChannelLabels, audio_cfg.Channels),
     )
     identity = identity_from_audio_config(audio_cfg)
     if identity is not None:

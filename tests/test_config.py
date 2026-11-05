@@ -589,3 +589,48 @@ def test_output_study_root_default_and_round_trip(tmp_path):
     path = str(tmp_path / "o.cfg")
     save_cfg(cfg, path)
     assert load_cfg(path).Output.StudyRoot == "/data/my study"
+
+
+def test_audio_channel_labels_load_and_round_trip(write_cfg, tmp_path):
+    cfg = load_cfg(path=write_cfg("""
+        [Audio]
+        Channels = 2
+        ChannelLabel1 = Participant A
+        ChannelLabel2 = Participant B
+        """))
+    assert cfg.Audio.ChannelLabels == ["Participant A", "Participant B"]
+    out = tmp_path / "out.cfg"
+    save_cfg(cfg, str(out))
+    assert load_cfg(str(out)).Audio.ChannelLabels == ["Participant A", "Participant B"]
+
+
+def test_audio_channel_labels_keep_gaps_and_ignore_unnumbered_keys(write_cfg):
+    cfg = load_cfg(path=write_cfg("""
+        [Audio]
+        Channels = 3
+        ChannelLabel1 = A
+        ChannelLabel3 = C
+        ChannelLabel0 = ignored
+        ChannelLabelX = ignored
+        """))
+    assert cfg.Audio.ChannelLabels == ["A", "", "C"]
+
+
+def test_audio_channel_labels_beyond_the_channel_count_are_not_saved(tmp_path):
+    cfg = AppConfig()
+    cfg.Audio.Channels = 1
+    cfg.Audio.ChannelLabels = ["A", "B"]
+    out = tmp_path / "out.cfg"
+    save_cfg(cfg, str(out))
+    assert load_cfg(str(out)).Audio.ChannelLabels == ["A"]
+
+
+def test_audio_channel_labels_default_to_empty_and_are_not_saved(write_cfg, tmp_path):
+    cfg = load_cfg(path=write_cfg("""
+        [Audio]
+        Channels = 2
+        """))
+    assert cfg.Audio.ChannelLabels == []
+    out = tmp_path / "out.cfg"
+    save_cfg(cfg, str(out))
+    assert "channellabel" not in out.read_text().lower()

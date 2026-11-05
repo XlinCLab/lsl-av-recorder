@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Callable, Optional, Union
+from dataclasses import dataclass, field
+from typing import Callable, List, Optional, Union
 
 import numpy as np
 import sounddevice as sd
@@ -26,6 +26,8 @@ class AudioStreamSettings:
     stream_name: str = "Audio"
     stream_type: str = "Audio"
     source_id: str = "audio"
+    # One label per channel; empty = unlabelled
+    channel_labels: List[str] = field(default_factory=list)
     # Filled in by AudioLSLStreamer.start() with the device actually opened
     device_index: Optional[int] = None
     device_hostapi: Optional[str] = None
