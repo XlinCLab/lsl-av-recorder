@@ -9,9 +9,10 @@ from pylsl import local_clock
 
 from .constants import (BITDEPTH_CONVERSION_FLOAT, BITDEPTH_DTYPES,
                         DEFAULT_BIT_DEPTH, DEFAULT_SAMPLE_FORMAT,
-                        SAMPLE_FORMATS)
+                        RATE_WARN_TOLERANCE, SAMPLE_FORMATS)
 from .device_identity import device_location
 from .devices import audio_stream_closed, audio_stream_opened
+from .rate_meter import RateMeter, rate_deviation
 
 
 @dataclass
@@ -158,6 +159,8 @@ class AudioLSLStreamer:
         self.status_cb = status_cb
         self.stream: Optional[sd.InputStream] = None
         self._counted_as_open = False
+        # Frames delivered per second of real time, independent of the configured rate
+        self.rate_meter = RateMeter()
 
     def log(self, msg: str, loglevel: str = "INFO"):
         if self.status_cb:
@@ -179,6 +182,7 @@ class AudioLSLStreamer:
         def callback(indata, frames, time_info, status):
             if status:
                 self.info(f"Audio status: {status}")
+            self.rate_meter.update(frames, overflow=bool(getattr(status, "input_overflow", False)))
 
             # PortAudio time -> LSL time; timestamp refers to first sample in chunk
             offset = local_clock() - time_info.currentTime
@@ -261,4 +265,26 @@ class AudioLSLStreamer:
                 if self._counted_as_open:
                     audio_stream_closed()
                     self._counted_as_open = False
+            self._report_measured_rate()
         self.info("AudioLSL: stopped.")
+
+    def _report_measured_rate(self):
+        """Log the rate at which samples really arrived, and warn if it differs from the
+        configured rate."""
+        summary = self.rate_meter.summary()
+        measured = summary["measured_srate"]
+        if measured is None:
+            self.warning("AudioLSL: recording too short to measure the delivered sample rate")
+            return
+        self.info(
+            f"AudioLSL: delivered {summary['total_frames']} frames; measured rate {measured:.1f} Hz "
+            f"over {summary['measured_window_s']:.1f} s (configured {self.s.samplerate} Hz)"
+        )
+        deviation = rate_deviation(measured, self.s.samplerate)
+        if deviation is not None and deviation > RATE_WARN_TOLERANCE:
+            self.warning(
+                f"AudioLSL: samples arrived at {measured:.1f} Hz, {deviation:.1%} off the configured "
+                f"{self.s.samplerate} Hz."
+            )
+        if summary["input_overflows"]:
+            self.warning(f"AudioLSL: {summary['input_overflows']} input overflow(s) (samples may have been lost)")

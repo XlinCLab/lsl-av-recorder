@@ -31,3 +31,7 @@ BITDEPTH_DTYPES = {
 }
 BITDEPTH_CONVERSION_FLOAT = 32768.0
 BITDEPTH_CONVERSION_INT = int(BITDEPTH_CONVERSION_FLOAT)
+
+# Relative deviation of the measured delivery rate from the configured sample rate beyond which a recording is flagged
+RATE_WARN_TOLERANCE = 0.01
+RATE_VALIDATION_TOLERANCE = 0.02

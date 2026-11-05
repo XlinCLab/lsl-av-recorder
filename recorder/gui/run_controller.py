@@ -77,6 +77,8 @@ class RunController:
         self.cams = self._get_active_cams()
         self.videos: List[VideoRecorder] = []
         self.audio_sid: Optional[int] = None
+        # Delivered-rate measurement of the audio stream, filled in when it stops
+        self.audio_rate_summary: Optional[Dict[str, object]] = None
         self.video_sids: Dict[str, int] = {}
         self.lsl_streams = lsl_streams or []
         self.lsl_recorders: List[LslInletRecorder] = []
@@ -173,6 +175,24 @@ class RunController:
         with open(self._meta_path, "w", encoding="utf-8") as f:
             json.dump(self._metadata, f, indent=2, ensure_ascii=False)
 
+    def _record_audio_rate(self):
+        """Store the measured rate at which the audio device actually delivered samples
+        in the audio stream's XDF footer and the run metadata, so a recording documents this
+        (and in order for the test recording to be able to check it)."""
+        summary = self.audio_rate_summary
+        if not summary or self.audio_sid is None:
+            return
+        self.xdf.set_stream_footer_extra(self.audio_sid, {
+            "measured_srate": None if summary["measured_srate"] is None else f"{summary['measured_srate']:.3f}",
+            "measured_window_s": f"{summary['measured_window_s']:.3f}",
+            "input_overflows": summary["input_overflows"],
+        })
+        self._metadata["audio_rate"] = summary
+        try:
+            self._dump_metadata()
+        except OSError as exc:
+            self.warning(f"Could not update run metadata with the measured audio rate: {exc}")
+
     def _record_audio_device_in_metadata(self):
         """Add the audio device actually opened (known only once capture has
         started) to the run metadata."""
@@ -228,6 +248,7 @@ class RunController:
             try:
                 self.audio.stop()
             finally:
+                self.audio_rate_summary = self.audio.rate_meter.summary()
                 self.audio = None
 
         # Stop video
@@ -246,6 +267,7 @@ class RunController:
             self._flush_audio_buffer()
             self._flush_video_buffer()
             self._stop_writer_thread()
+            self._record_audio_rate()
             self.xdf.stop()
             self.xdf = None
             self.info("XDF writer stopped")

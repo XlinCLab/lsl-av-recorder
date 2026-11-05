@@ -1,6 +1,7 @@
 """Tests for recorder.gui.run_controller.RunController."""
 from __future__ import annotations
 
+import json
 import os
 
 import numpy as np
@@ -497,3 +498,57 @@ def test_audio_stream_header_extra_omits_unknown_device_fields(tmp_path):
     rc.audio_settings.device_name = None
 
     assert set(rc._audio_stream_extra()) == {"capture_bit_depth"}
+
+
+# ---------------------------------------------------------------------------
+# Measured audio rate stored with the recording
+# ---------------------------------------------------------------------------
+
+class _FooterRecorder:
+    def __init__(self):
+        self.extras = {}
+
+    def set_stream_footer_extra(self, sid, extra):
+        self.extras[sid] = dict(extra)
+
+
+def test_measured_audio_rate_goes_into_the_footer_and_run_metadata(make_rc):
+    rc, _ = make_rc()
+    rc.xdf = _FooterRecorder()
+    rc.audio_sid = 3
+    rc.audio_rate_summary = {
+        "measured_srate": 47940.123456, "measured_window_s": 170.5, "callbacks": 800,
+        "total_frames": 8000000, "input_overflows": 1,
+    }
+
+    rc._record_audio_rate()
+
+    assert rc.xdf.extras[3] == {
+        "measured_srate": "47940.123",
+        "measured_window_s": "170.500",
+        "input_overflows": 1,
+    }
+    with open(rc._meta_path, encoding="utf-8") as f:
+        assert json.load(f)["audio_rate"]["measured_srate"] == 47940.123456
+
+
+def test_unmeasurable_audio_rate_is_left_out_of_the_footer(make_rc):
+    rc, _ = make_rc()
+    rc.xdf = _FooterRecorder()
+    rc.audio_sid = 1
+    rc.audio_rate_summary = {
+        "measured_srate": None, "measured_window_s": 0.0, "callbacks": 2,
+        "total_frames": 2048, "input_overflows": 0,
+    }
+
+    rc._record_audio_rate()
+
+    # None is passed on and skipped by the writer (see XDFWriter.set_stream_footer_extra)
+    assert rc.xdf.extras[1]["measured_srate"] is None
+
+
+def test_no_audio_means_nothing_is_added_to_the_footer(make_rc):
+    rc, _ = make_rc()
+    rc.xdf = _FooterRecorder()
+    rc._record_audio_rate()
+    assert rc.xdf.extras == {}

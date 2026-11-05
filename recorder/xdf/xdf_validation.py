@@ -10,13 +10,18 @@ real session.
 """
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass
 from typing import List, Optional
 
+import numpy as np
 import pyxdf
 from pylsl import StreamInfo
 
+from ..audio.constants import (BITDEPTH_CONVERSION_FLOAT,
+                               RATE_VALIDATION_TOLERANCE)
+from ..audio.device_identity import normalize_device_name
 from ..config import AppConfig
 
 # Sample/frame counts are compared to duration * nominal_srate within this
@@ -28,6 +33,12 @@ DEFAULT_COUNT_TOLERANCE = 0.3
 # these are just round-trip/plumbing checks (the declared rate is written
 # verbatim into the XDF header), not a measurement of hardware timing.
 DEFAULT_RATE_TOLERANCE = 0.05
+# Audio sample counts are checked tighter than other streams, since an audio device's rate is steady
+AUDIO_COUNT_TOLERANCE = 0.15
+# Peak levels (dBFS) below which the recorded signal is flagged
+SILENCE_PEAK_DBFS = -60.0
+QUIET_PEAK_DBFS = -40.0
+CLIPPING_PEAK = 0.999
 
 
 @dataclass
@@ -35,6 +46,8 @@ class CheckResult:
     name: str
     passed: bool
     detail: str
+    # A passed check that still deserves the user's attention (e.g. a very quiet signal)
+    warning: bool = False
 
 
 @dataclass
@@ -46,20 +59,32 @@ class ValidationReport:
     def passed(self) -> bool:
         return bool(self.checks) and all(c.passed for c in self.checks)
 
+    @property
+    def warnings(self) -> List[CheckResult]:
+        return [c for c in self.checks if c.passed and c.warning]
+
     def summary(self) -> str:
         n_ok = sum(1 for c in self.checks if c.passed)
-        return f"{n_ok}/{len(self.checks)} checks passed"
+        text = f"{n_ok}/{len(self.checks)} checks passed"
+        if self.warnings:
+            text += f", {len(self.warnings)} warning(s)"
+        return text
 
     def detailed_text(self) -> str:
         lines = []
         for c in self.checks:
-            mark = "PASS" if c.passed else "FAIL"
+            mark = "FAIL" if not c.passed else ("WARN" if c.warning else "PASS")
             lines.append(f"[{mark}] {c.name}: {c.detail}")
         return "\n".join(lines)
 
 
 def _check(name: str, passed: bool, detail: str) -> CheckResult:
     return CheckResult(name=name, passed=passed, detail=detail)
+
+
+def _warn(name: str, detail: str) -> CheckResult:
+    """A check that passes but is flagged for attention."""
+    return CheckResult(name=name, passed=True, detail=detail, warning=True)
 
 
 def _check_close(name: str, expected: float, actual: float, rel_tol: float) -> CheckResult:
@@ -119,9 +144,105 @@ def _validate_audio(cfg: AppConfig, by_name: dict, expected_duration_s: float) -
         name="Audio sample count",
         actual_n=n_samples,
         expected_n=expected_duration_s * cfg.Audio.SampleRate,
-        rel_tol=DEFAULT_COUNT_TOLERANCE,
+        rel_tol=AUDIO_COUNT_TOLERANCE,
     ))
+    checks.extend(_validate_audio_properties(cfg, stream, n_samples))
     return checks
+
+
+def _first(values) -> Optional[str]:
+    """First value of a pyxdf header/footer field (a list of strings), or None."""
+    if isinstance(values, (list, tuple)) and values:
+        return values[0]
+    return None
+
+
+def _validate_audio_properties(cfg: AppConfig, stream: dict, n_samples: int) -> List[CheckResult]:
+    """Checks that the audio stream has the properties that were configured:
+    declared and really delivered sample rate, capture bit depth, input device and
+    signal level."""
+    checks: List[CheckResult] = []
+    info = stream["info"]
+    desc = _first(info.get("desc"))
+    desc = desc if isinstance(desc, dict) else {}
+    footer = (stream.get("footer") or {}).get("info") or {}
+
+    nominal = _first(info.get("nominal_srate"))
+    if nominal is not None:
+        checks.append(_check(
+            "Audio sample rate in header",
+            float(nominal) == float(cfg.Audio.SampleRate),
+            f"expected={cfg.Audio.SampleRate}, actual={float(nominal):g}"
+            + ("" if float(nominal) == float(cfg.Audio.SampleRate)
+               else " (the device did not accept the configured rate)"),
+        ))
+
+    # The effective rate above is derived from timestamps built from the configured rate, so
+    # it cannot reveal a device running at a different rate. The measured rate counts frames
+    # per second of real time.
+    measured = _first(footer.get("measured_srate"))
+    if measured is not None:
+        checks.append(_check_close(
+            "Audio measured sample rate (real time)", float(cfg.Audio.SampleRate), float(measured),
+            RATE_VALIDATION_TOLERANCE,
+        ))
+    else:
+        checks.append(_warn(
+            "Audio measured sample rate (real time)",
+            "not available (recording too short to measure, or not recorded)",
+        ))
+
+    capture_bit_depth = _first(desc.get("capture_bit_depth"))
+    if capture_bit_depth is not None:
+        ok = int(capture_bit_depth) == int(cfg.Audio.BitDepth)
+        checks.append(_check(
+            "Audio capture bit depth", ok,
+            f"expected={cfg.Audio.BitDepth}, actual={capture_bit_depth}"
+            + ("" if ok else " (the device refused the configured capture format)"),
+        ))
+
+    device_name = _first(desc.get("device_name"))
+    if device_name and cfg.Audio.DeviceName:
+        ok = normalize_device_name(device_name) == normalize_device_name(cfg.Audio.DeviceName)
+        checks.append(_check(
+            "Audio input device", ok,
+            f"expected={normalize_device_name(cfg.Audio.DeviceName)}, actual={normalize_device_name(device_name)}",
+        ))
+
+    overflows = _first(footer.get("input_overflows"))
+    if overflows is not None and int(overflows) > 0:
+        checks.append(_warn(
+            "Audio input overflows",
+            f"{overflows} overflow(s) reported by the audio driver; samples may have been lost",
+        ))
+
+    if n_samples > 0:
+        checks.append(_audio_level_check(stream["time_series"], _first(info.get("channel_format"))))
+    return checks
+
+
+def _audio_level_check(samples, channel_format: Optional[str]) -> CheckResult:
+    """Peak and RMS level in dBFS, flagged when the signal is silent, very quiet or clipping."""
+    x = np.asarray(samples, dtype=np.float64)
+    if channel_format == "int16":
+        x = x / BITDEPTH_CONVERSION_FLOAT
+    peak = float(np.max(np.abs(x)))
+    rms = float(np.sqrt(np.mean(x ** 2)))
+
+    def db(value: float) -> float:
+        return 20.0 * math.log10(max(value, 1e-9))
+
+    detail = f"peak {db(peak):.1f} dBFS, RMS {db(rms):.1f} dBFS"
+    name = "Audio signal level"
+    if peak >= CLIPPING_PEAK:
+        return _warn(name, detail + ": the signal reaches full scale (clipping); lower the input gain")
+    if db(peak) < SILENCE_PEAK_DBFS:
+        return _warn(name, detail + ": the recording is silent; check that the microphone is connected, "
+                                   "unmuted and on the selected input")
+    if db(peak) < QUIET_PEAK_DBFS:
+        return _warn(name, detail + ": the signal is very quiet; check the input gain "
+                                    "(or the microphone distance)")
+    return _check(name, True, detail)
 
 
 def _validate_video(cfg: AppConfig, by_name: dict, expected_duration_s: float) -> List[CheckResult]:

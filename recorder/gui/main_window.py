@@ -1817,15 +1817,22 @@ class MainWindow(QMainWindow):
 
     def _show_validation_report(self, report: ValidationReport, temp_dir: str):
         for check in report.checks:
-            loglevel = "INFO" if check.passed else "WARNING"
-            mark = "PASS" if check.passed else "FAIL"
+            loglevel = "INFO" if check.passed and not check.warning else "WARNING"
+            mark = "FAIL" if not check.passed else ("WARN" if check.warning else "PASS")
             self.log(f"[Test] [{mark}] {check.name}: {check.detail}", loglevel)
 
         box = QMessageBox(self)
         box.setWindowTitle("Test recording results")
         if report.passed:
-            box.setIcon(QMessageBox.Icon.Information)
-            box.setText(f"All checks passed ({report.summary()}).")
+            if report.warnings:
+                box.setIcon(QMessageBox.Icon.Warning)
+                box.setText(
+                    f"All checks passed ({report.summary()}), but please review warnings:\n\n"
+                    + "\n".join(f"- {c.name}: {c.detail}" for c in report.warnings)
+                )
+            else:
+                box.setIcon(QMessageBox.Icon.Information)
+                box.setText(f"All checks passed ({report.summary()}).")
             shutil.rmtree(temp_dir, ignore_errors=True)
             self.log(f"[Test] Cleaned up temp test recording directory: {temp_dir}")
             ok_btn = box.addButton(QMessageBox.StandardButton.Ok)
