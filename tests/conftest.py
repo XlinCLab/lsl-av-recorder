@@ -133,6 +133,17 @@ def fake_sd(monkeypatch) -> FakeSoundDevice:
     return fake
 
 
+@pytest.fixture(autouse=True)
+def _reset_open_audio_stream_counter():
+    """Tests that start an AudioLSLStreamer without stopping it must not leak
+    the process-wide open-stream count into later tests."""
+    import recorder.audio.devices as devices
+
+    devices._active_streams = 0
+    yield
+    devices._active_streams = 0
+
+
 @pytest.fixture
 def xdf_path(tmp_path):
     return str(tmp_path / "test.xdf")

@@ -13,6 +13,8 @@ from typing import Callable, Dict, List, Optional
 import numpy as np
 from pylsl import StreamInfo, StreamInlet
 
+from ..audio.device_identity import (identity_from_audio_config,
+                                     resolve_identity)
 from ..audio.devices import list_input_devices
 from ..audio.lsl_audio import AudioLSLStreamer, AudioStreamSettings
 from ..config import AppConfig, VideoCamConfig
@@ -150,27 +152,41 @@ class RunController:
             os.makedirs(self.outdir, exist_ok=True)
 
     def _write_metadata(self):
-        meta_path = os.path.join(self.outdir, f"{self.base_name}_session.json")
-        with open(meta_path, "w", encoding="utf-8") as f:
-            json.dump(
-                {
-                    "environment": get_environment_info(_project_root()),
-                    "prompts": asdict(self.cfg.Prompts),
-                    "output": asdict(self.cfg.Output),
-                    "audio": asdict(self.cfg.Audio),
-                    "buffering": asdict(self.cfg.Buffering),
-                    "labrecorder": asdict(self.cfg.LabRecorder),
-                    "lsl_streams": [self._lsl_stream_meta(s) for s in self.lsl_streams],
-                    "video": {
-                        "Enabled": self.video_enabled,
-                        "Cams": [asdict(c) for c in self.cams if c.Enabled] if self.video_enabled else []
-                    },
-                },
-                f,
-                indent=2,
-                ensure_ascii=False,
-            )
-        self.info(f"Wrote run metadata to {meta_path}")
+        self._meta_path = os.path.join(self.outdir, f"{self.base_name}_session.json")
+        self._metadata = {
+            "environment": get_environment_info(_project_root()),
+            "prompts": asdict(self.cfg.Prompts),
+            "output": asdict(self.cfg.Output),
+            "audio": asdict(self.cfg.Audio),
+            "buffering": asdict(self.cfg.Buffering),
+            "labrecorder": asdict(self.cfg.LabRecorder),
+            "lsl_streams": [self._lsl_stream_meta(s) for s in self.lsl_streams],
+            "video": {
+                "Enabled": self.video_enabled,
+                "Cams": [asdict(c) for c in self.cams if c.Enabled] if self.video_enabled else []
+            },
+        }
+        self._dump_metadata()
+        self.info(f"Wrote run metadata to {self._meta_path}")
+
+    def _dump_metadata(self):
+        with open(self._meta_path, "w", encoding="utf-8") as f:
+            json.dump(self._metadata, f, indent=2, ensure_ascii=False)
+
+    def _record_audio_device_in_metadata(self):
+        """Add the audio device actually opened (known only once capture has
+        started) to the run metadata."""
+        a = self.audio_settings
+        if not a:
+            return
+        self._metadata["audio_device"] = {
+            "index": a.device_index,
+            "name": a.device_name,
+            "hostapi": a.device_hostapi,
+            "location": a.device_location,
+            "samplerate": a.samplerate,
+        }
+        self._dump_metadata()
 
     def start(self):
         if self._running:
@@ -186,6 +202,7 @@ class RunController:
 
         # Start streams (roughly) simultaneously
         self._start_streams()
+        self._record_audio_device_in_metadata()
 
         # Start XDF writer and add streams
         xdf_writer = self._initialize_xdf_writer(xdf_path=xdf_path)
@@ -300,7 +317,7 @@ class RunController:
                 channels=self.audio_settings.channels,
                 fmt=self.audio_settings.sample_format,
                 source_id=self.audio_settings.source_id,
-                extra={"capture_bit_depth": self.audio_settings.bitdepth},
+                extra=self._audio_stream_extra(),
             )
             self.info(f"Initialized audio stream <{self.audio_settings.stream_name}> in XDF")
 
@@ -323,6 +340,20 @@ class RunController:
                 self.info(f"Initialized LSL stream <{stream.name()}> in XDF")
             except Exception as exc:
                 self.warning(f"Skipping LSL stream due to error: {exc}")
+
+    def _audio_stream_extra(self) -> Dict[str, object]:
+        """Fields written into the audio stream's header <desc>: what the XDF's
+        channel_format cannot convey, and which device produced the audio."""
+        a = self.audio_settings
+        extra: Dict[str, object] = {"capture_bit_depth": a.bitdepth}
+        for key, value in (
+            ("device_name", a.device_name),
+            ("device_hostapi", a.device_hostapi),
+            ("device_location", a.device_location),
+        ):
+            if value:
+                extra[key] = value
+        return extra
 
     def _resolve_lsl_channels(self, stream: StreamInfo) -> Optional[List[Dict[str, str]]]:
         """
@@ -389,11 +420,32 @@ class RunController:
             stream_type="Audio",
             source_id=f"audio:{self.cfg.Audio.Device or 'default'}",
         )
-        if self.cfg.Audio.Device is not None:
+        identity = identity_from_audio_config(self.cfg.Audio)
+        if identity is not None:
+            # Find the device by name/host API/location in the current device list rather
+            # than trusting a PortAudio index that may have shifted since it was saved.
+            match = resolve_identity(identity, list_input_devices())
+            if not match.found:
+                raise RuntimeError(
+                    f"The configured audio input device is not available: {identity.describe()} "
+                    f"({match.detail}). Select the device in the Audio tab."
+                )
+            aset.device = match.device["index"]
+            aset.source_id = f"audio:{identity.name}"
+            self.log(
+                f"Audio device resolved: {identity.describe()} -> "
+                f"[{match.device['index']}] {match.device['name']} ({match.level})",
+                loglevel="WARNING" if match.degraded else "INFO",
+            )
+        elif self.cfg.Audio.Device is not None:
             try:
                 aset.device = int(self.cfg.Audio.Device)
             except ValueError:
                 aset.device = self.cfg.Audio.Device
+            self.warning(
+                f"Audio device [{self.cfg.Audio.Device}] was configured by index only, "
+                "which may have changed since it was chosen; its identity is unknown."
+            )
         aset.device_name = _resolve_audio_device_name(aset.device)
         return aset
 

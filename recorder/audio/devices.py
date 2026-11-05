@@ -1,11 +1,60 @@
 from __future__ import annotations
 
+import logging
+import sys
+import threading
 from typing import Any, Dict, List, Optional, Union
 
 import sounddevice as sd
 
 from ..audio.constants import (BITDEPTH_DTYPES, CANDIDATE_SAMPLE_RATES,
                                DEFAULT_SAMPLING_RATE)
+from .device_identity import device_location, read_asound_cards
+
+logger = logging.getLogger(__name__)
+
+# Number of audio streams currently open in this process. PortAudio must not be
+# re-initialized while any stream is open (see refresh_portaudio).
+_stream_lock = threading.Lock()
+_active_streams = 0
+
+
+def audio_stream_opened():
+    global _active_streams
+    with _stream_lock:
+        _active_streams += 1
+
+
+def audio_stream_closed():
+    global _active_streams
+    with _stream_lock:
+        _active_streams = max(0, _active_streams - 1)
+
+
+def active_audio_stream_count() -> int:
+    with _stream_lock:
+        return _active_streams
+
+
+def refresh_portaudio() -> bool:
+    """Re-initialize PortAudio so the device list reflects devices plugged in or
+    out since it was first built (sounddevice only enumerates once per session).
+
+    Does nothing and returns False while any audio stream is open, since
+    terminating PortAudio under a running stream is unsafe. Uses sounddevice's
+    private _terminate/_initialize, so any failure is logged and reported as False
+    rather than raised."""
+    with _stream_lock:
+        if _active_streams > 0:
+            logger.info("Not refreshing PortAudio: %d audio stream(s) are open", _active_streams)
+            return False
+        try:
+            sd._terminate()
+            sd._initialize()
+        except Exception as exc:
+            logger.warning("Could not re-initialize PortAudio: %s", exc)
+            return False
+    return True
 
 
 def list_input_devices() -> List[Dict[str, Any]]:
@@ -16,20 +65,28 @@ def list_input_devices() -> List[Dict[str, Any]]:
     except Exception:
         hostapis = []
     out = []
+    # Read once for all devices; empty off Linux
+    cards_text = read_asound_cards() if sys.platform.startswith("linux") else ""
     for i, d in enumerate(devs):
         if d.get("max_input_channels", 0) > 0:
             hostapi_idx = d.get("hostapi")
             hostapi_name = None
             if hostapi_idx is not None and 0 <= hostapi_idx < len(hostapis):
                 hostapi_name = hostapis[hostapi_idx].get("name")
-            out.append({
+            entry = {
                 "index": i,
                 "name": d.get("name"),
                 "hostapi": hostapi_idx,
                 "hostapi_name": hostapi_name,
                 "max_input_channels": d.get("max_input_channels"),
                 "default_samplerate": d.get("default_samplerate"),
-            })
+            }
+            # Physical location (USB port on Linux), where the OS exposes one:
+            # lets identical devices be told apart when indices shift
+            location = device_location(d.get("name"), cards_text)
+            if location:
+                entry["location"] = location
+            out.append(entry)
     return out
 
 

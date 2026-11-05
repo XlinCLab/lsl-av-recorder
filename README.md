@@ -154,6 +154,9 @@ Configuration files are INI-style and expected to be saved as `.cfg` files.
 #### `[Audio]`
 - `Enabled`
 - `Device`
+- `DeviceName`
+- `DeviceHostApi`
+- `DeviceLocation`
 - `SampleRate`
 - `BitDepth`
 - `SampleFormat`

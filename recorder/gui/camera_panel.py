@@ -24,6 +24,48 @@ from ..video.devices import list_video_devices
 from .validate_capabilities import ValidateCapabilitiesDialog
 
 
+def select_device_row(
+    devices: list,
+    preferred_index: int,
+    preferred_devnode: str,
+    preferred_name: Optional[str],
+    allow_preselect: bool = True,
+) -> int:
+    """1-based row (in the device list) of the camera to re-select after the list
+    was rebuilt; 0 if none matches.
+
+    The camera's name is what identifies it (on Linux it includes the USB port, so it
+    survives index and device-node renumbering after a replug). Only among cameras
+    sharing that name are the saved devnode and then index used to pick the
+    right node; the devnode or index alone are used only when the name matches
+    nothing. A bare index is never preferred over a name match, because after a
+    re-enumeration the old index can belong to a different camera."""
+    def index_of(d) -> int:
+        return int(d.get("index", -1))
+
+    named = [
+        i for i, d in enumerate(devices)
+        if preferred_name and str(d.get("name")) == str(preferred_name)
+    ]
+    if named:
+        if allow_preselect:
+            by_node = [
+                i for i in named
+                if preferred_devnode and str(devices[i].get("devnode")) == str(preferred_devnode)
+            ]
+            by_index = [i for i in named if index_of(devices[i]) == int(preferred_index)]
+            named = by_node or by_index or named
+        return named[0] + 1
+    if allow_preselect:
+        for i, d in enumerate(devices):
+            if preferred_devnode and str(d.get("devnode")) == str(preferred_devnode):
+                return i + 1
+        for i, d in enumerate(devices):
+            if index_of(d) == int(preferred_index):
+                return i + 1
+    return 0
+
+
 class _CapabilitiesThread(QThread):
     finished_caps = pyqtSignal(dict)
     failed = pyqtSignal(str)
@@ -593,21 +635,18 @@ class CameraPanel(QWidget):
         self._video_devices = list_video_devices()
 
         self.device_name.addItem(self._UNSELECTED_DEVICE_LABEL, None)
-        selected_row = 0
-
-        for row, dev in enumerate(self._video_devices, start=1):
+        for dev in self._video_devices:
             self.device_name.addItem(
                 f"[{dev['index']}] {dev['name']}",
                 dev,
             )
-            if selected_row == 0:
-                name_matches = bool(preferred_name) and str(dev.get("name")) == str(preferred_name)
-                devnode_matches = (
-                    allow_preselect and preferred_devnode and str(dev.get("devnode")) == str(preferred_devnode)
-                )
-                index_matches = allow_preselect and int(dev.get("index", -1)) == int(preferred_index)
-                if name_matches or devnode_matches or index_matches:
-                    selected_row = row
+        selected_row = select_device_row(
+            self._video_devices,
+            preferred_index=preferred_index,
+            preferred_devnode=preferred_devnode,
+            preferred_name=preferred_name,
+            allow_preselect=allow_preselect,
+        )
 
         if not self._video_devices and allow_preselect:
             self.device_name.addItem(

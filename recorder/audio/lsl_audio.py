@@ -10,6 +10,8 @@ from pylsl import local_clock
 from .constants import (BITDEPTH_CONVERSION_FLOAT, BITDEPTH_DTYPES,
                         DEFAULT_BIT_DEPTH, DEFAULT_SAMPLE_FORMAT,
                         SAMPLE_FORMATS)
+from .device_identity import device_location
+from .devices import audio_stream_closed, audio_stream_opened
 
 
 @dataclass
@@ -23,6 +25,26 @@ class AudioStreamSettings:
     stream_name: str = "Audio"
     stream_type: str = "Audio"
     source_id: str = "audio"
+    # Filled in by AudioLSLStreamer.start() with the device actually opened
+    device_index: Optional[int] = None
+    device_hostapi: Optional[str] = None
+    device_location: Optional[str] = None
+
+
+def _describe_device(device) -> dict:
+    """Name, host API and physical location of an opened PortAudio device (best effort)."""
+    info: dict = {}
+    try:
+        d = sd.query_devices(device)
+        info["name"] = d.get("name")
+        hostapi = d.get("hostapi")
+        if hostapi is not None:
+            info["hostapi"] = sd.query_hostapis()[hostapi].get("name")
+        info["location"] = device_location(d.get("name"))
+    except Exception:
+        pass
+    return info
+
 
 def _capture_dtype(bitdepth: int) -> str:
     """PortAudio dtype to request for a capture bit depth."""
@@ -135,6 +157,7 @@ class AudioLSLStreamer:
         self.sample_cb = sample_cb
         self.status_cb = status_cb
         self.stream: Optional[sd.InputStream] = None
+        self._counted_as_open = False
 
     def log(self, msg: str, loglevel: str = "INFO"):
         if self.status_cb:
@@ -211,6 +234,21 @@ class AudioLSLStreamer:
             blocksize=0,
         )
         self.stream.start()
+        # Tell the device-list refresh that PortAudio must not be re-initialized now
+        audio_stream_opened()
+        self._counted_as_open = True
+        opened = _describe_device(device)
+        self.s.device_index = int(device) if isinstance(device, int) else None
+        if opened.get("name"):
+            self.s.device_name = opened["name"]
+        self.s.device_hostapi = opened.get("hostapi")
+        self.s.device_location = opened.get("location")
+        self.info(
+            f"AudioLSL: opened input device [{device}] {opened.get('name', '?')} "
+            f"(host API {opened.get('hostapi', '?')}"
+            + (f", {opened['location']}" if opened.get("location") else "")
+            + ")"
+        )
         self.info(f"AudioLSL: streaming '{self.s.stream_name}' sr={self.s.samplerate} ch={self.s.channels} capture={dtype} stored_as={sample_format}")
 
     def stop(self):
@@ -220,4 +258,7 @@ class AudioLSLStreamer:
                 self.stream.close()
             finally:
                 self.stream = None
+                if self._counted_as_open:
+                    audio_stream_closed()
+                    self._counted_as_open = False
         self.info("AudioLSL: stopped.")

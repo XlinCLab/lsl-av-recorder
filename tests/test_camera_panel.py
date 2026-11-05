@@ -393,3 +393,91 @@ def test_validate_settings_skips_combo_check_when_no_combos_loaded():
     panel = _FakeModePanel([])
     _select(panel, pixel_format="YUYV", resolution=(1280, 720), fps=30)
     assert CameraPanel.validate_settings(panel) == []
+
+
+# ---------------------------------------------------------------------------
+# select_device_row: re-selecting a camera after the device list was rebuilt
+# ---------------------------------------------------------------------------
+
+def _cams():
+    """Two BRIOs listed once per /dev/video node, as v4l2-ctl does."""
+    return [
+        {"index": 0, "name": "Logitech BRIO (usb-0000:00:14.0-4)", "devnode": "/dev/video0"},
+        {"index": 1, "name": "Logitech BRIO (usb-0000:00:14.0-4)", "devnode": "/dev/video1"},
+        {"index": 2, "name": "Logitech BRIO (usb-0000:00:14.0-9)", "devnode": "/dev/video2"},
+        {"index": 3, "name": "Logitech BRIO (usb-0000:00:14.0-9)", "devnode": "/dev/video3"},
+    ]
+
+
+def test_select_device_row_prefers_name_over_a_row_that_only_shares_the_old_index():
+    """The camera moved from index 0 to index 2. An earlier row still has the old
+    index, but the name identifies the camera that was selected."""
+    row = camera_panel_module.select_device_row(
+        _cams(),
+        preferred_index=0,
+        preferred_devnode="/dev/video99",
+        preferred_name="Logitech BRIO (usb-0000:00:14.0-9)",
+    )
+    assert row == 3  # 1-based row of index 2 (first node of the named camera)
+
+
+def test_select_device_row_keeps_the_saved_node_among_same_named_entries():
+    row = camera_panel_module.select_device_row(
+        _cams(),
+        preferred_index=3,
+        preferred_devnode="/dev/video3",
+        preferred_name="Logitech BRIO (usb-0000:00:14.0-9)",
+    )
+    assert row == 4
+
+
+def test_select_device_row_uses_index_among_same_named_entries_when_node_is_gone():
+    row = camera_panel_module.select_device_row(
+        _cams(),
+        preferred_index=3,
+        preferred_devnode="/dev/video44",
+        preferred_name="Logitech BRIO (usb-0000:00:14.0-9)",
+    )
+    assert row == 4
+
+
+def test_select_device_row_falls_back_to_devnode_then_index_when_name_matches_nothing():
+    assert camera_panel_module.select_device_row(
+        _cams(),
+        preferred_index=0,
+        preferred_devnode="/dev/video3",
+        preferred_name="Gone Cam",
+    ) == 4
+    assert camera_panel_module.select_device_row(
+        _cams(),
+        preferred_index=2,
+        preferred_devnode="/dev/video99",
+        preferred_name=None,
+    ) == 3
+
+
+def test_select_device_row_without_preselect_matches_by_name_only():
+    """Before any camera was explicitly chosen, index and devnode must not pick one."""
+    assert camera_panel_module.select_device_row(
+        _cams(),
+        preferred_index=2,
+        preferred_devnode="/dev/video2",
+        preferred_name=None,
+        allow_preselect=False,
+    ) == 0
+    assert camera_panel_module.select_device_row(
+        _cams(),
+        preferred_index=0,
+        preferred_devnode="",
+        preferred_name="Logitech BRIO (usb-0000:00:14.0-9)",
+        allow_preselect=False,
+    ) == 3
+
+
+def test_select_device_row_returns_zero_when_nothing_matches():
+    assert camera_panel_module.select_device_row(
+        _cams(),
+        preferred_index=50,
+        preferred_devnode="/dev/video50",
+        preferred_name="Nope",
+    ) == 0

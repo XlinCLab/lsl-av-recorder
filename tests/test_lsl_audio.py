@@ -273,3 +273,50 @@ def test_start_uses_requested_capture_dtype_when_supported(fake_sd, monkeypatch)
 
     assert _StubInputStream.instances[0].kwargs["dtype"] == "float32"
     assert settings.bitdepth == 32
+
+
+# ---------------------------------------------------------------------------
+# AudioLSLStreamer: open-stream tracking and device description
+# ---------------------------------------------------------------------------
+
+class _StoppableInputStream(_StubInputStream):
+    def stop(self):
+        pass
+
+    def close(self):
+        pass
+
+
+def test_streamer_counts_as_open_between_start_and_stop(fake_sd, monkeypatch):
+    """PortAudio must not be re-initialised while a stream is open, so the streamer registers itself."""
+    from recorder.audio.devices import active_audio_stream_count
+
+    idx = fake_sd.add_device("Mic", max_input_channels=1, default_samplerate=48000, supported_rates=[48000])
+    monkeypatch.setattr(sd, "InputStream", _StoppableInputStream, raising=False)
+    streamer = AudioLSLStreamer(AudioStreamSettings(device=idx, samplerate=48000, bitdepth=32), sample_cb=None)
+
+    streamer.start()
+    assert active_audio_stream_count() == 1
+    streamer.stop()
+    assert active_audio_stream_count() == 0
+    streamer.stop()  # a second stop must not decrement again
+    assert active_audio_stream_count() == 0
+
+
+def test_start_records_the_device_actually_opened(fake_sd, monkeypatch):
+    fake_sd.add_hostapi("ALSA")
+    idx = fake_sd.add_device(
+        "Scarlett 2i2 USB: Audio (hw:4,0)",
+        max_input_channels=2,
+        hostapi=0,
+        default_samplerate=44100,
+        supported_rates=[44100],
+    )
+    monkeypatch.setattr(sd, "InputStream", _StubInputStream, raising=False)
+    settings = AudioStreamSettings(device=idx, samplerate=44100, channels=2, bitdepth=32)
+
+    AudioLSLStreamer(settings, sample_cb=None).start()
+
+    assert settings.device_index == idx
+    assert settings.device_name == "Scarlett 2i2 USB: Audio (hw:4,0)"
+    assert settings.device_hostapi == "ALSA"

@@ -45,7 +45,13 @@ class OutputConfig:
 @dataclass
 class AudioConfig:
     Enabled: bool = False
+    # PortAudio index: only a hint, as it shifts after a reboot or replug
     Device: Optional[str] = None
+    # Stable identity of the chosen device
+    # DeviceName is stored without any ALSA "(hw:N,M)" suffix
+    DeviceName: Optional[str] = None
+    DeviceHostApi: Optional[str] = None
+    DeviceLocation: Optional[str] = None
     SampleRate: int = DEFAULT_SAMPLING_RATE
     BitDepth: int = DEFAULT_BIT_DEPTH
     SampleFormat: str = DEFAULT_SAMPLE_FORMAT
@@ -138,6 +144,9 @@ def load_cfg(path: str) -> AppConfig:
         cfg.Audio.Enabled = _get_bool(cp, s, "Enabled", False)
         dev = cp.get(s, "Device", fallback="").strip()
         cfg.Audio.Device = dev if dev else None
+        cfg.Audio.DeviceName = cp.get(s, "DeviceName", fallback="").strip() or None
+        cfg.Audio.DeviceHostApi = cp.get(s, "DeviceHostApi", fallback="").strip() or None
+        cfg.Audio.DeviceLocation = cp.get(s, "DeviceLocation", fallback="").strip() or None
         cfg.Audio.SampleRate = cp.getint(s, "SampleRate", fallback=cfg.Audio.SampleRate)
         cfg.Audio.BitDepth = cp.getint(s, "BitDepth", fallback=cfg.Audio.BitDepth)
         if cfg.Audio.BitDepth not in BITDEPTH_DTYPES:
@@ -249,6 +258,11 @@ def save_cfg(cfg: AppConfig, path: str) -> None:
         "Channels": str(cfg.Audio.Channels),
         "StreamName": cfg.Audio.StreamName,
     }
+    # Written only when known, like the optional camera fields
+    for key in ("DeviceName", "DeviceHostApi", "DeviceLocation"):
+        value = getattr(cfg.Audio, key)
+        if value:
+            cp["Audio"][key] = value
 
     cp["Video"] = {
         "Enabled": _bool_str(cfg.Video.Enabled),

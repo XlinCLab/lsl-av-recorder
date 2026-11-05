@@ -7,11 +7,16 @@ All are driven through the FakeSoundDevice fixture from tests/conftest.py.
 """
 from __future__ import annotations
 
+import sounddevice as sd
+
+import recorder.audio.devices as devices
 from recorder.audio.constants import CANDIDATE_SAMPLE_RATES
-from recorder.audio.devices import (default_input_device_index,
+from recorder.audio.devices import (active_audio_stream_count,
+                                    audio_stream_closed, audio_stream_opened,
+                                    default_input_device_index,
                                     get_audio_device_capabilities,
                                     is_input_config_supported,
-                                    list_input_devices)
+                                    list_input_devices, refresh_portaudio)
 
 # ---------------------------------------------------------------------------
 # list_input_devices
@@ -232,3 +237,68 @@ def test_is_input_config_supported_rejects_unknown_bitdepth(fake_sd):
     """64 (and any other depth with no capture dtype) is never supported."""
     idx = fake_sd.add_device(name="Mic", max_input_channels=1, supported_rates=[48000])
     assert is_input_config_supported(device=idx, samplerate=48000, channels=1, bitdepth=64) is False
+
+
+# ---------------------------------------------------------------------------
+# list_input_devices: physical location (Linux)
+# ---------------------------------------------------------------------------
+
+def test_list_input_devices_adds_usb_location_on_linux(fake_sd, monkeypatch):
+    """Identical devices differ only by USB port; that location is listed when the OS exposes it."""
+
+    cards = (
+        " 4 [USB            ]: USB-Audio - Scarlett 2i2 USB\n"
+        "                      Focusrite Scarlett 2i2 USB at usb-0000:07:00.0-2, high speed\n"
+    )
+    monkeypatch.setattr(devices.sys, "platform", "linux")
+    monkeypatch.setattr(devices, "read_asound_cards", lambda: cards)
+    fake_sd.add_hostapi("ALSA")
+    fake_sd.add_device("Scarlett 2i2 USB: Audio (hw:4,0)", max_input_channels=2)
+    fake_sd.add_device("sysdefault", max_input_channels=128)
+
+    scarlett, default = devices.list_input_devices()
+    assert scarlett["location"] == "usb-0000:07:00.0-2"
+    assert "location" not in default
+
+
+# ---------------------------------------------------------------------------
+# refresh_portaudio: only while no audio stream is open
+# ---------------------------------------------------------------------------
+
+def test_sounddevice_still_has_the_private_reinitialisation_calls():
+    """refresh_portaudio relies on private sounddevice functions; fail loudly if an upgrade removes them."""
+
+    assert callable(sd._terminate) and callable(sd._initialize)
+
+
+def test_refresh_portaudio_reinitialises_when_idle(monkeypatch):
+    calls = []
+    monkeypatch.setattr(sd, "_terminate", lambda: calls.append("terminate"))
+    monkeypatch.setattr(sd, "_initialize", lambda: calls.append("initialize"))
+    assert refresh_portaudio() is True
+    assert calls == ["terminate", "initialize"]
+
+
+def test_refresh_portaudio_does_nothing_while_a_stream_is_open(monkeypatch):
+    calls = []
+    monkeypatch.setattr(sd, "_terminate", lambda: calls.append("terminate"))
+    monkeypatch.setattr(sd, "_initialize", lambda: calls.append("initialize"))
+    audio_stream_opened()
+    assert active_audio_stream_count() == 1
+    assert refresh_portaudio() is False
+    assert calls == []
+    audio_stream_closed()
+    assert refresh_portaudio() is True
+
+
+def test_refresh_portaudio_reports_failure_instead_of_raising(monkeypatch):
+    def boom():
+        raise RuntimeError("portaudio error")
+
+    monkeypatch.setattr(sd, "_terminate", boom)
+    assert refresh_portaudio() is False
+
+
+def test_audio_stream_counter_never_goes_negative():
+    audio_stream_closed()
+    assert active_audio_stream_count() == 0
