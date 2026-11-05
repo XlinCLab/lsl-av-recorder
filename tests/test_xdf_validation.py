@@ -12,6 +12,7 @@ from __future__ import annotations
 import numpy as np
 from pylsl import StreamInfo
 
+from recorder.audio.channel_labels import resolve_channel_labels
 from recorder.config import AppConfig, VideoCamConfig
 from recorder.video.constants import DEFAULT_HEIGHT, DEFAULT_WIDTH
 from recorder.xdf.xdf_validation import validate_test_recording
@@ -30,6 +31,7 @@ def write_audio_stream(
         name=name,
         samplerate=samplerate,
         channels=channels,
+        channel_labels=resolve_channel_labels([], channels),
     )
     ts = 100.0 + np.arange(n_samples) / samplerate
     samples = np.zeros((n_samples, channels), dtype=np.float32)
@@ -783,3 +785,274 @@ def test_lsl_string_format_marker_stream_pass(xdf_path):
         expected_duration_s=10.0,
     )
     assert report.passed, report.detailed_text()
+
+
+# ---------------------------------------------------------------------------
+# Audio properties: declared and measured rate, bit depth, device, level
+# ---------------------------------------------------------------------------
+
+def _audio_cfg(samplerate=1000, bitdepth=32, device_name=None, channels=1, labels=None):
+    cfg = base_cfg()
+    cfg.Audio.Enabled = True
+    cfg.Audio.StreamName = "Audio"
+    cfg.Audio.SampleRate = samplerate
+    cfg.Audio.BitDepth = bitdepth
+    cfg.Audio.Channels = channels
+    cfg.Audio.ChannelLabels = list(labels or [])
+    cfg.Audio.DeviceName = device_name
+    return cfg
+
+
+def _record_audio(
+    path,
+    *,
+    samplerate=1000,
+    duration=10.0,
+    extra=None,
+    footer=None,
+    level=0.1,
+    fmt="float32",
+    channel_levels=None,
+    labels=None,
+):
+    """Write an audio stream carrying `extra` header fields and `footer` fields.
+    `channel_levels` gives the amplitude of each channel (default: one channel at `level`);
+    `labels` the channel labels (default: 'Channel N')."""
+    channel_levels = list(channel_levels) if channel_levels is not None else [level]
+    n_channels = len(channel_levels)
+    w = XDFWriter(path)
+    w.start()
+    sid = w.add_audio_stream(
+        name="Audio",
+        samplerate=samplerate,
+        channels=n_channels,
+        fmt=fmt,
+        extra=extra,
+        channel_labels=labels if labels is not None else resolve_channel_labels([], n_channels),
+    )
+    n = int(duration * samplerate)
+    t = np.arange(n) / samplerate
+    signal = np.stack([lvl * np.sin(2 * np.pi * 5 * t) for lvl in channel_levels], axis=1)
+    samples = np.rint(signal * 32768).astype(np.int16) if fmt == "int16" else signal.astype(np.float32)
+    w.write_audio(sid, 100.0 + t, samples)
+    if footer:
+        w.set_stream_footer_extra(sid, footer)
+    w.stop()
+    return duration
+
+
+def _check_named(report, name):
+    return next(c for c in report.checks if c.name == name)
+
+
+def test_audio_measured_rate_within_tolerance_passes(xdf_path):
+    duration = _record_audio(xdf_path, footer={"measured_srate": "1003.000"})
+    report = validate_test_recording(xdf_path, _audio_cfg(), [], duration)
+    assert _check_named(report, "Audio measured sample rate (real time)").passed
+    assert report.passed, report.detailed_text()
+
+
+def test_audio_measured_rate_far_from_configured_fails(xdf_path):
+    """A device delivered about 48 kHz while the stream was labelled 44.1 kHz.
+    The timestamps (built from the configured rate) look perfect; only the measured rate shows it."""
+    duration = _record_audio(
+        xdf_path,
+        samplerate=44100,
+        duration=2.0,
+        footer={"measured_srate": "47940.000"},
+    )
+    report = validate_test_recording(xdf_path, _audio_cfg(samplerate=44100), [], duration)
+    check = _check_named(report, "Audio measured sample rate (real time)")
+    assert not check.passed and "47940" in check.detail
+    assert not report.passed
+
+
+def test_audio_measured_rate_missing_is_a_warning_not_a_failure(xdf_path):
+    duration = _record_audio(xdf_path)
+    report = validate_test_recording(xdf_path, _audio_cfg(), [], duration)
+    check = _check_named(report, "Audio measured sample rate (real time)")
+    assert check.passed and check.warning
+    assert report.passed and report.warnings
+
+
+def test_audio_header_sample_rate_mismatch_fails(xdf_path):
+    """The device did not accept the configured rate and the stream was opened at another."""
+    duration = _record_audio(xdf_path, samplerate=1000)
+    report = validate_test_recording(xdf_path, _audio_cfg(samplerate=2000), [], duration)
+    check = _check_named(report, "Audio sample rate in header")
+    assert not check.passed and "did not accept" in check.detail
+
+
+def test_audio_capture_bit_depth_mismatch_fails(xdf_path):
+    """The device refused float32 capture and fell back to 16-bit."""
+    duration = _record_audio(xdf_path, extra={"capture_bit_depth": 16})
+    report = validate_test_recording(xdf_path, _audio_cfg(bitdepth=32), [], duration)
+    check = _check_named(report, "Audio capture bit depth")
+    assert not check.passed and "refused" in check.detail
+
+
+def test_audio_capture_bit_depth_match_passes(xdf_path):
+    duration = _record_audio(xdf_path, extra={"capture_bit_depth": 32})
+    report = validate_test_recording(xdf_path, _audio_cfg(bitdepth=32), [], duration)
+    assert _check_named(report, "Audio capture bit depth").passed
+
+
+def test_audio_device_name_ignores_alsa_card_suffix(xdf_path):
+    duration = _record_audio(xdf_path, extra={"device_name": "Scarlett 2i2 USB: Audio (hw:6,0)"})
+    report = validate_test_recording(xdf_path, _audio_cfg(device_name="Scarlett 2i2 USB: Audio"), [], duration)
+    assert _check_named(report, "Audio input device").passed
+
+
+def test_audio_device_name_mismatch_fails(xdf_path):
+    duration = _record_audio(xdf_path, extra={"device_name": "Logitech BRIO: USB Audio (hw:3,0)"})
+    report = validate_test_recording(xdf_path, _audio_cfg(device_name="Scarlett 2i2 USB: Audio"), [], duration)
+    assert not _check_named(report, "Audio input device").passed
+
+
+def test_audio_device_check_skipped_without_a_selected_device(xdf_path):
+    """The system default device has no saved name to compare against."""
+    duration = _record_audio(xdf_path, extra={"device_name": "Built-in Microphone"})
+    report = validate_test_recording(xdf_path, _audio_cfg(device_name=None), [], duration)
+    assert all(c.name != "Audio input device" for c in report.checks)
+
+
+def test_audio_input_overflows_are_a_warning(xdf_path):
+    duration = _record_audio(xdf_path, footer={"measured_srate": "1000.000", "input_overflows": 3})
+    report = validate_test_recording(xdf_path, _audio_cfg(), [], duration)
+    check = _check_named(report, "Audio input overflows")
+    assert check.passed and check.warning and "3 overflow" in check.detail
+
+
+def test_audio_normal_level_has_no_warning(xdf_path):
+    duration = _record_audio(xdf_path, level=0.1, footer={"measured_srate": "1000.000"})
+    report = validate_test_recording(xdf_path, _audio_cfg(), [], duration)
+    check = _check_named(report, "Audio signal level")
+    assert check.passed and not check.warning
+    assert "peak -20.0 dBFS" in check.detail
+    assert not report.warnings
+
+
+def test_audio_silent_quiet_and_clipping_signals_are_flagged(xdf_path):
+    expectations = {0.0: "silent", 0.003: "very quiet", 1.0: "clipping"}
+    for level, word in expectations.items():
+        duration = _record_audio(xdf_path, level=level, footer={"measured_srate": "1000.000"})
+        report = validate_test_recording(xdf_path, _audio_cfg(), [], duration)
+        check = _check_named(report, "Audio signal level")
+        assert check.passed and check.warning and word in check.detail, (level, check.detail)
+
+
+def test_audio_level_check_scales_int16_samples(xdf_path):
+    """int16 storage is scaled by full scale (32768) so levels read the same as for float32."""
+    duration = _record_audio(xdf_path, fmt="int16", level=0.1, footer={"measured_srate": "1000.000"})
+    cfg = _audio_cfg()
+    cfg.Audio.SampleFormat = "int16"
+    report = validate_test_recording(xdf_path, cfg, [], duration)
+    check = _check_named(report, "Audio signal level")
+    assert "peak -20.0 dBFS" in check.detail and not check.warning
+
+
+def test_audio_sample_count_tolerance_is_tighter_than_other_streams(xdf_path):
+    """12% short still passes (start-up latency); 20% short fails."""
+    for n_samples, should_pass in ((8800, True), (8000, False)):
+        w = XDFWriter(xdf_path)
+        w.start()
+        write_audio_stream(w, "Audio", 1000, 1, n_samples)
+        w.stop()
+        report = validate_test_recording(xdf_path, _audio_cfg(), [], 10.0)
+        assert _check_named(report, "Audio sample count").passed is should_pass, n_samples
+
+
+def test_report_summary_and_detail_mention_warnings(xdf_path):
+    duration = _record_audio(xdf_path, level=0.0)
+    report = validate_test_recording(xdf_path, _audio_cfg(), [], duration)
+    assert "warning(s)" in report.summary()
+    assert "[WARN] Audio signal level" in report.detailed_text()
+
+
+# ---------------------------------------------------------------------------
+# Audio channels: labels in the header and per-channel levels
+# ---------------------------------------------------------------------------
+
+def test_audio_silent_second_channel_is_flagged(xdf_path):
+    """One silent channel next to an active one."""
+    duration = _record_audio(xdf_path, channel_levels=[0.1, 0.0])
+    report = validate_test_recording(xdf_path, _audio_cfg(channels=2), [], duration)
+    flagged = [c for c in report.checks if c.name == "Audio channel levels"]
+    assert len(flagged) == 1 and flagged[0].passed and flagged[0].warning
+    assert "Channel 2 is silent" in flagged[0].detail
+    assert report.passed and report.warnings
+
+
+def test_audio_channel_labels_in_header_match_config(xdf_path):
+    duration = _record_audio(xdf_path, channel_levels=[0.1, 0.1], labels=["Participant A", "Participant B"])
+    cfg = _audio_cfg(channels=2, labels=["Participant A", "Participant B"])
+    report = validate_test_recording(xdf_path, cfg, [], duration)
+    assert _check_named(report, "Audio channel labels in header").passed
+
+
+def test_audio_channel_labels_missing_from_header_fail(xdf_path):
+    duration = _record_audio(xdf_path)
+    w_labels = XDFWriter(xdf_path)
+    w_labels.start()
+    sid = w_labels.add_audio_stream(name="Audio", samplerate=1000, channels=1)  # no labels written
+    w_labels.write_audio(sid, 100.0 + np.arange(10000) / 1000, np.full((10000, 1), 0.1, dtype=np.float32))
+    w_labels.stop()
+    report = validate_test_recording(xdf_path, _audio_cfg(), [], duration)
+    check = _check_named(report, "Audio channel labels in header")
+    assert not check.passed and "no channel labels" in check.detail
+
+
+def test_audio_channel_labels_differing_from_config_fail(xdf_path):
+    duration = _record_audio(xdf_path, channel_levels=[0.1, 0.1], labels=["A", "B"])
+    cfg = _audio_cfg(channels=2, labels=["X", "Y"])
+    report = validate_test_recording(xdf_path, cfg, [], duration)
+    assert not _check_named(report, "Audio channel labels in header").passed
+
+
+def test_audio_unlabelled_channels_get_default_labels_in_header(xdf_path):
+    duration = _record_audio(xdf_path, channel_levels=[0.1, 0.1])
+    cfg = _audio_cfg(channels=2, labels=["Mic"])
+    # the file was written with default labels only, so the configured first label is missing
+    report = validate_test_recording(xdf_path, cfg, [], duration)
+    check = _check_named(report, "Audio channel labels in header")
+    assert not check.passed and "Mic" in check.detail
+
+
+def test_audio_duplicate_labels_are_a_warning(xdf_path):
+    duration = _record_audio(xdf_path, channel_levels=[0.1, 0.1], labels=["A", "A"])
+    cfg = _audio_cfg(channels=2, labels=["A", "A"])
+    report = validate_test_recording(xdf_path, cfg, [], duration)
+    warned = [c for c in report.checks if c.name == "Audio channel labels" and c.warning]
+    assert warned and "more than one channel" in warned[0].detail
+
+
+def test_audio_silent_second_channel_is_flagged_with_its_label(xdf_path):
+    """One silent audio channel next to an active one."""
+    duration = _record_audio(
+        xdf_path, channel_levels=[0.1, 0.0], labels=["Participant A", "Participant B"],
+    )
+    cfg = _audio_cfg(channels=2, labels=["Participant A", "Participant B"])
+    report = validate_test_recording(xdf_path, cfg, [], duration)
+    flagged = [c for c in report.checks if c.name == "Audio channel levels"]
+    assert len(flagged) == 1 and flagged[0].passed and flagged[0].warning
+    assert "Channel 2 (Participant B) is silent" in flagged[0].detail
+
+
+def test_audio_all_channels_active_passes_without_warning(xdf_path):
+    duration = _record_audio(xdf_path, channel_levels=[0.1, 0.1])
+    report = validate_test_recording(xdf_path, _audio_cfg(channels=2), [], duration)
+    check = _check_named(report, "Audio channel levels")
+    assert check.passed and not check.warning
+
+
+def test_audio_silent_recording_is_flagged_once_not_per_channel(xdf_path):
+    duration = _record_audio(xdf_path, channel_levels=[0.0, 0.0])
+    report = validate_test_recording(xdf_path, _audio_cfg(channels=2), [], duration)
+    assert _check_named(report, "Audio signal level").warning
+    assert not [c for c in report.checks if c.name == "Audio channel levels" and c.warning]
+
+
+def test_audio_single_channel_has_no_channel_level_check(xdf_path):
+    duration = _record_audio(xdf_path)
+    report = validate_test_recording(xdf_path, _audio_cfg(), [], duration)
+    assert not [c for c in report.checks if c.name == "Audio channel levels"]

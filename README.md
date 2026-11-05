@@ -154,10 +154,14 @@ Configuration files are INI-style and expected to be saved as `.cfg` files.
 #### `[Audio]`
 - `Enabled`
 - `Device`
+- `DeviceName`
+- `DeviceHostApi`
+- `DeviceLocation`
 - `SampleRate`
 - `BitDepth`
 - `SampleFormat`
-- `Channels`
+- `Channels` (the first N channels of the device are recorded)
+- `ChannelLabel1`, `ChannelLabel2`, ... (optional names of the recorded channels)
 - `StreamName`
 
 #### `[Video]`

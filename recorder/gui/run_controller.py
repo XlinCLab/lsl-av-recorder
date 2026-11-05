@@ -13,8 +13,8 @@ from typing import Callable, Dict, List, Optional
 import numpy as np
 from pylsl import StreamInfo, StreamInlet
 
-from ..audio.devices import list_input_devices
 from ..audio.lsl_audio import AudioLSLStreamer, AudioStreamSettings
+from ..audio.settings import build_audio_stream_settings
 from ..config import AppConfig, VideoCamConfig
 from ..lsl.lsl_inlet_recorder import (LslInletRecorder, extract_channel_info,
                                       lsl_format_to_xdf)
@@ -28,22 +28,6 @@ from ..xdf.xdf_writer import (DEFAULT_WRITER_QUEUE_SIZE,
                               FULL_BUFFER_DROP_NEWEST_POLICY,
                               FULL_BUFFER_POLICIES, XDFWriter)
 from .preview_manager import preview_key
-
-
-def _resolve_audio_device_name(device) -> str:
-    """Human-readable name for an audio input device
-    selector for display purposes."""
-    if device is None:
-        return "(default)"
-    if isinstance(device, int):
-        try:
-            for d in list_input_devices():
-                if d["index"] == device:
-                    return str(d["name"])
-        except Exception:
-            pass
-        return f"Device {device}"
-    return str(device)
 
 
 class RunController:
@@ -75,6 +59,8 @@ class RunController:
         self.cams = self._get_active_cams()
         self.videos: List[VideoRecorder] = []
         self.audio_sid: Optional[int] = None
+        # Delivered-rate measurement of the audio stream, filled in when it stops
+        self.audio_rate_summary: Optional[Dict[str, object]] = None
         self.video_sids: Dict[str, int] = {}
         self.lsl_streams = lsl_streams or []
         self.lsl_recorders: List[LslInletRecorder] = []
@@ -150,27 +136,59 @@ class RunController:
             os.makedirs(self.outdir, exist_ok=True)
 
     def _write_metadata(self):
-        meta_path = os.path.join(self.outdir, f"{self.base_name}_session.json")
-        with open(meta_path, "w", encoding="utf-8") as f:
-            json.dump(
-                {
-                    "environment": get_environment_info(_project_root()),
-                    "prompts": asdict(self.cfg.Prompts),
-                    "output": asdict(self.cfg.Output),
-                    "audio": asdict(self.cfg.Audio),
-                    "buffering": asdict(self.cfg.Buffering),
-                    "labrecorder": asdict(self.cfg.LabRecorder),
-                    "lsl_streams": [self._lsl_stream_meta(s) for s in self.lsl_streams],
-                    "video": {
-                        "Enabled": self.video_enabled,
-                        "Cams": [asdict(c) for c in self.cams if c.Enabled] if self.video_enabled else []
-                    },
-                },
-                f,
-                indent=2,
-                ensure_ascii=False,
-            )
-        self.info(f"Wrote run metadata to {meta_path}")
+        self._meta_path = os.path.join(self.outdir, f"{self.base_name}_session.json")
+        self._metadata = {
+            "environment": get_environment_info(_project_root()),
+            "prompts": asdict(self.cfg.Prompts),
+            "output": asdict(self.cfg.Output),
+            "audio": asdict(self.cfg.Audio),
+            "buffering": asdict(self.cfg.Buffering),
+            "labrecorder": asdict(self.cfg.LabRecorder),
+            "lsl_streams": [self._lsl_stream_meta(s) for s in self.lsl_streams],
+            "video": {
+                "Enabled": self.video_enabled,
+                "Cams": [asdict(c) for c in self.cams if c.Enabled] if self.video_enabled else []
+            },
+        }
+        self._dump_metadata()
+        self.info(f"Wrote run metadata to {self._meta_path}")
+
+    def _dump_metadata(self):
+        with open(self._meta_path, "w", encoding="utf-8") as f:
+            json.dump(self._metadata, f, indent=2, ensure_ascii=False)
+
+    def _record_audio_rate(self):
+        """Store the measured rate at which the audio device actually delivered samples
+        in the audio stream's XDF footer and the run metadata, so a recording documents this
+        (and in order for the test recording to be able to check it)."""
+        summary = self.audio_rate_summary
+        if not summary or self.audio_sid is None:
+            return
+        self.xdf.set_stream_footer_extra(self.audio_sid, {
+            "measured_srate": None if summary["measured_srate"] is None else f"{summary['measured_srate']:.3f}",
+            "measured_window_s": f"{summary['measured_window_s']:.3f}",
+            "input_overflows": summary["input_overflows"],
+        })
+        self._metadata["audio_rate"] = summary
+        try:
+            self._dump_metadata()
+        except OSError as exc:
+            self.warning(f"Could not update run metadata with the measured audio rate: {exc}")
+
+    def _record_audio_device_in_metadata(self):
+        """Add the audio device actually opened (known only once capture has
+        started) to the run metadata."""
+        a = self.audio_settings
+        if not a:
+            return
+        self._metadata["audio_device"] = {
+            "index": a.device_index,
+            "name": a.device_name,
+            "hostapi": a.device_hostapi,
+            "location": a.device_location,
+            "samplerate": a.samplerate,
+        }
+        self._dump_metadata()
 
     def start(self):
         if self._running:
@@ -186,6 +204,7 @@ class RunController:
 
         # Start streams (roughly) simultaneously
         self._start_streams()
+        self._record_audio_device_in_metadata()
 
         # Start XDF writer and add streams
         xdf_writer = self._initialize_xdf_writer(xdf_path=xdf_path)
@@ -211,6 +230,7 @@ class RunController:
             try:
                 self.audio.stop()
             finally:
+                self.audio_rate_summary = self.audio.rate_meter.summary()
                 self.audio = None
 
         # Stop video
@@ -229,6 +249,7 @@ class RunController:
             self._flush_audio_buffer()
             self._flush_video_buffer()
             self._stop_writer_thread()
+            self._record_audio_rate()
             self.xdf.stop()
             self.xdf = None
             self.info("XDF writer stopped")
@@ -300,7 +321,8 @@ class RunController:
                 channels=self.audio_settings.channels,
                 fmt=self.audio_settings.sample_format,
                 source_id=self.audio_settings.source_id,
-                extra={"capture_bit_depth": self.audio_settings.bitdepth},
+                extra=self._audio_stream_extra(),
+                channel_labels=self.audio_settings.channel_labels,
             )
             self.info(f"Initialized audio stream <{self.audio_settings.stream_name}> in XDF")
 
@@ -323,6 +345,20 @@ class RunController:
                 self.info(f"Initialized LSL stream <{stream.name()}> in XDF")
             except Exception as exc:
                 self.warning(f"Skipping LSL stream due to error: {exc}")
+
+    def _audio_stream_extra(self) -> Dict[str, object]:
+        """Fields written into the audio stream's header <desc>: what the XDF's
+        channel_format cannot convey, and which device produced the audio."""
+        a = self.audio_settings
+        extra: Dict[str, object] = {"capture_bit_depth": a.bitdepth}
+        for key, value in (
+            ("device_name", a.device_name),
+            ("device_hostapi", a.device_hostapi),
+            ("device_location", a.device_location),
+        ):
+            if value:
+                extra[key] = value
+        return extra
 
     def _resolve_lsl_channels(self, stream: StreamInfo) -> Optional[List[Dict[str, str]]]:
         """
@@ -379,23 +415,9 @@ class RunController:
         self.lsl_recorders = []
 
     def _get_audio_stream_settings(self) -> AudioStreamSettings:
-        aset = AudioStreamSettings(
-            device=None,
-            samplerate=self.cfg.Audio.SampleRate,
-            channels=self.cfg.Audio.Channels,
-            bitdepth=self.cfg.Audio.BitDepth,
-            sample_format=self.cfg.Audio.SampleFormat,
-            stream_name=self.cfg.Audio.StreamName or "Audio",
-            stream_type="Audio",
-            source_id=f"audio:{self.cfg.Audio.Device or 'default'}",
+        return build_audio_stream_settings(
+            self.cfg.Audio, log=lambda message, level="INFO": self.log(message, loglevel=level),
         )
-        if self.cfg.Audio.Device is not None:
-            try:
-                aset.device = int(self.cfg.Audio.Device)
-            except ValueError:
-                aset.device = self.cfg.Audio.Device
-        aset.device_name = _resolve_audio_device_name(aset.device)
-        return aset
 
     def _get_active_cams(self) -> List:
         if not self.video_enabled:

@@ -160,6 +160,55 @@ def test_load_cfg_audio_device_preserved_when_set(write_cfg):
     assert cfg.Audio.Device == "USB Mic"
 
 
+def test_load_cfg_audio_device_identity_keys(write_cfg):
+    """DeviceName/DeviceHostApi/DeviceLocation identify the device independently of its index."""
+    cfg = load_cfg(
+        path=write_cfg(
+            """
+            [Audio]
+            Device = 10
+            DeviceName = Scarlett 2i2 USB: Audio
+            DeviceHostApi = ALSA
+            DeviceLocation = usb-0000:07:00.0-2
+            """
+        )
+    )
+    assert cfg.Audio.Device == "10"
+    assert cfg.Audio.DeviceName == "Scarlett 2i2 USB: Audio"
+    assert cfg.Audio.DeviceHostApi == "ALSA"
+    assert cfg.Audio.DeviceLocation == "usb-0000:07:00.0-2"
+
+
+def test_load_cfg_audio_old_config_without_identity_keys(write_cfg):
+    """A config written before the identity keys existed (index only) still loads."""
+    cfg = load_cfg(
+        path=write_cfg(
+            """
+            [Audio]
+            Device = 10
+            """
+        )
+    )
+    assert cfg.Audio.Device == "10"
+    assert cfg.Audio.DeviceName is None
+    assert cfg.Audio.DeviceHostApi is None
+    assert cfg.Audio.DeviceLocation is None
+
+
+def test_load_cfg_audio_blank_identity_keys_become_none(write_cfg):
+    cfg = load_cfg(
+        path=write_cfg(
+            """
+            [Audio]
+            DeviceName =
+            DeviceHostApi =
+            DeviceLocation =
+            """
+        )
+    )
+    assert (cfg.Audio.DeviceName, cfg.Audio.DeviceHostApi, cfg.Audio.DeviceLocation) == (None, None, None)
+
+
 def test_load_cfg_labrecorder_blank_host_falls_back_to_default(write_cfg):
     """A blank Host falls back to the default loopback address; Enabled/Port are still parsed."""
     cfg = load_cfg(
@@ -403,6 +452,32 @@ def test_save_cfg_empty_audio_device_round_trips_to_none(tmp_path):
     assert load_cfg(path).Audio.Device is None
 
 
+def test_save_cfg_audio_device_identity_round_trips(tmp_path):
+    cfg = AppConfig()
+    cfg.Audio.Device = "8"
+    cfg.Audio.DeviceName = "Scarlett 2i2 USB: Audio"
+    cfg.Audio.DeviceHostApi = "ALSA"
+    cfg.Audio.DeviceLocation = "usb-0000:07:00.0-2"
+
+    path = str(tmp_path / "out.cfg")
+    save_cfg(cfg, path)
+    loaded = load_cfg(path).Audio
+    assert loaded.Device == "8"
+    assert loaded.DeviceName == "Scarlett 2i2 USB: Audio"
+    assert loaded.DeviceHostApi == "ALSA"
+    assert loaded.DeviceLocation == "usb-0000:07:00.0-2"
+
+
+def test_save_cfg_omits_unset_audio_identity_keys(tmp_path):
+    """Unset identity fields are left out of the file rather than written as "None"."""
+    cfg = AppConfig()
+    path = str(tmp_path / "out.cfg")
+    save_cfg(cfg, path)
+    text = open(path, encoding="utf-8").read()
+    assert "DeviceName" not in text.split("[Video]")[0]
+    assert "None" not in text.split("[Video]")[0]
+
+
 def test_save_cfg_omits_none_camera_fields_without_corrupting_reload(tmp_path):
     """DeviceName/Brightness/Hue/Saturation left at None (e.g. a camera
     whose controls were never applied) must not be written as the literal
@@ -514,3 +589,48 @@ def test_output_study_root_default_and_round_trip(tmp_path):
     path = str(tmp_path / "o.cfg")
     save_cfg(cfg, path)
     assert load_cfg(path).Output.StudyRoot == "/data/my study"
+
+
+def test_audio_channel_labels_load_and_round_trip(write_cfg, tmp_path):
+    cfg = load_cfg(path=write_cfg("""
+        [Audio]
+        Channels = 2
+        ChannelLabel1 = Participant A
+        ChannelLabel2 = Participant B
+        """))
+    assert cfg.Audio.ChannelLabels == ["Participant A", "Participant B"]
+    out = tmp_path / "out.cfg"
+    save_cfg(cfg, str(out))
+    assert load_cfg(str(out)).Audio.ChannelLabels == ["Participant A", "Participant B"]
+
+
+def test_audio_channel_labels_keep_gaps_and_ignore_unnumbered_keys(write_cfg):
+    cfg = load_cfg(path=write_cfg("""
+        [Audio]
+        Channels = 3
+        ChannelLabel1 = A
+        ChannelLabel3 = C
+        ChannelLabel0 = ignored
+        ChannelLabelX = ignored
+        """))
+    assert cfg.Audio.ChannelLabels == ["A", "", "C"]
+
+
+def test_audio_channel_labels_beyond_the_channel_count_are_not_saved(tmp_path):
+    cfg = AppConfig()
+    cfg.Audio.Channels = 1
+    cfg.Audio.ChannelLabels = ["A", "B"]
+    out = tmp_path / "out.cfg"
+    save_cfg(cfg, str(out))
+    assert load_cfg(str(out)).Audio.ChannelLabels == ["A"]
+
+
+def test_audio_channel_labels_default_to_empty_and_are_not_saved(write_cfg, tmp_path):
+    cfg = load_cfg(path=write_cfg("""
+        [Audio]
+        Channels = 2
+        """))
+    assert cfg.Audio.ChannelLabels == []
+    out = tmp_path / "out.cfg"
+    save_cfg(cfg, str(out))
+    assert "channellabel" not in out.read_text().lower()

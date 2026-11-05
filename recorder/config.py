@@ -5,6 +5,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+from .audio.channel_labels import CHANNEL_LABEL_REGEX, trim_channel_labels
 from .audio.constants import (BITDEPTH_DTYPES, DEFAULT_BIT_DEPTH,
                               DEFAULT_N_CHANNELS, DEFAULT_SAMPLE_FORMAT,
                               DEFAULT_SAMPLING_RATE, SAMPLE_FORMATS)
@@ -45,11 +46,20 @@ class OutputConfig:
 @dataclass
 class AudioConfig:
     Enabled: bool = False
+    # PortAudio index: only a hint, as it shifts after a reboot or replug
     Device: Optional[str] = None
+    # Stable identity of the chosen device
+    # DeviceName is stored without any ALSA "(hw:N,M)" suffix
+    DeviceName: Optional[str] = None
+    DeviceHostApi: Optional[str] = None
+    DeviceLocation: Optional[str] = None
     SampleRate: int = DEFAULT_SAMPLING_RATE
     BitDepth: int = DEFAULT_BIT_DEPTH
     SampleFormat: str = DEFAULT_SAMPLE_FORMAT
     Channels: int = DEFAULT_N_CHANNELS
+    # Names of the recorded channels in order (ChannelLabel1, ChannelLabel2, ... in the file);
+    # an empty entry or a channel beyond the list is unnamed
+    ChannelLabels: List[str] = field(default_factory=list)
     StreamName: str = "Audio"
 
 @dataclass
@@ -113,6 +123,17 @@ def _get_bool(cp: configparser.ConfigParser, section: str, key: str, default: bo
 def _bool_str(value: bool) -> str:
     return "true" if value else "false"
 
+
+def _load_channel_labels(cp: configparser.ConfigParser, section: str) -> List[str]:
+    """Labels from the keys ChannelLabel1, ChannelLabel2, ... (1-based, gaps stay unnamed)."""
+    by_channel = {}
+    for option in cp.options(section):
+        m = CHANNEL_LABEL_REGEX.match(option)
+        if m and int(m.group(1)) > 0:
+            by_channel[int(m.group(1))] = cp.get(section, option).strip()
+    return trim_channel_labels([by_channel.get(i, "") for i in range(1, max(by_channel, default=0) + 1)])
+
+
 def load_cfg(path: str) -> AppConfig:
     cp = configparser.ConfigParser(interpolation=None)
     cp.read(path, encoding="utf-8")
@@ -138,6 +159,9 @@ def load_cfg(path: str) -> AppConfig:
         cfg.Audio.Enabled = _get_bool(cp, s, "Enabled", False)
         dev = cp.get(s, "Device", fallback="").strip()
         cfg.Audio.Device = dev if dev else None
+        cfg.Audio.DeviceName = cp.get(s, "DeviceName", fallback="").strip() or None
+        cfg.Audio.DeviceHostApi = cp.get(s, "DeviceHostApi", fallback="").strip() or None
+        cfg.Audio.DeviceLocation = cp.get(s, "DeviceLocation", fallback="").strip() or None
         cfg.Audio.SampleRate = cp.getint(s, "SampleRate", fallback=cfg.Audio.SampleRate)
         cfg.Audio.BitDepth = cp.getint(s, "BitDepth", fallback=cfg.Audio.BitDepth)
         if cfg.Audio.BitDepth not in BITDEPTH_DTYPES:
@@ -154,6 +178,7 @@ def load_cfg(path: str) -> AppConfig:
             )
             cfg.Audio.SampleFormat = DEFAULT_SAMPLE_FORMAT
         cfg.Audio.Channels = cp.getint(s, "Channels", fallback=cfg.Audio.Channels)
+        cfg.Audio.ChannelLabels = _load_channel_labels(cp, s)
         cfg.Audio.StreamName = cp.get(s, "StreamName", fallback=cfg.Audio.StreamName)
         if cp.has_option(s, "BufferSeconds"):
             cfg.Buffering.AudioBufferSeconds = cp.getfloat(s, "BufferSeconds", fallback=cfg.Buffering.AudioBufferSeconds)
@@ -249,6 +274,14 @@ def save_cfg(cfg: AppConfig, path: str) -> None:
         "Channels": str(cfg.Audio.Channels),
         "StreamName": cfg.Audio.StreamName,
     }
+    # Written only when known, like the optional camera fields
+    for key in ("DeviceName", "DeviceHostApi", "DeviceLocation"):
+        value = getattr(cfg.Audio, key)
+        if value:
+            cp["Audio"][key] = value
+    # One key per channel, up to the last named one
+    for i, label in enumerate(trim_channel_labels(cfg.Audio.ChannelLabels, cfg.Audio.Channels), start=1):
+        cp["Audio"][f"ChannelLabel{i}"] = label
 
     cp["Video"] = {
         "Enabled": _bool_str(cfg.Video.Enabled),

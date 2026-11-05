@@ -10,6 +10,8 @@ from typing import BinaryIO, Dict, List, Optional
 
 import numpy as np
 
+from ..audio.channel_labels import audio_channel_descriptors
+
 # XDF chunk tags
 TAG_FILE_HEADER = 1
 TAG_STREAM_HEADER = 2
@@ -64,6 +66,8 @@ class XDFWriter:
         self._external_clock_streams: set[int] = set()
         # Registered channel_format per stream
         self._stream_formats: Dict[int, str] = {}
+        # Extra fields written into a stream's footer when the file is closed
+        self._footer_extra: Dict[int, Dict[str, object]] = {}
 
     def _get_next_stream_id(self):
         sid = self._next_stream_id
@@ -221,6 +225,10 @@ class XDFWriter:
             root, "sample_count"
         ).text = str(self._sample_count.get(stream_id, 0))
 
+        # Fields only known once the stream has ended (e.g. a measured sample rate)
+        for key, value in (self._footer_extra.get(stream_id) or {}).items():
+            ET.SubElement(root, key).text = str(value)
+
         # Clock offsets, if present
         offsets = self._clock_offsets.get(stream_id)
         if offsets:
@@ -232,6 +240,13 @@ class XDFWriter:
                 ET.SubElement(offset_el, "value").text = str(v)
 
         return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+    def set_stream_footer_extra(self, stream_id: int, extra: Dict[str, object]):
+        """Add fields to this stream's footer, written when the file is closed.
+        Values of None are skipped."""
+        self._footer_extra.setdefault(stream_id, {}).update(
+            {k: v for k, v in extra.items() if v is not None}
+        )
 
     def _write_stream_header(self, stream_id: int, xml: bytes):
         self._write_chunk(tag=TAG_STREAM_HEADER, payload=xml, stream_id=stream_id)
@@ -412,11 +427,13 @@ class XDFWriter:
         fmt: str = "float32",
         source_id: str = "audio",
         extra: Optional[Dict[str, str]] = None,
+        channel_labels: Optional[List[str]] = None,
     ) -> int:
         """
         Register an audio stream. Samples must be written via write_audio().
         `fmt` is the dtype of the written samples; `extra` adds fields (e.g. the
-        capture bit depth, which `fmt` alone cannot convey) to the stream's <desc>.
+        capture bit depth, which `fmt` alone cannot convey) to the stream's <desc>;
+        `channel_labels` names the channels in order (one per channel).
         """
         sid = self._get_next_stream_id()
         xml = self._make_stream_header_xml(
@@ -426,6 +443,7 @@ class XDFWriter:
             srate=samplerate,
             fmt=fmt,
             source_id=source_id,
+            channels=audio_channel_descriptors(channel_labels) if channel_labels else None,
             extra=extra,
         )
 

@@ -1,6 +1,7 @@
 """Tests for recorder.gui.run_controller.RunController."""
 from __future__ import annotations
 
+import json
 import os
 
 import numpy as np
@@ -416,3 +417,138 @@ def test_add_streams_to_xdf_writer_registers_string_format_stream(tmp_path, monk
     assert "lsl:uid-markers" in xdf_writer.streams
     assert xdf_writer._stream_formats[xdf_writer.streams["lsl:uid-markers"]] == "string"
     assert not any("Skipping LSL stream" in msg for _, msg in logs)
+
+
+# ---------------------------------------------------------------------------
+# Audio device resolution by identity
+# ---------------------------------------------------------------------------
+
+def _audio_rc(tmp_path, **audio):
+    cfg = _cfg(tmp_path / "study")
+    cfg.Audio.Enabled = True
+    for key, value in audio.items():
+        setattr(cfg.Audio, key, value)
+    logs: list[tuple[str, str]] = []
+    rc = RunController(cfg=cfg, status_cb=lambda msg, loglevel: logs.append((loglevel, msg)))
+    return rc, logs
+
+
+def test_audio_device_found_by_identity_when_saved_index_is_stale(tmp_path, fake_sd):
+    """The Scarlett was saved as index 10 but now sits at index 1: the recording opens the Scarlett."""
+    fake_sd.add_hostapi("ALSA")
+    fake_sd.add_device("Logitech BRIO: USB Audio (hw:1,0)", max_input_channels=2, hostapi=0)
+    scarlett = fake_sd.add_device("Scarlett 2i2 USB: Audio (hw:4,0)", max_input_channels=2, hostapi=0)
+    rc, logs = _audio_rc(
+        tmp_path,
+        Device="10",
+        DeviceName="Scarlett 2i2 USB: Audio",
+        DeviceHostApi="ALSA",
+    )
+
+    settings = rc._get_audio_stream_settings()
+
+    assert settings.device == scarlett
+    assert settings.source_id == "audio:Scarlett 2i2 USB: Audio"
+    assert any("Audio device resolved" in msg for _lvl, msg in logs)
+
+
+def test_audio_device_missing_aborts_instead_of_using_another_device(tmp_path, fake_sd):
+    fake_sd.add_hostapi("ALSA")
+    fake_sd.add_device("Logitech BRIO: USB Audio (hw:1,0)", max_input_channels=2, hostapi=0)
+    rc, _ = _audio_rc(
+        tmp_path,
+        Device="0",
+        DeviceName="Scarlett 2i2 USB: Audio",
+        DeviceHostApi="ALSA",
+    )
+
+    with pytest.raises(RuntimeError, match="not available.*Scarlett 2i2 USB: Audio"):
+        rc._get_audio_stream_settings()
+
+
+def test_audio_device_index_only_config_still_works_but_warns(tmp_path, fake_sd):
+    fake_sd.add_hostapi("ALSA")
+    idx = fake_sd.add_device("Mic", max_input_channels=1, hostapi=0)
+    rc, logs = _audio_rc(tmp_path, Device=str(idx))
+
+    settings = rc._get_audio_stream_settings()
+
+    assert settings.device == idx
+    assert any(lvl == "WARNING" and "index only" in msg for lvl, msg in logs)
+
+
+def test_audio_stream_header_extra_names_the_device(tmp_path):
+    rc, _ = _audio_rc(tmp_path)
+    rc.audio_settings = rc._get_audio_stream_settings()
+    rc.audio_settings.device_name = "Scarlett 2i2 USB: Audio (hw:4,0)"
+    rc.audio_settings.device_hostapi = "ALSA"
+    rc.audio_settings.device_location = "usb-0000:07:00.0-2"
+
+    extra = rc._audio_stream_extra()
+
+    assert extra["device_name"] == "Scarlett 2i2 USB: Audio (hw:4,0)"
+    assert extra["device_hostapi"] == "ALSA"
+    assert extra["device_location"] == "usb-0000:07:00.0-2"
+    assert extra["capture_bit_depth"] == rc.audio_settings.bitdepth
+
+
+def test_audio_stream_header_extra_omits_unknown_device_fields(tmp_path):
+    rc, _ = _audio_rc(tmp_path)
+    rc.audio_settings = rc._get_audio_stream_settings()
+    rc.audio_settings.device_name = None
+
+    assert set(rc._audio_stream_extra()) == {"capture_bit_depth"}
+
+
+# ---------------------------------------------------------------------------
+# Measured audio rate stored with the recording
+# ---------------------------------------------------------------------------
+
+class _FooterRecorder:
+    def __init__(self):
+        self.extras = {}
+
+    def set_stream_footer_extra(self, sid, extra):
+        self.extras[sid] = dict(extra)
+
+
+def test_measured_audio_rate_goes_into_the_footer_and_run_metadata(make_rc):
+    rc, _ = make_rc()
+    rc.xdf = _FooterRecorder()
+    rc.audio_sid = 3
+    rc.audio_rate_summary = {
+        "measured_srate": 47940.123456, "measured_window_s": 170.5, "callbacks": 800,
+        "total_frames": 8000000, "input_overflows": 1,
+    }
+
+    rc._record_audio_rate()
+
+    assert rc.xdf.extras[3] == {
+        "measured_srate": "47940.123",
+        "measured_window_s": "170.500",
+        "input_overflows": 1,
+    }
+    with open(rc._meta_path, encoding="utf-8") as f:
+        assert json.load(f)["audio_rate"]["measured_srate"] == 47940.123456
+
+
+def test_unmeasurable_audio_rate_is_left_out_of_the_footer(make_rc):
+    rc, _ = make_rc()
+    rc.xdf = _FooterRecorder()
+    rc.audio_sid = 1
+    rc.audio_rate_summary = {
+        "measured_srate": None, "measured_window_s": 0.0, "callbacks": 2,
+        "total_frames": 2048, "input_overflows": 0,
+    }
+
+    rc._record_audio_rate()
+
+    # None is passed on and skipped by the writer (see XDFWriter.set_stream_footer_extra)
+    assert rc.xdf.extras[1]["measured_srate"] is None
+
+
+def test_no_audio_means_nothing_is_added_to_the_footer(make_rc):
+    rc, _ = make_rc()
+    rc.xdf = _FooterRecorder()
+    rc._record_audio_rate()
+    assert rc.xdf.extras == {}

@@ -23,11 +23,20 @@ from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
                              QTabWidget, QTextEdit, QToolButton, QVBoxLayout,
                              QWidget)
 
+from ..audio.channel_labels import (default_channel_label, label_problems,
+                                    trim_channel_labels)
 from ..audio.constants import (BITDEPTH_CONVERSION_INT, DEFAULT_SAMPLE_FORMAT,
                                SAMPLE_FORMATS)
-from ..audio.devices import (default_input_device_index,
+from ..audio.device_identity import (_MISSING_AUDIO_DEVICE,
+                                     AudioDeviceIdentity, identity_for,
+                                     identity_from_audio_config,
+                                     resolve_identity)
+from ..audio.devices import (active_audio_stream_count,
+                             default_input_device_index,
                              get_audio_device_capabilities,
-                             is_input_config_supported, list_input_devices)
+                             is_input_config_supported, list_input_devices,
+                             refresh_portaudio)
+from ..audio.settings import build_audio_stream_settings
 from ..config import (DEFAULT_STUDY_ROOT, AppConfig, VideoCamConfig, load_cfg,
                       save_cfg)
 from ..lsl.labrecorder_rcs import LabRecorderRCS
@@ -44,6 +53,7 @@ from ..xdf.xdf_writer import (DEFAULT_AUDIO_BUFFER_SECONDS,
                               FULL_BUFFER_DEFAULT_POLICY,
                               FULL_BUFFER_DROP_NEWEST_POLICY,
                               FULL_BUFFER_DROP_OLDEST_POLICY)
+from .audio_test_panel import AudioTestPanel
 from .camera_panel import CameraPanel
 from .camera_worker import CAMERA_PREVIEW_STREAM_TYPE
 from .fps_divergence_dialog import FpsDivergenceDialog
@@ -362,6 +372,10 @@ class MainWindow(QMainWindow):
         self.audio_sample_format.setCurrentIndex(max(idx, 0))
         self.audio_ch = QSpinBox(); self.audio_ch.setRange(1, 16); self.audio_ch.setValue(self.cfg.Audio.Channels)
         self._audio_caps: dict = {}
+        # PortAudio index -> device dict for the entries currently in the dropdown
+        self._audio_devices_by_index: dict = {}
+        # Identity of a saved device that could not be found (shown as a placeholder entry)
+        self._missing_audio_identity: Optional[AudioDeviceIdentity] = None
         self._populate_audio_devices()
         self._refresh_audio_capabilities()
         self.audio_device.currentIndexChanged.connect(self._on_audio_device_changed)
@@ -392,6 +406,12 @@ class MainWindow(QMainWindow):
             "Only options the selected device accepts are listed.",
         ))
         af.addRow("Channels", self.audio_ch)
+        # One label field per channel, directly below "Channels"; shown for channels 1..N
+        self._audio_form = af
+        self._audio_label_edits: list[QLineEdit] = []
+        self._audio_label_rows: list = []
+        self._set_audio_label_texts(self.cfg.Audio.ChannelLabels)
+        self.audio_ch.valueChanged.connect(lambda _v: self._sync_audio_label_rows())
 
         _add_collapsible_form_rows(af, "Advanced", [("Sample format", self._with_help_icon(
             self.audio_sample_format,
@@ -406,9 +426,23 @@ class MainWindow(QMainWindow):
             "from the device; samples are converted to this format as needed.",
         ))], collapsed=True)
 
-        audio_layout = QVBoxLayout()
-        audio_layout.addLayout(af)
-        audio_layout.addStretch(1)
+        # Record a few seconds with the selected device and settings, and play them back
+        self.audio_test_panel = AudioTestPanel(
+            get_settings=self._build_audio_test_settings,
+            prepare=self._prepare_audio_test,
+            log=lambda msg, level="INFO": self.log(f"[Audio test] {msg}", level),
+        )
+
+        # Settings on the left, the audio test on the right; each column keeps to the top
+        settings_column = QVBoxLayout()
+        settings_column.addLayout(af)
+        settings_column.addStretch(1)
+        test_column = QVBoxLayout()
+        test_column.addWidget(self.audio_test_panel)
+        test_column.addStretch(1)
+        audio_layout = QHBoxLayout()
+        audio_layout.addLayout(settings_column, 3)
+        audio_layout.addLayout(test_column, 2)
         audio_widget.setLayout(audio_layout)
         self.tabs.addTab(audio_widget, "Audio")
 
@@ -793,6 +827,8 @@ class MainWindow(QMainWindow):
         # if the log simply stops with no matching line here, that means
         # the app went down some other way (native crash, force-kill).
         self.log("Closing app.")
+        # Release the audio device if an audio test is recording or playing
+        self.audio_test_panel.shutdown()
         # Stop any active camera preview workers before the window/app actually closes
         self.preview_mgr.stop_all_previews()
         if self._recording_active and self.controller:
@@ -931,30 +967,190 @@ class MainWindow(QMainWindow):
         if self._start_progress_dialog:
             self._start_progress_dialog.hide()
 
-    def _populate_audio_devices(self):
+    def _selected_audio_index(self) -> Optional[int]:
+        """PortAudio index of the selected input device; None for "(default)"
+        or when the saved device is missing."""
+        data = self.audio_device.currentData()
+        return data if isinstance(data, int) else None
+
+    def _audio_device_missing(self) -> bool:
+        return self.audio_device.currentData() == _MISSING_AUDIO_DEVICE
+
+    def _current_audio_identity(self) -> Optional[AudioDeviceIdentity]:
+        """Identity of the device selected in the dropdown (None for "(default)")."""
+        if self._audio_device_missing():
+            return self._missing_audio_identity
+        index = self._selected_audio_index()
+        device = self._audio_devices_by_index.get(index) if index is not None else None
+        return identity_for(device) if device else None
+
+    def _populate_audio_devices(self, refresh: bool = False, keep_gui_selection: bool = False):
+        """(Re)fill the input-device dropdown and select the requested device by
+        identity (name, host API, location), not by its PortAudio index, which
+        shifts after a reboot or replug.
+
+        The wanted device is the one saved in the config, or, with
+        `keep_gui_selection`, the one currently selected. `refresh` re-initializes
+        PortAudio first so devices plugged in since startup are listed (skipped
+        while an audio stream is open). A requested device that cannot be found is
+        never replaced by another: a disabled placeholder entry is selected and
+        Start/Test stay blocked until a device is chosen."""
+        wanted = self._current_audio_identity() if keep_gui_selection else identity_from_audio_config(self.cfg.Audio)
+        legacy_index: Optional[int] = None
+        if wanted is None and not keep_gui_selection and self.cfg.Audio.Device:
+            try:
+                legacy_index = int(self.cfg.Audio.Device)
+            except ValueError:
+                pass
+
+        if refresh and not refresh_portaudio():
+            self.log(
+                "Audio device list was not refreshed"
+                + (" (an audio stream is open)" if active_audio_stream_count() else ""),
+                loglevel="WARNING",
+            )
+
+        devs = list_input_devices()
+        self._audio_devices_by_index = {d["index"]: d for d in devs}
+        self._missing_audio_identity = None
+        default_idx = default_input_device_index()
+
         self.audio_device.blockSignals(True)
         self.audio_device.clear()
-        devs = list_input_devices()
-        default_idx = default_input_device_index()
         self.audio_device.addItem("(default)", None)
         for d in devs:
             self.audio_device.addItem(_format_audio_device_label(d), d["index"])
-        if self.cfg.Audio.Device:
-            try:
-                di = int(self.cfg.Audio.Device)
-                idx = self.audio_device.findData(di)
-                if idx >= 0:
-                    self.audio_device.setCurrentIndex(idx)
-            except ValueError:
-                pass
-        elif default_idx is not None:
+
+        if wanted is not None:
+            match = resolve_identity(wanted, devs)
+            if match.found:
+                self.audio_device.setCurrentIndex(self.audio_device.findData(match.device["index"]))
+                self.log(
+                    f"Audio device resolved: {wanted.describe()} -> "
+                    f"[{match.device['index']}] {match.device['name']} ({match.level})",
+                    loglevel="WARNING" if match.degraded else "INFO",
+                )
+            else:
+                self._missing_audio_identity = wanted
+                self.audio_device.addItem(f"Saved device not found: {wanted.name}", _MISSING_AUDIO_DEVICE)
+                row = self.audio_device.count() - 1
+                self.audio_device.model().item(row).setEnabled(False)
+                self.audio_device.setCurrentIndex(row)
+                self.log(
+                    f"Saved audio device not available: {wanted.describe()} ({match.detail}); "
+                    "choose a device before recording",
+                    loglevel="WARNING",
+                )
+        elif legacy_index is not None:
+            # Old config with only a numeric index: the index may now be a different device
+            idx = self.audio_device.findData(legacy_index)
+            if idx >= 0:
+                self.audio_device.setCurrentIndex(idx)
+                self.log(
+                    f"Audio device [{legacy_index}] taken from an index-only config; its identity is "
+                    "unknown, so verify the device (it is saved by name on the next config save)",
+                    loglevel="WARNING",
+                )
+        elif not keep_gui_selection and default_idx is not None:
             idx = self.audio_device.findData(default_idx)
             if idx >= 0:
                 self.audio_device.setCurrentIndex(idx)
         self.audio_device.blockSignals(False)
 
+    def _refresh_audio_devices(self):
+        """Re-list the audio devices (input dropdown and the audio test's output
+        choices), keeping the current selection by identity."""
+        self._populate_audio_devices(refresh=True, keep_gui_selection=True)
+        self._refresh_audio_capabilities()
+        if hasattr(self, "audio_test_panel"):
+            self.audio_test_panel.refresh_output_devices()
+
+    def _refresh_audio_devices_before_run(self):
+        """Pick up USB devices plugged or unplugged since the device list was
+        built, keeping the user's current selection by identity. Called before
+        a recording or test starts, when no audio stream is open."""
+        if not self.audio_enabled.isChecked():
+            return
+        self._refresh_audio_devices()
+
+    def _prepare_audio_test(self) -> bool:
+        """Called before an audio test: refresh the devices, read the settings and make
+        sure they can be used. Returns False (after surfacing a warning) if not."""
+        if self._recording_active or self._testing_active:
+            return False
+        self._refresh_audio_devices()
+        self.pull_gui_into_cfg()
+        warnings = self._validate_audio_settings(force=True)
+        if warnings:
+            QMessageBox.warning(
+                self, "Settings warning",
+                "The audio test cannot run:\n\n" + "\n".join(f"- {msg}" for msg in warnings),
+            )
+            return False
+        return True
+
+    def _build_audio_test_settings(self):
+        return build_audio_stream_settings(
+            self.cfg.Audio,
+            log=lambda msg, level="INFO": self.log(f"[Audio test] {msg}", level),
+        )
+
+    def _update_audio_test_enabled(self):
+        """The audio test shares the audio device, so it is off while recording or testing."""
+        self.audio_test_panel.set_external_busy(bool(self._recording_active or self._testing_active))
+
+    def _ensure_audio_label_rows(self, count: int):
+        """Create label fields up to `count`, each placed after the previous one, below Channels."""
+        af = self._audio_form
+        while len(self._audio_label_edits) < count:
+            i = len(self._audio_label_edits)
+            edit = QLineEdit()
+            edit.setPlaceholderText(default_channel_label(i + 1))
+            edit.editingFinished.connect(
+                lambda i=i: self._log_gui_change(
+                    f"Audio.ChannelLabel{i + 1}", self._audio_label_edits[i].text().strip()
+                )
+            )
+            channels_row, _role = af.getWidgetPosition(self.audio_ch)
+            af.insertRow(channels_row + 1 + i, f"Channel {i + 1} label", edit)
+            self._audio_label_edits.append(edit)
+            self._audio_label_rows.append(edit)
+
+    def _sync_audio_label_rows(self):
+        """Show one label field per recorded channel."""
+        channels = int(self.audio_ch.value())
+        self._ensure_audio_label_rows(channels)
+        for i, row in enumerate(self._audio_label_rows):
+            self._audio_form.setRowVisible(row, i < channels)
+
+    def _set_audio_label_texts(self, labels):
+        """Fill the label fields from `labels` (one per channel; surplus fields are cleared)."""
+        labels = list(labels or [])
+        self._ensure_audio_label_rows(max(len(labels), int(self.audio_ch.value())))
+        for i, edit in enumerate(self._audio_label_edits):
+            edit.setText(labels[i] if i < len(labels) else "")
+        self._sync_audio_label_rows()
+
+    def _audio_channel_labels(self) -> list[str]:
+        """Labels typed for the channels that are recorded (hidden fields are not used)."""
+        return trim_channel_labels(
+            [edit.text() for edit in self._audio_label_edits], int(self.audio_ch.value())
+        )
+
     def _on_audio_device_changed(self, _index: int):
-        self._log_gui_change("Audio.Device", self.audio_device.currentText())
+        if not self._audio_device_missing() and self._missing_audio_identity is not None:
+            # A real device was chosen: drop the "not found" placeholder
+            self._missing_audio_identity = None
+            row = self.audio_device.findData(_MISSING_AUDIO_DEVICE)
+            if row >= 0:
+                self.audio_device.blockSignals(True)
+                self.audio_device.removeItem(row)
+                self.audio_device.blockSignals(False)
+        identity = self._current_audio_identity()
+        self._log_gui_change(
+            "Audio.Device",
+            f"{self.audio_device.currentText()}" + (f" [{identity.describe()}]" if identity else ""),
+        )
         self._refresh_audio_capabilities()
 
     def _refresh_audio_capabilities(
@@ -966,7 +1162,7 @@ class MainWindow(QMainWindow):
         and repopulate the Sample rate / Bit depth combos with only valid choices, so
         the GUI can never offer (and silently have overridden at record time) a
         combination the device doesn't support."""
-        device = self.audio_device.currentData()
+        device = self._selected_audio_index()
         if preferred_samplerate is None:
             preferred_samplerate = self.audio_sr.currentData()
         if preferred_samplerate is None:
@@ -977,7 +1173,11 @@ class MainWindow(QMainWindow):
             preferred_bitdepth = int(self.cfg.Audio.BitDepth)
         preferred_channels = int(self.audio_ch.value()) or int(self.cfg.Audio.Channels)
 
-        caps = get_audio_device_capabilities(device, channels=preferred_channels)
+        if self._audio_device_missing():
+            # Nothing to probe: keep the configured values visible
+            caps = {"samplerates": [], "bitdepths": [], "max_channels": None, "default_samplerate": None}
+        else:
+            caps = get_audio_device_capabilities(device, channels=preferred_channels)
         self._audio_caps = caps
 
         rates = caps.get("samplerates") or []
@@ -1155,12 +1355,20 @@ class MainWindow(QMainWindow):
         self.cfg.Prompts.Run = self.run.text().strip()
 
         self.cfg.Audio.Enabled = self.audio_enabled.isChecked()
-        dev = self.audio_device.currentData()
-        self.cfg.Audio.Device = str(dev) if dev is not None else None
+        identity = self._current_audio_identity()
+        index = self._selected_audio_index()
+        # The index is only a hint; the identity is what finds the device again
+        self.cfg.Audio.Device = str(index) if index is not None else (
+            str(identity.index_hint) if identity and identity.index_hint is not None else None
+        )
+        self.cfg.Audio.DeviceName = identity.name if identity else None
+        self.cfg.Audio.DeviceHostApi = identity.hostapi_name if identity else None
+        self.cfg.Audio.DeviceLocation = identity.location if identity else None
         self.cfg.Audio.SampleRate = int(self.audio_sr.currentData())
         self.cfg.Audio.BitDepth = int(self.audio_bit.currentData())
         self.cfg.Audio.SampleFormat = self.audio_sample_format.currentData()
         self.cfg.Audio.Channels = int(self.audio_ch.value())
+        self.cfg.Audio.ChannelLabels = self._audio_channel_labels()
         self.cfg.Audio.StreamName = self.audio_stream_name.text().strip() or "Audio"
 
         self.cfg.LabRecorder.Enabled = self.labrec_enabled.isChecked()
@@ -1205,6 +1413,8 @@ class MainWindow(QMainWindow):
     def on_start(self):
         if self._testing_active:
             return
+        self.audio_test_panel.shutdown()
+        self._refresh_audio_devices_before_run()
         self.pull_gui_into_cfg()
         if not self._confirm_unvalidated_camera_combinations():
             return
@@ -1285,19 +1495,33 @@ class MainWindow(QMainWindow):
             )
         return items, warnings
 
-    def _validate_audio_settings(self) -> list[str]:
-        if not self.audio_enabled.isChecked():
+    def _validate_audio_settings(self, force: bool = False) -> list[str]:
+        """Problems that prevent using the audio settings. `force` checks them even if
+        audio recording is not enabled (the audio test works regardless)."""
+        if not force and not self.audio_enabled.isChecked():
             return []
-        device = self.audio_device.currentData()
+        if self._audio_device_missing():
+            identity = self._missing_audio_identity
+            return [
+                f"Audio: the saved input device '{identity.name if identity else '?'}' is not available. "
+                "Select an input device in the Audio tab."
+            ]
+        device = self._selected_audio_index()
         samplerate = int(self.audio_sr.currentData())
         bitdepth = int(self.audio_bit.currentData())
         channels = int(self.audio_ch.value())
-        if is_input_config_supported(device, samplerate, channels, bitdepth):
-            return []
-        return [
-            f"Audio: samplerate={samplerate}, bit depth={bitdepth}-bit, channels={channels} "
-            "is not supported by the selected input device."
-        ]
+        problems: list[str] = []
+        if not is_input_config_supported(device, samplerate, channels, bitdepth):
+            problems.append(
+                f"Audio: samplerate={samplerate}, bit depth={bitdepth}-bit, channels={channels} "
+                "is not supported by the selected input device."
+            )
+        if not force:
+            problems.extend(
+                f"Audio: {problem}"
+                for problem in label_problems(self._audio_channel_labels(), channels)
+            )
+        return problems
 
     def _validate_unique_camera_labels(self) -> list[str]:
         configs = [panel.to_config() for panel in self.cam_panels]
@@ -1374,6 +1598,7 @@ class MainWindow(QMainWindow):
             self.btn_start.setEnabled(False)
             self.btn_stop.setEnabled(True)
             self._recording_active = True
+            self._update_audio_test_enabled()
             self._update_add_camera_button()
             self._show_recording_status()
         except Exception as e:
@@ -1482,6 +1707,7 @@ class MainWindow(QMainWindow):
         self.btn_start.setEnabled(True)
         self.btn_stop.setEnabled(False)
         self._recording_active = False
+        self._update_audio_test_enabled()
         self._update_add_camera_button()
         if self.cfg.Video.Enabled:
             self._refresh_previews_from_panels()
@@ -1577,6 +1803,8 @@ class MainWindow(QMainWindow):
         at the start of a real session or after recording."""
         if self._recording_active or self._testing_active:
             return
+        self.audio_test_panel.shutdown()
+        self._refresh_audio_devices_before_run()
         self.pull_gui_into_cfg()
 
         warnings = self._validate_audio_settings()
@@ -1606,6 +1834,7 @@ class MainWindow(QMainWindow):
         self.btn_start.setEnabled(False)
         self.btn_test_recording.setEnabled(False)
         self._testing_active = True
+        self._update_audio_test_enabled()
 
         try:
             controller = RunController(
@@ -1631,6 +1860,7 @@ class MainWindow(QMainWindow):
 
     def _abort_test_recording(self, test_cfg: AppConfig):
         self._testing_active = False
+        self._update_audio_test_enabled()
         self.btn_start.setEnabled(True)
         self.btn_test_recording.setEnabled(True)
         if self.cfg.Video.Enabled:
@@ -1679,6 +1909,7 @@ class MainWindow(QMainWindow):
             self.log(f"[Test] Error stopping test recording: {exc}", loglevel="ERROR")
 
         self._testing_active = False
+        self._update_audio_test_enabled()
         self.btn_start.setEnabled(True)
         self.btn_test_recording.setEnabled(True)
         if self.cfg.Video.Enabled:
@@ -1699,15 +1930,22 @@ class MainWindow(QMainWindow):
 
     def _show_validation_report(self, report: ValidationReport, temp_dir: str):
         for check in report.checks:
-            loglevel = "INFO" if check.passed else "WARNING"
-            mark = "PASS" if check.passed else "FAIL"
+            loglevel = "INFO" if check.passed and not check.warning else "WARNING"
+            mark = "FAIL" if not check.passed else ("WARN" if check.warning else "PASS")
             self.log(f"[Test] [{mark}] {check.name}: {check.detail}", loglevel)
 
         box = QMessageBox(self)
         box.setWindowTitle("Test recording results")
         if report.passed:
-            box.setIcon(QMessageBox.Icon.Information)
-            box.setText(f"All checks passed ({report.summary()}).")
+            if report.warnings:
+                box.setIcon(QMessageBox.Icon.Warning)
+                box.setText(
+                    f"All checks passed ({report.summary()}):\n\n"
+                    + "\n".join(f"- {c.name}: {c.detail}" for c in report.warnings)
+                )
+            else:
+                box.setIcon(QMessageBox.Icon.Information)
+                box.setText(f"All checks passed ({report.summary()}).")
             shutil.rmtree(temp_dir, ignore_errors=True)
             self.log(f"[Test] Cleaned up temp test recording directory: {temp_dir}")
             ok_btn = box.addButton(QMessageBox.StandardButton.Ok)
@@ -1856,7 +2094,7 @@ class MainWindow(QMainWindow):
 
         self.audio_enabled.setChecked(bool(self.cfg.Audio.Enabled))
         self.audio_ch.setValue(int(self.cfg.Audio.Channels))
-        self._populate_audio_devices()
+        self._populate_audio_devices(refresh=True)
         self._refresh_audio_capabilities(
             preferred_samplerate=int(self.cfg.Audio.SampleRate),
             preferred_bitdepth=int(self.cfg.Audio.BitDepth),
@@ -1864,6 +2102,7 @@ class MainWindow(QMainWindow):
         idx = self.audio_sample_format.findData(self.cfg.Audio.SampleFormat)
         self.audio_sample_format.setCurrentIndex(max(idx, 0))
         self.audio_stream_name.setText(getattr(self.cfg.Audio, "StreamName", "Audio") or "Audio")
+        self._set_audio_label_texts(self.cfg.Audio.ChannelLabels)
 
         self.labrec_enabled.setChecked(bool(self.cfg.LabRecorder.Enabled))
         self.labrec_host.setText(self.cfg.LabRecorder.Host)

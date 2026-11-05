@@ -14,6 +14,7 @@ from recorder.audio.constants import (BITDEPTH_CONVERSION_FLOAT,
 from recorder.audio.lsl_audio import (AudioLSLStreamer, AudioStreamSettings,
                                       _capture_dtype, _resolve_input_device,
                                       _try_device, convert_samples)
+from recorder.audio.rate_meter import RateMeter
 
 
 def test_bitdepth_conversion_val():
@@ -273,3 +274,97 @@ def test_start_uses_requested_capture_dtype_when_supported(fake_sd, monkeypatch)
 
     assert _StubInputStream.instances[0].kwargs["dtype"] == "float32"
     assert settings.bitdepth == 32
+
+
+# ---------------------------------------------------------------------------
+# AudioLSLStreamer: open-stream tracking and device description
+# ---------------------------------------------------------------------------
+
+class _StoppableInputStream(_StubInputStream):
+    def stop(self):
+        pass
+
+    def close(self):
+        pass
+
+
+def test_streamer_counts_as_open_between_start_and_stop(fake_sd, monkeypatch):
+    """PortAudio must not be re-initialised while a stream is open, so the streamer registers itself."""
+    from recorder.audio.devices import active_audio_stream_count
+
+    idx = fake_sd.add_device("Mic", max_input_channels=1, default_samplerate=48000, supported_rates=[48000])
+    monkeypatch.setattr(sd, "InputStream", _StoppableInputStream, raising=False)
+    streamer = AudioLSLStreamer(AudioStreamSettings(device=idx, samplerate=48000, bitdepth=32), sample_cb=None)
+
+    streamer.start()
+    assert active_audio_stream_count() == 1
+    streamer.stop()
+    assert active_audio_stream_count() == 0
+    streamer.stop()  # a second stop must not decrement again
+    assert active_audio_stream_count() == 0
+
+
+def test_start_records_the_device_actually_opened(fake_sd, monkeypatch):
+    fake_sd.add_hostapi("ALSA")
+    idx = fake_sd.add_device(
+        "Scarlett 2i2 USB: Audio (hw:4,0)",
+        max_input_channels=2,
+        hostapi=0,
+        default_samplerate=44100,
+        supported_rates=[44100],
+    )
+    monkeypatch.setattr(sd, "InputStream", _StubInputStream, raising=False)
+    settings = AudioStreamSettings(device=idx, samplerate=44100, channels=2, bitdepth=32)
+
+    AudioLSLStreamer(settings, sample_cb=None).start()
+
+    assert settings.device_index == idx
+    assert settings.device_name == "Scarlett 2i2 USB: Audio (hw:4,0)"
+    assert settings.device_hostapi == "ALSA"
+
+
+# ---------------------------------------------------------------------------
+# AudioLSLStreamer: reporting the measured delivery rate on stop
+# ---------------------------------------------------------------------------
+
+class _MeterClock:
+    def __init__(self):
+        self.t = 0.0
+
+    def __call__(self):
+        return self.t
+
+
+def _streamer_with_delivered_rate(delivered_rate, configured=44100, seconds=10.0):
+    messages = []
+    streamer = AudioLSLStreamer(
+        AudioStreamSettings(samplerate=configured), sample_cb=None,
+        status_cb=lambda m, lvl: messages.append((lvl, m)),
+    )
+    clock = _MeterClock()
+    streamer.rate_meter = RateMeter(clock=clock)
+    chunk = 1024
+    for _ in range(int(seconds * delivered_rate / chunk)):
+        clock.t += chunk / delivered_rate
+        streamer.rate_meter.update(chunk)
+    return streamer, messages
+
+
+def test_stop_logs_the_measured_rate_without_warning_when_it_matches():
+    streamer, messages = _streamer_with_delivered_rate(44100)
+    streamer._report_measured_rate()
+    assert any("measured rate" in m for _lvl, m in messages)
+    assert not [m for lvl, m in messages if lvl == "WARNING"]
+
+
+def test_stop_warns_when_the_device_delivers_a_different_rate_than_configured():
+    streamer, messages = _streamer_with_delivered_rate(48000, configured=44100)
+    streamer._report_measured_rate()
+    warning = next(m for lvl, m in messages if lvl == "WARNING")
+    assert "44100" in warning and "off the configured" in warning
+
+
+def test_stop_reports_when_the_recording_was_too_short_to_measure():
+    streamer, messages = _streamer_with_delivered_rate(44100, seconds=0.5)
+    streamer._report_measured_rate()
+    assert any("too short" in m for _lvl, m in messages)

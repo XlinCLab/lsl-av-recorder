@@ -7,6 +7,7 @@ import xml.etree.ElementTree as ET
 import numpy as np
 import pytest
 from pylsl import cf_string
+from pyxdf import load_xdf
 
 from recorder.lsl.lsl_inlet_recorder import LslInletRecorder
 from recorder.xdf.xdf_writer import VIDEO_STREAM_DTYPE, XDFWriter
@@ -122,6 +123,23 @@ def test_stream_header_xml_omits_desc_without_extra_or_channels(writer):
 def test_add_audio_stream_records_its_format(writer):
     sid = writer.add_audio_stream(name="Audio", samplerate=48000.0, channels=1, fmt="int16")
     assert writer._stream_formats[sid] == "int16"
+
+
+def test_add_audio_stream_writes_channel_labels_readable_by_pyxdf(xdf_path):
+    w = XDFWriter(xdf_path)
+    w.start()
+    sid = w.add_audio_stream(
+        name="Audio",
+        samplerate=1000.0,
+        channels=2,
+        channel_labels=["Participant A", "Participant B"],
+    )
+    w.write_audio(sid, 100.0 + np.arange(100) / 1000, np.zeros((100, 2), dtype=np.float32))
+    w.stop()
+    streams, _ = load_xdf(xdf_path)
+    channels = streams[0]["info"]["desc"][0]["channels"][0]["channel"]
+    assert [c["label"][0] for c in channels] == ["Participant A", "Participant B"]
+    assert [c["type"][0] for c in channels] == ["Audio", "Audio"]
 
 
 def test_add_video_stream_records_int64_format(writer):
@@ -311,3 +329,31 @@ def test_pyxdf_reads_back_multichannel_string_samples(xdf_path):
 
     markers = load_by_name(xdf_path)[MARKER_STREAM_NAME]
     assert markers["time_series"] == samples
+
+
+def test_stream_footer_extra_is_written_and_loadable(xdf_path):
+    """Fields only known at the end of a stream (e.g. a measured rate) land in its footer."""
+    w = XDFWriter(xdf_path)
+    w.start()
+    sid = w.add_audio_stream(name="Audio", samplerate=100.0, channels=1)
+    w.write_audio(
+        stream_id=sid,
+        timestamps=100.0 + np.arange(100) / 100.0,
+        samples=np.zeros((100, 1), dtype=np.float32)
+    )
+    w.set_stream_footer_extra(
+        stream_id=sid,
+        extra={
+            "measured_srate": "99.870",
+            "input_overflows": 2,
+            "skipped": None,
+        }
+    )
+    w.stop()
+
+    streams, _ = load_xdf(xdf_path, synchronize_clocks=False, dejitter_timestamps=False)
+    footer = streams[0]["footer"]["info"]
+    assert footer["measured_srate"] == ["99.870"]
+    assert footer["input_overflows"] == ["2"]
+    assert "skipped" not in footer
+    assert footer["sample_count"] == ["100"]  # the usual footer fields are unaffected
