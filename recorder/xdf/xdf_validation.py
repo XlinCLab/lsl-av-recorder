@@ -10,18 +10,16 @@ real session.
 """
 from __future__ import annotations
 
-import math
 import os
 from dataclasses import dataclass
 from typing import List, Optional
 
-import numpy as np
 import pyxdf
 from pylsl import StreamInfo
 
-from ..audio.constants import (BITDEPTH_CONVERSION_FLOAT,
-                               RATE_VALIDATION_TOLERANCE)
+from ..audio.constants import RATE_VALIDATION_TOLERANCE
 from ..audio.device_identity import normalize_device_name
+from ..audio.levels import as_float_samples, level_problem, signal_levels
 from ..config import AppConfig
 
 # Sample/frame counts are compared to duration * nominal_srate within this
@@ -35,10 +33,6 @@ DEFAULT_COUNT_TOLERANCE = 0.3
 DEFAULT_RATE_TOLERANCE = 0.05
 # Audio sample counts are checked tighter than other streams, since an audio device's rate is steady
 AUDIO_COUNT_TOLERANCE = 0.15
-# Peak levels (dBFS) below which the recorded signal is flagged
-SILENCE_PEAK_DBFS = -60.0
-QUIET_PEAK_DBFS = -40.0
-CLIPPING_PEAK = 0.999
 
 
 @dataclass
@@ -223,25 +217,12 @@ def _validate_audio_properties(cfg: AppConfig, stream: dict, n_samples: int) -> 
 
 def _audio_level_check(samples, channel_format: Optional[str]) -> CheckResult:
     """Peak and RMS level in dBFS, flagged when the signal is silent, very quiet or clipping."""
-    x = np.asarray(samples, dtype=np.float64)
-    if channel_format == "int16":
-        x = x / BITDEPTH_CONVERSION_FLOAT
-    peak = float(np.max(np.abs(x)))
-    rms = float(np.sqrt(np.mean(x ** 2)))
-
-    def db(value: float) -> float:
-        return 20.0 * math.log10(max(value, 1e-9))
-
-    detail = f"peak {db(peak):.1f} dBFS, RMS {db(rms):.1f} dBFS"
+    levels = signal_levels(as_float_samples(samples, channel_format))
+    detail = f"peak {levels.peak_dbfs:.1f} dBFS, RMS {levels.rms_dbfs:.1f} dBFS"
     name = "Audio signal level"
-    if peak >= CLIPPING_PEAK:
-        return _warn(name, detail + ": the signal reaches full scale (clipping); lower the input gain")
-    if db(peak) < SILENCE_PEAK_DBFS:
-        return _warn(name, detail + ": the recording is silent; check that the microphone is connected, "
-                                   "unmuted and on the selected input")
-    if db(peak) < QUIET_PEAK_DBFS:
-        return _warn(name, detail + ": the signal is very quiet; check the input gain "
-                                    "(or the microphone distance)")
+    problem = level_problem(levels)
+    if problem:
+        return _warn(name, f"{detail}: {problem}")
     return _check(name, True, detail)
 
 

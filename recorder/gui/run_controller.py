@@ -13,10 +13,8 @@ from typing import Callable, Dict, List, Optional
 import numpy as np
 from pylsl import StreamInfo, StreamInlet
 
-from ..audio.device_identity import (identity_from_audio_config,
-                                     resolve_identity)
-from ..audio.devices import list_input_devices
 from ..audio.lsl_audio import AudioLSLStreamer, AudioStreamSettings
+from ..audio.settings import build_audio_stream_settings
 from ..config import AppConfig, VideoCamConfig
 from ..lsl.lsl_inlet_recorder import (LslInletRecorder, extract_channel_info,
                                       lsl_format_to_xdf)
@@ -30,22 +28,6 @@ from ..xdf.xdf_writer import (DEFAULT_WRITER_QUEUE_SIZE,
                               FULL_BUFFER_DROP_NEWEST_POLICY,
                               FULL_BUFFER_POLICIES, XDFWriter)
 from .preview_manager import preview_key
-
-
-def _resolve_audio_device_name(device) -> str:
-    """Human-readable name for an audio input device
-    selector for display purposes."""
-    if device is None:
-        return "(default)"
-    if isinstance(device, int):
-        try:
-            for d in list_input_devices():
-                if d["index"] == device:
-                    return str(d["name"])
-        except Exception:
-            pass
-        return f"Device {device}"
-    return str(device)
 
 
 class RunController:
@@ -432,44 +414,9 @@ class RunController:
         self.lsl_recorders = []
 
     def _get_audio_stream_settings(self) -> AudioStreamSettings:
-        aset = AudioStreamSettings(
-            device=None,
-            samplerate=self.cfg.Audio.SampleRate,
-            channels=self.cfg.Audio.Channels,
-            bitdepth=self.cfg.Audio.BitDepth,
-            sample_format=self.cfg.Audio.SampleFormat,
-            stream_name=self.cfg.Audio.StreamName or "Audio",
-            stream_type="Audio",
-            source_id=f"audio:{self.cfg.Audio.Device or 'default'}",
+        return build_audio_stream_settings(
+            self.cfg.Audio, log=lambda message, level="INFO": self.log(message, loglevel=level),
         )
-        identity = identity_from_audio_config(self.cfg.Audio)
-        if identity is not None:
-            # Find the device by name/host API/location in the current device list rather
-            # than trusting a PortAudio index that may have shifted since it was saved.
-            match = resolve_identity(identity, list_input_devices())
-            if not match.found:
-                raise RuntimeError(
-                    f"The configured audio input device is not available: {identity.describe()} "
-                    f"({match.detail}). Select the device in the Audio tab."
-                )
-            aset.device = match.device["index"]
-            aset.source_id = f"audio:{identity.name}"
-            self.log(
-                f"Audio device resolved: {identity.describe()} -> "
-                f"[{match.device['index']}] {match.device['name']} ({match.level})",
-                loglevel="WARNING" if match.degraded else "INFO",
-            )
-        elif self.cfg.Audio.Device is not None:
-            try:
-                aset.device = int(self.cfg.Audio.Device)
-            except ValueError:
-                aset.device = self.cfg.Audio.Device
-            self.warning(
-                f"Audio device [{self.cfg.Audio.Device}] was configured by index only, "
-                "which may have changed since it was chosen; its identity is unknown."
-            )
-        aset.device_name = _resolve_audio_device_name(aset.device)
-        return aset
 
     def _get_active_cams(self) -> List:
         if not self.video_enabled:

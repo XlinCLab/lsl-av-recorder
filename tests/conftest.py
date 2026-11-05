@@ -55,6 +55,7 @@ class FakeSoundDevice:
         name: str,
         *,
         max_input_channels: int = 0,
+        max_output_channels: int = 0,
         hostapi: int = 0,
         default_samplerate: float | None = None,
         supported_rates=(),
@@ -65,7 +66,7 @@ class FakeSoundDevice:
             {
                 "name": name,
                 "max_input_channels": max_input_channels,
-                "max_output_channels": 0,
+                "max_output_channels": max_output_channels,
                 "hostapi": hostapi,
                 "default_samplerate": default_samplerate,
                 "_rates": {int(r) for r in supported_rates},
@@ -76,6 +77,9 @@ class FakeSoundDevice:
 
     def set_default_input(self, index):
         self.default.device[0] = index
+
+    def set_default_output(self, index):
+        self.default.device[1] = index
 
     # --- sounddevice API surface -------------------------------------------
 
@@ -91,6 +95,14 @@ class FakeSoundDevice:
 
     def query_hostapis(self):
         return list(self.hostapis)
+
+    def check_output_settings(self, device=None, samplerate=None, channels=None, dtype=None):
+        resolved = device if device is not None else self.default.device[1]
+        d = self.query_devices(resolved)
+        if channels is not None and channels > d["max_output_channels"]:
+            raise self.PortAudioError("too many output channels")
+        if samplerate is not None and int(samplerate) not in d["_rates"]:
+            raise self.PortAudioError("unsupported samplerate")
 
     def check_input_settings(self, device=None, samplerate=None, channels=None, dtype=None):
         resolved = device if device is not None else self.default.device[0]
@@ -129,6 +141,7 @@ def fake_sd(monkeypatch) -> FakeSoundDevice:
     monkeypatch.setattr(sd, "query_devices", fake.query_devices)
     monkeypatch.setattr(sd, "query_hostapis", fake.query_hostapis)
     monkeypatch.setattr(sd, "check_input_settings", fake.check_input_settings)
+    monkeypatch.setattr(sd, "check_output_settings", fake.check_output_settings)
     monkeypatch.setattr(sd, "default", fake.default)
     return fake
 

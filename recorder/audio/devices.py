@@ -90,6 +90,39 @@ def list_input_devices() -> List[Dict[str, Any]]:
     return out
 
 
+def list_output_devices() -> List[Dict[str, Any]]:
+    """List every output-capable audio device PortAudio can see."""
+    devs = sd.query_devices()
+    try:
+        hostapis = sd.query_hostapis()
+    except Exception:
+        hostapis = []
+    out = []
+    for i, d in enumerate(devs):
+        if d.get("max_output_channels", 0) > 0:
+            hostapi_idx = d.get("hostapi")
+            hostapi_name = None
+            if hostapi_idx is not None and 0 <= hostapi_idx < len(hostapis):
+                hostapi_name = hostapis[hostapi_idx].get("name")
+            out.append({
+                "index": i,
+                "name": d.get("name"),
+                "hostapi": hostapi_idx,
+                "hostapi_name": hostapi_name,
+                "max_output_channels": d.get("max_output_channels"),
+                "default_samplerate": d.get("default_samplerate"),
+            })
+    return out
+
+
+def default_output_device_index():
+    try:
+        di = sd.default.device[1]
+        return di if di is not None and di >= 0 else None
+    except Exception:
+        return None
+
+
 def default_input_device_index():
     try:
         di = sd.default.device[0]

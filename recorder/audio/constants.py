@@ -35,3 +35,9 @@ BITDEPTH_CONVERSION_INT = int(BITDEPTH_CONVERSION_FLOAT)
 # Relative deviation of the measured delivery rate from the configured sample rate beyond which a recording is flagged
 RATE_WARN_TOLERANCE = 0.01
 RATE_VALIDATION_TOLERANCE = 0.02
+
+# Signal levels (peak) below which a recording is flagged as silent or very quiet,
+# and the peak at or above which it is flagged as clipping (full scale is 1.0)
+SILENCE_PEAK_DBFS = -60.0
+QUIET_PEAK_DBFS = -40.0
+CLIPPING_PEAK = 0.999

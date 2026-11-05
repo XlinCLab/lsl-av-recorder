@@ -14,9 +14,11 @@ from recorder.audio.constants import CANDIDATE_SAMPLE_RATES
 from recorder.audio.devices import (active_audio_stream_count,
                                     audio_stream_closed, audio_stream_opened,
                                     default_input_device_index,
+                                    default_output_device_index,
                                     get_audio_device_capabilities,
                                     is_input_config_supported,
-                                    list_input_devices, refresh_portaudio)
+                                    list_input_devices, list_output_devices,
+                                    refresh_portaudio)
 
 # ---------------------------------------------------------------------------
 # list_input_devices
@@ -302,3 +304,29 @@ def test_refresh_portaudio_reports_failure_instead_of_raising(monkeypatch):
 def test_audio_stream_counter_never_goes_negative():
     audio_stream_closed()
     assert active_audio_stream_count() == 0
+
+
+# ---------------------------------------------------------------------------
+# list_output_devices / default_output_device_index
+# ---------------------------------------------------------------------------
+
+def test_list_output_devices_returns_only_output_capable(fake_sd):
+    fake_sd.add_hostapi("ALSA")
+    fake_sd.add_device("Mic", max_input_channels=1, hostapi=0)
+    speakers = fake_sd.add_device(
+        name="Speakers",
+        max_output_channels=2,
+        hostapi=0,
+        default_samplerate=48000.0,
+    )
+    fake_sd.set_default_output(speakers)
+
+    devices = list_output_devices()
+    assert [d["name"] for d in devices] == ["Speakers"]
+    assert devices[0]["index"] == speakers and devices[0]["hostapi_name"] == "ALSA"
+    assert default_output_device_index() == speakers
+
+
+def test_default_output_device_index_none_when_unset(fake_sd):
+    fake_sd.default.device[1] = -1
+    assert default_output_device_index() is None

@@ -34,6 +34,7 @@ from ..audio.devices import (active_audio_stream_count,
                              get_audio_device_capabilities,
                              is_input_config_supported, list_input_devices,
                              refresh_portaudio)
+from ..audio.settings import build_audio_stream_settings
 from ..config import (DEFAULT_STUDY_ROOT, AppConfig, VideoCamConfig, load_cfg,
                       save_cfg)
 from ..lsl.labrecorder_rcs import LabRecorderRCS
@@ -50,6 +51,7 @@ from ..xdf.xdf_writer import (DEFAULT_AUDIO_BUFFER_SECONDS,
                               FULL_BUFFER_DEFAULT_POLICY,
                               FULL_BUFFER_DROP_NEWEST_POLICY,
                               FULL_BUFFER_DROP_OLDEST_POLICY)
+from .audio_test_panel import AudioTestPanel
 from .camera_panel import CameraPanel
 from .camera_worker import CAMERA_PREVIEW_STREAM_TYPE
 from .fps_divergence_dialog import FpsDivergenceDialog
@@ -416,9 +418,23 @@ class MainWindow(QMainWindow):
             "from the device; samples are converted to this format as needed.",
         ))], collapsed=True)
 
-        audio_layout = QVBoxLayout()
-        audio_layout.addLayout(af)
-        audio_layout.addStretch(1)
+        # Record a few seconds with the selected device and settings, and play them back
+        self.audio_test_panel = AudioTestPanel(
+            get_settings=self._build_audio_test_settings,
+            prepare=self._prepare_audio_test,
+            log=lambda msg, level="INFO": self.log(f"[Audio test] {msg}", level),
+        )
+
+        # Settings on the left, the audio test on the right; each column keeps to the top
+        settings_column = QVBoxLayout()
+        settings_column.addLayout(af)
+        settings_column.addStretch(1)
+        test_column = QVBoxLayout()
+        test_column.addWidget(self.audio_test_panel)
+        test_column.addStretch(1)
+        audio_layout = QHBoxLayout()
+        audio_layout.addLayout(settings_column, 3)
+        audio_layout.addLayout(test_column, 2)
         audio_widget.setLayout(audio_layout)
         self.tabs.addTab(audio_widget, "Audio")
 
@@ -803,6 +819,8 @@ class MainWindow(QMainWindow):
         # if the log simply stops with no matching line here, that means
         # the app went down some other way (native crash, force-kill).
         self.log("Closing app.")
+        # Release the audio device if an audio test is recording or playing
+        self.audio_test_panel.shutdown()
         # Stop any active camera preview workers before the window/app actually closes
         self.preview_mgr.stop_all_previews()
         if self._recording_active and self.controller:
@@ -1031,14 +1049,47 @@ class MainWindow(QMainWindow):
                 self.audio_device.setCurrentIndex(idx)
         self.audio_device.blockSignals(False)
 
+    def _refresh_audio_devices(self):
+        """Re-list the audio devices (input dropdown and the audio test's output
+        choices), keeping the current selection by identity."""
+        self._populate_audio_devices(refresh=True, keep_gui_selection=True)
+        self._refresh_audio_capabilities()
+        if hasattr(self, "audio_test_panel"):
+            self.audio_test_panel.refresh_output_devices()
+
     def _refresh_audio_devices_before_run(self):
         """Pick up USB devices plugged or unplugged since the device list was
         built, keeping the user's current selection by identity. Called before
         a recording or test starts, when no audio stream is open."""
         if not self.audio_enabled.isChecked():
             return
-        self._populate_audio_devices(refresh=True, keep_gui_selection=True)
-        self._refresh_audio_capabilities()
+        self._refresh_audio_devices()
+
+    def _prepare_audio_test(self) -> bool:
+        """Called before an audio test: refresh the devices, read the settings and make
+        sure they can be used. Returns False (after surfacing a warning) if not."""
+        if self._recording_active or self._testing_active:
+            return False
+        self._refresh_audio_devices()
+        self.pull_gui_into_cfg()
+        warnings = self._validate_audio_settings(force=True)
+        if warnings:
+            QMessageBox.warning(
+                self, "Settings warning",
+                "The audio test cannot run:\n\n" + "\n".join(f"- {msg}" for msg in warnings),
+            )
+            return False
+        return True
+
+    def _build_audio_test_settings(self):
+        return build_audio_stream_settings(
+            self.cfg.Audio,
+            log=lambda msg, level="INFO": self.log(f"[Audio test] {msg}", level),
+        )
+
+    def _update_audio_test_enabled(self):
+        """The audio test shares the audio device, so it is off while recording or testing."""
+        self.audio_test_panel.set_external_busy(bool(self._recording_active or self._testing_active))
 
     def _on_audio_device_changed(self, _index: int):
         if not self._audio_device_missing() and self._missing_audio_identity is not None:
@@ -1315,6 +1366,7 @@ class MainWindow(QMainWindow):
     def on_start(self):
         if self._testing_active:
             return
+        self.audio_test_panel.shutdown()
         self._refresh_audio_devices_before_run()
         self.pull_gui_into_cfg()
         if not self._confirm_unvalidated_camera_combinations():
@@ -1396,8 +1448,10 @@ class MainWindow(QMainWindow):
             )
         return items, warnings
 
-    def _validate_audio_settings(self) -> list[str]:
-        if not self.audio_enabled.isChecked():
+    def _validate_audio_settings(self, force: bool = False) -> list[str]:
+        """Problems that prevent using the audio settings. `force` checks them even if
+        audio recording is not enabled (the audio test works regardless)."""
+        if not force and not self.audio_enabled.isChecked():
             return []
         if self._audio_device_missing():
             identity = self._missing_audio_identity
@@ -1491,6 +1545,7 @@ class MainWindow(QMainWindow):
             self.btn_start.setEnabled(False)
             self.btn_stop.setEnabled(True)
             self._recording_active = True
+            self._update_audio_test_enabled()
             self._update_add_camera_button()
             self._show_recording_status()
         except Exception as e:
@@ -1599,6 +1654,7 @@ class MainWindow(QMainWindow):
         self.btn_start.setEnabled(True)
         self.btn_stop.setEnabled(False)
         self._recording_active = False
+        self._update_audio_test_enabled()
         self._update_add_camera_button()
         if self.cfg.Video.Enabled:
             self._refresh_previews_from_panels()
@@ -1694,6 +1750,7 @@ class MainWindow(QMainWindow):
         at the start of a real session or after recording."""
         if self._recording_active or self._testing_active:
             return
+        self.audio_test_panel.shutdown()
         self._refresh_audio_devices_before_run()
         self.pull_gui_into_cfg()
 
@@ -1724,6 +1781,7 @@ class MainWindow(QMainWindow):
         self.btn_start.setEnabled(False)
         self.btn_test_recording.setEnabled(False)
         self._testing_active = True
+        self._update_audio_test_enabled()
 
         try:
             controller = RunController(
@@ -1749,6 +1807,7 @@ class MainWindow(QMainWindow):
 
     def _abort_test_recording(self, test_cfg: AppConfig):
         self._testing_active = False
+        self._update_audio_test_enabled()
         self.btn_start.setEnabled(True)
         self.btn_test_recording.setEnabled(True)
         if self.cfg.Video.Enabled:
@@ -1797,6 +1856,7 @@ class MainWindow(QMainWindow):
             self.log(f"[Test] Error stopping test recording: {exc}", loglevel="ERROR")
 
         self._testing_active = False
+        self._update_audio_test_enabled()
         self.btn_start.setEnabled(True)
         self.btn_test_recording.setEnabled(True)
         if self.cfg.Video.Enabled:

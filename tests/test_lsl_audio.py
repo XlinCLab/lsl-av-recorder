@@ -361,7 +361,7 @@ def test_stop_warns_when_the_device_delivers_a_different_rate_than_configured():
     streamer, messages = _streamer_with_delivered_rate(48000, configured=44100)
     streamer._report_measured_rate()
     warning = next(m for lvl, m in messages if lvl == "WARNING")
-    assert "44100" in warning and "not running at the configured rate" in warning
+    assert "44100" in warning and "off the configured" in warning
 
 
 def test_stop_reports_when_the_recording_was_too_short_to_measure():
