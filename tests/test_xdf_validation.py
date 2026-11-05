@@ -979,7 +979,7 @@ def test_audio_silent_second_channel_is_flagged(xdf_path):
     report = validate_test_recording(xdf_path, _audio_cfg(channels=2), [], duration)
     flagged = [c for c in report.checks if c.name == "Audio channel levels"]
     assert len(flagged) == 1 and flagged[0].passed and flagged[0].warning
-    assert "Channel 2 is silent" in flagged[0].detail and "another channel carries a signal" in flagged[0].detail
+    assert "Channel 2 is silent" in flagged[0].detail
     assert report.passed and report.warnings
 
 

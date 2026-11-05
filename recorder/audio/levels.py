@@ -93,4 +93,4 @@ def channel_name(channel: int, labels: Optional[Sequence[str]] = None) -> str:
 
 def silent_channel_message(channel: int, labels: Optional[Sequence[str]] = None) -> str:
     """Warning for a channel that is silent while another one carries a signal."""
-    return f"{channel_name(channel, labels)} is silent (although another channel carries a signal)."
+    return f"{channel_name(channel, labels)} is silent!"

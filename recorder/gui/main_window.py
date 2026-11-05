@@ -1940,7 +1940,7 @@ class MainWindow(QMainWindow):
             if report.warnings:
                 box.setIcon(QMessageBox.Icon.Warning)
                 box.setText(
-                    f"All checks passed ({report.summary()}), but please review warnings:\n\n"
+                    f"All checks passed ({report.summary()}):\n\n"
                     + "\n".join(f"- {c.name}: {c.detail}" for c in report.warnings)
                 )
             else:
